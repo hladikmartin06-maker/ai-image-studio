@@ -1,0 +1,23 @@
+# Secrets and local data — never commit these.
+backend/.env
+backend/storage/
+
+# Python
+backend/.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+
+# Node / Next.js
+frontend/node_modules/
+frontend/.next/
+frontend/out/
+frontend/next-env.d.ts
+frontend/.env*.local
+*.tsbuildinfo
+
+.DS_Store
+
+# Background run state (pid files, logs) of scripts/start.sh
+.run/
