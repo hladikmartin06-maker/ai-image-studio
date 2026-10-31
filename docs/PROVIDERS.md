@@ -173,3 +173,55 @@ timeout, encrypted_ports)`, `Sandbox.list(app_id, tags)`, `Sandbox.from_id(...).
 terminated) and Modal has no balance or price API, so neither is shown. GPU names from the
 Modal GPU guide: T4, L4, A10, L40S, A100-40GB, A100-80GB, H100, H200, B200. SDK signatures
 were checked against `modal` 1.6.3; not run against Modal's servers here.
+
+# ComfyUI and Krea 2
+
+Verified on 2026-10-31 from the sources' own files (GitHub; Hugging Face pages could not be
+opened from the build sandbox):
+
+- **Krea 2** (github.com/krea-ai/krea-2, released 2026-06-22): RAW = undistilled pretrained
+  checkpoint for fine-tuning and LoRA training (52 steps, CFG 3.5, generation up to 1k);
+  Turbo = 8-step distilled, CFG off, 1k–2k. “LoRAs trained on RAW will work well on Turbo.”
+  HF repos `krea/Krea-2-Raw`, `krea/Krea-2-Turbo` (gated: license acceptance + token).
+  Community license; commercial license via Krea.
+- **ComfyUI** (comfyanonymous/ComfyUI, version 0.43.0 at the time): native Krea 2 support —
+  `supported_models.Krea2`, `CLIPLoader` type `krea2` (Qwen3-VL-4B), sampling shift 1.15.
+- **Comfy-Org template** `image_krea2_turbo_t2i` (min ComfyUI 0.24.1): `UNETLoader`
+  `krea2_turbo_fp8_scaled.safetensors` (12.24 GB), `CLIPLoader`
+  `qwen3vl_4b_fp8_scaled.safetensors` (4.88 GB, type krea2), `VAELoader`
+  `qwen_image_vae.safetensors` (242 MB), `LoraLoaderModelOnly`, `CLIPTextEncode`,
+  `ConditioningZeroOut` (negative), `EmptyLatentImage`, `KSampler` 8 steps / CFG 1 / euler /
+  simple, `VAEDecode`, `SaveImage`. Files from `huggingface.co/Comfy-Org/Krea-2`. Int8 file:
+  `krea2_turbo_int8_convrot.safetensors`.
+- **API used**: `/system_stats`, `/object_info`, `/models/{folder}`, `POST /prompt` (client
+  `prompt_id` accepted), `/queue`, `/history/{id}`, `/view`, `POST /interrupt {prompt_id}`,
+  `POST /queue {delete}`, `/ws` progress.
+
+Not verified: the ComfyUI file name of the RAW checkpoint (detected by name; added by URL),
+the sampler of RAW inside ComfyUI (studio default euler/simple), VRAM needs (Krea publishes
+none). Only the API format of workflows can be run; UI-format files are kept for export.
+**Not run against a real ComfyUI with Krea 2 weights** — verified with a fake ComfyUI that
+reproduces the API.
+
+# LoRA training (ai-toolkit)
+
+- **Trainer**: ostris/ai-toolkit, arch `krea2` (`extensions_built_in/diffusion_models/krea2`):
+  single-stream MMDiT (features 6144, 28 layers), Qwen3-VL-4B, Qwen-Image VAE; RAW and Turbo
+  share the architecture; Turbo training uses `assistant_lora_path`
+  `ostris/krea2_turbo_training_adapter/krea2_turbo_training_adapter_v1.safetensors`; LoRA keys
+  use ComfyUI's `diffusion_model.` prefix. Config fields from `toolkit/config_modules.py`
+  (network linear/alpha, optimizer adamw8bit/adamw/adafactor/prodigy, lr_scheduler,
+  timestep_type, diff_output_preservation, quantize, low_vram, save/sample). JSON configs
+  are accepted (`toolkit/config.py`). Run: `python run.py <config>`.
+- **Image**: `ostris/aitoolkit:latest` (docker-compose of the repo; needs an NVIDIA driver for
+  CUDA 13). Not available in ai-toolkit for Krea 2: text encoder training, validation loss,
+  a training seed. Regularization images are not offered by the studio.
+- **GPU side**: the studio agent (`backend/app/gpu/agent`) in the container; RunPod pods get
+  `dockerEntrypoint`/`dockerStartCmd`, port 8765/http and a volume at /workspace, reached at
+  `https://{podId}-8765.proxy.runpod.net`; Modal sandboxes get `encrypted_ports`, a Secret for
+  tokens and a named Volume. ComfyUI deployments install ComfyUI from GitHub into the volume
+  and download the verified Comfy-Org files.
+
+Presets are the studio's starting points, not published recommendations. Progress and loss
+come from ai-toolkit's own output. **Not run on a real RunPod or Modal GPU** — verified with a
+fake RunPod that starts the real agent locally and a fake `run.py`.

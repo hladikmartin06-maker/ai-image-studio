@@ -17,7 +17,7 @@ from sqlalchemy import exists, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
-from app.models import Generation, PersonaImage, ReferenceImage
+from app.models import Generation, LoraDatasetItem, PersonaImage, ReferenceImage
 from app.services import storage
 
 ALLOWED_MIME = {"image/png", "image/jpeg", "image/webp"}
@@ -131,8 +131,8 @@ def remember_upload(ref: ReferenceImage, provider: str, url: str) -> None:
 async def delete_unused(
     db: AsyncSession, user_id: uuid.UUID, ref_ids: list[uuid.UUID]
 ) -> list[str]:
-    """Deletes the given references unless an AI model still links them or a running
-    generation needs them. Returns the file paths to remove after the commit."""
+    """Deletes the given references unless an AI model or a LoRA dataset still links them
+    or a running generation needs them. Returns the file paths to remove after the commit."""
     if not ref_ids:
         return []
     active = (
@@ -150,6 +150,7 @@ async def delete_unused(
                 ReferenceImage.user_id == user_id,
                 ReferenceImage.id.in_(ref_ids),
                 ~exists().where(PersonaImage.reference_image_id == ReferenceImage.id),
+                ~exists().where(LoraDatasetItem.reference_image_id == ReferenceImage.id),
             )
         )
     ).all()

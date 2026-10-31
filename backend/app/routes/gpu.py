@@ -17,6 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import get_db
 from app.deps import api_error, current_user
+from app.gpu import service as gpu_service
 from app.gpu.base import GPUError, WorkloadSpec
 from app.gpu.modal_provider import ModalProvider
 from app.gpu.registry import GPU_PROVIDERS, get_gpu_adapter
@@ -288,25 +289,11 @@ async def create_workload(
         command=body.command,
         timeout_minutes=body.timeout_minutes,
     )
+    del creds  # checked above; launch() loads them again
     try:
-        workload = await get_gpu_adapter(provider).create_workload(creds, spec)
+        workload = await gpu_service.launch(db, user.id, provider, spec, "manual")
     except GPUError as exc:
         raise _fail(exc) from exc
-    db.add(
-        GPUWorkload(
-            user_id=user.id,
-            provider=provider,
-            external_id=workload.id,
-            kind=workload.kind,
-            name=spec.name,
-            gpu_type=spec.gpu_type,
-            gpu_count=spec.gpu_count,
-            image=spec.image,
-            status=workload.status,
-            meta={"ports": spec.ports},
-        )
-    )
-    await db.commit()
     return workload.json()
 
 

@@ -14,15 +14,21 @@ from app.deps import csrf_guard
 from app.routes import (
     ai,
     auth,
+    comfy,
     generations,
     gpu,
     images,
     integrations,
+    jobs,
+    loras,
     misc,
     personas,
     references,
+    secrets,
+    uploads,
 )
 from app.security import SecretKeyMissing
+from app.services.gpu_runner import gpu_runner
 from app.services.worker import worker
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -35,9 +41,11 @@ logging.getLogger("httpx2").setLevel(logging.WARNING)  # used by the anthropic S
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     await worker.start()
+    await gpu_runner.start()
     try:
         yield
     finally:
+        await gpu_runner.stop()
         await worker.stop()
 
 
@@ -80,5 +88,20 @@ async def secret_missing(_: Request, exc: SecretKeyMissing):
     )
 
 
-for module in (misc, auth, integrations, references, personas, generations, images, ai, gpu):
+for module in (
+    misc,
+    auth,
+    integrations,
+    references,
+    personas,
+    generations,
+    images,
+    ai,
+    gpu,
+    uploads,
+    secrets,
+    comfy,
+    loras,
+    jobs,
+):
     app.include_router(module.router)

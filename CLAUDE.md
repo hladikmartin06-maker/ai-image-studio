@@ -30,8 +30,9 @@ same way. Never push to `biznismarko9-source` repositories.
 
 ## Product rules
 
-- Image generation only. Exactly four models: Nano Banana Pro (SFW), Seedream (SFW),
-  Wan 2.7 (SFW + NSFW), Wan 2.7 Pro (SFW + NSFW). No other models or modes.
+- Image generation only. Hosted models: Nano Banana Pro (SFW), Seedream (SFW), Wan 2.7 and
+  Wan 2.7 Pro (SFW + NSFW). Plus Krea 2 (RAW, Turbo) on the user's own ComfyUI
+  (`backend/app/comfy/krea2.py` holds the verified facts). No other models or modes.
 - Providers: WaveSpeed and Atlas Cloud only, through `backend/app/providers/` (one adapter
   each, shared contract in `base.py`). The model catalog is `backend/app/catalog.py`: one
   `Variant` per provider endpoint. A UI control exists only when the provider documents that
@@ -54,6 +55,13 @@ same way. Never push to `biznismarko9-source` repositories.
   refused; age ≥ 18. Their description is appended to the prompt only when the user keeps it
   on (History shows `final_prompt`). Their reference images are sent only through an editing
   endpoint and within its `max_reference_images`, primary first, after the user's own.
+- ComfyUI: only the API format of workflows runs; secrets are scrubbed from imported and
+  exported workflows. LoRA compatibility is strict (`krea2.lora_compatibility`): other
+  architectures never load, RAW LoRAs work on RAW and Turbo, Turbo LoRAs only on Turbo; a
+  missing model file or node is an error, never a silent substitute.
+- LoRA training (ai-toolkit on RunPod/Modal through the studio agent, `gpu/agent`): billing
+  needs `confirm_billing`; artifacts are copied to the Mac before the GPU is removed; progress
+  and loss only from the trainer's output; LoRAs only for fictional adults.
 - Three separate integration families, never mixed: image providers (`providers/`,
   `integrations`), AI chat providers (`ai/`, `ai_integrations`) and GPU compute
   (`gpu/`, `gpu_integrations`). A new chat or GPU provider = one registry entry + adapter.

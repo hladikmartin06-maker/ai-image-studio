@@ -113,8 +113,17 @@ class OpenAICompatibleProvider:
         return sorted({i for i in ids if isinstance(i, str) and is_chat_model(i)})
 
     def _body(self, request: ChatRequest, *, usage: bool, effort: bool) -> dict[str, Any]:
-        messages: list[dict[str, str]] = [{"role": "system", "content": request.system}]
-        messages += [{"role": t.role, "content": t.content} for t in request.messages]
+        messages: list[dict[str, Any]] = [{"role": "system", "content": request.system}]
+        for t in request.messages:
+            if t.images:
+                parts: list[dict[str, Any]] = [
+                    {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{data}"}}
+                    for mime, data in t.images
+                ]
+                parts.append({"type": "text", "text": t.content})
+                messages.append({"role": t.role, "content": parts})
+            else:
+                messages.append({"role": t.role, "content": t.content})
         body: dict[str, Any] = {"model": request.model, "messages": messages, "stream": True}
         if self.use_max_completion_tokens:
             body["max_completion_tokens"] = request.max_tokens

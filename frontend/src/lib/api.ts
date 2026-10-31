@@ -80,3 +80,37 @@ export function downloadUrl(url: string) {
   a.click();
   a.remove();
 }
+
+/** Uploads a large file in 8 MB pieces (the proxy limits one request); returns its id. */
+export async function uploadInChunks(
+  file: File,
+  onProgress?: (fraction: number) => void,
+  signal?: AbortSignal,
+): Promise<string> {
+  const start = await api<{ id: string; chunk_size: number }>("/api/uploads", {
+    body: { filename: file.name, size: file.size },
+  });
+  let offset = 0;
+  while (offset < file.size) {
+    const piece = file.slice(offset, offset + start.chunk_size);
+    const response = await fetch(`/api/uploads/${start.id}?offset=${offset}`, {
+      method: "PUT",
+      headers: { "x-studio-client": "web", "content-type": "application/octet-stream" },
+      body: piece,
+      credentials: "same-origin",
+      signal,
+    });
+    if (!response.ok) {
+      let message = "Upload failed.";
+      try {
+        message = (await response.json())?.error?.message ?? message;
+      } catch {
+        /* keep default */
+      }
+      throw new ApiError(response.status, "upload_failed", message);
+    }
+    offset += piece.size;
+    onProgress?.(offset / file.size);
+  }
+  return start.id;
+}

@@ -84,6 +84,15 @@ export function JobCard({
               <span className="small subtle">· {t("gen.withRefs", { n: gen.reference_images.length })}</span>
             ) : null}
             {gen.persona?.name ? <span className="small subtle">· {gen.persona.name}</span> : null}
+            {gen.comfy?.lora ? <span className="small subtle">· LoRA {gen.comfy.lora.name}</span> : null}
+            {running && gen.tasks[0]?.progress?.queue_position ? (
+              <span className="small subtle">· {t("jb.queue", { n: gen.tasks[0].progress.queue_position })}</span>
+            ) : null}
+            {running && gen.tasks[0]?.progress?.max ? (
+              <span className="small subtle">
+                · {Math.round((100 * (gen.tasks[0].progress.value ?? 0)) / gen.tasks[0].progress.max)}%
+              </span>
+            ) : null}
           </div>
           <div className={showPrompts ? "clamp-2" : "truncate"} style={{ color: "var(--text-2)" }}>
             {gen.prompt}
@@ -105,7 +114,7 @@ export function JobCard({
           <IconButton label={t("gen.loadSettings")} onClick={() => onLoad(gen)}>
             <SlidersHorizontal />
           </IconButton>
-          {gen.status === "queued" ? (
+          {gen.status === "queued" || (gen.provider === "comfyui" && gen.status === "processing") ? (
             <IconButton label={t("gen.cancel")} onClick={() => cancel.mutate(gen.id)}>
               <Ban />
             </IconButton>

@@ -161,6 +161,14 @@ class JobWorker:
             return
         await publish(gen_id)
 
+        if gen.provider == "comfyui":
+            from app.comfy import runner as comfy_runner
+
+            await comfy_runner.run(self, gen)
+            await self._finish(gen_id)
+            await comfy_runner.after_finish(gen_id)
+            return
+
         try:
             api_key = await self._api_key(gen)
             variant = resolve_variant(gen.model_key, gen.provider, gen.mode == "image-edit")
@@ -358,10 +366,16 @@ class JobWorker:
     async def _save_outputs(
         self, gen: Generation, task: ProviderTask, outputs: list[str], nsfw_flags: list[bool]
     ) -> None:
+        datas = [await self._download(gen, output) for output in outputs]
+        await self.store_outputs(gen, task, datas, nsfw_flags)
+
+    async def store_outputs(
+        self, gen: Generation, task: ProviderTask, datas: list[bytes], nsfw_flags: list[bool]
+    ) -> None:
+        """Stores finished images (originals byte for byte + thumbnails) in the library."""
         async with SessionLocal() as db:
             prefs = await preferences.load(db, gen.user_id)
-        for i, output in enumerate(outputs):
-            data = await self._download(gen, output)
+        for i, data in enumerate(datas):
             image_id = uuid.uuid4()
             try:
                 stored = await storage.store_image(gen.user_id, image_id, data)
@@ -388,6 +402,9 @@ class JobWorker:
             await publish(gen.id)
 
     # --- state helpers -----------------------------------------------------------------
+
+    async def set_task(self, task_id: uuid.UUID, **values: Any) -> None:
+        await self._set_task(task_id, **values)
 
     async def _set_task(self, task_id: uuid.UUID, **values: Any) -> None:
         async with SessionLocal() as db:
@@ -445,7 +462,11 @@ class JobWorker:
 
 
 async def cleanup() -> None:
-    """Hourly: expired sessions and failed generations past the user's retention."""
+    """Hourly: expired sessions, unfinished uploads older than a day, and failed generations
+    past the user's retention."""
+    from app.services import uploads
+
+    await uploads.cleanup()
     async with SessionLocal() as db:
         await db.execute(delete(AuthSession).where(AuthSession.expires_at < utcnow()))
         await db.commit()

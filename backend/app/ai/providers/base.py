@@ -52,6 +52,8 @@ class AIError(Exception):
 class ChatTurn:
     role: Literal["user", "assistant"]
     content: str
+    # Images for vision requests (dataset captions): (mime type, base64 data).
+    images: list[tuple[str, str]] = field(default_factory=list)
 
 
 @dataclass

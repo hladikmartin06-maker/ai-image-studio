@@ -1,7 +1,14 @@
 // Shapes returned by the FastAPI backend (see backend/app/services/serializers.py).
 
 export type ProviderKey = "wavespeed" | "atlas";
-export type ModelKey = "nano-banana-pro" | "seedream" | "wan-2.7" | "wan-2.7-pro";
+export type GenerationProvider = ProviderKey | "comfyui";
+export type ModelKey =
+  | "nano-banana-pro"
+  | "seedream"
+  | "wan-2.7"
+  | "wan-2.7-pro"
+  | "krea-2-turbo"
+  | "krea-2-raw";
 export type Mode = "text-to-image" | "image-edit";
 export type GenerationStatus = "queued" | "processing" | "completed" | "failed" | "cancelled";
 export type Control =
@@ -119,6 +126,14 @@ export interface GenerationSettings {
   output_format?: string;
   seed?: number;
   thinking_mode?: boolean;
+  // ComfyUI runs
+  width?: number;
+  height?: number;
+  steps?: number;
+  cfg?: number;
+  sampler?: string;
+  scheduler?: string;
+  negative_prompt?: string;
 }
 
 export interface StudioImage {
@@ -139,7 +154,7 @@ export interface StudioImage {
   created_at: string;
   model_key: ModelKey;
   model_name: string;
-  provider: ProviderKey;
+  provider: GenerationProvider;
   provider_name: string;
   mode: Mode;
   prompt: string;
@@ -148,6 +163,7 @@ export interface StudioImage {
   status: GenerationStatus;
   persona_id: string | null;
   persona_name: string | null;
+  comfy: GenerationComfy | null;
 }
 
 export interface ProviderTask {
@@ -157,6 +173,7 @@ export interface ProviderTask {
   provider_task_id: string | null;
   error_code: string | null;
   error_message: string | null;
+  progress?: { state?: string; queue_position?: number | null; value?: number; max?: number };
 }
 
 export interface ReferenceImage {
@@ -175,7 +192,7 @@ export interface Generation {
   id: string;
   model_key: ModelKey;
   model_name: string;
-  provider: ProviderKey;
+  provider: GenerationProvider;
   provider_name: string;
   mode: Mode;
   provider_model_id: string;
@@ -192,6 +209,7 @@ export interface Generation {
   source_generation_id: string | null;
   final_prompt: string | null;
   persona: GenerationPersona | null;
+  comfy: GenerationComfy | null;
   created_at: string;
   started_at: string | null;
   completed_at: string | null;
@@ -477,4 +495,403 @@ export interface GpuUsage {
   studio_running: number;
   studio_gpu_hours: number;
   recent: { id: string; name: string; gpu_type: string; gpu_count: number; status: string; created_at: string | null; stopped_at: string | null }[];
+}
+
+// --- ComfyUI ------------------------------------------------------------------------------
+
+export type ComfyKind = "local" | "remote" | "runpod" | "modal";
+
+export interface ComfyDevice {
+  name: string;
+  type: string;
+  vram_total: number | null;
+  vram_free: number | null;
+}
+
+export interface AgentGpu {
+  name: string;
+  utilization: number | null;
+  memory_used_mb: number | null;
+  memory_total_mb: number | null;
+  temperature: number | null;
+  driver: string;
+}
+
+export interface AgentHealth {
+  ok: boolean;
+  gpus: AgentGpu[];
+  ram_total: number | null;
+  ram_available: number | null;
+  load_1m: number | null;
+  cpu_count: number | null;
+  disk_free: number | null;
+  disk_total: number | null;
+}
+
+export interface Krea2VariantState {
+  name: string;
+  installed: boolean;
+  files: { filename: string; precision: string }[];
+}
+
+export interface Krea2Detection {
+  supported: boolean;
+  missing_nodes: string[];
+  variants: Record<"turbo" | "raw", Krea2VariantState>;
+  text_encoders: string[];
+  vaes: string[];
+  loras: string[];
+  ready: boolean;
+  missing: string[];
+}
+
+export interface ComfyInfo {
+  version?: string | null;
+  python?: string | null;
+  pytorch?: string | null;
+  os?: string | null;
+  ram_total?: number | null;
+  ram_free?: number | null;
+  devices?: ComfyDevice[];
+  node_count?: number;
+  custom_node_packs?: string[];
+  files?: Record<string, string[]>;
+  krea2?: Krea2Detection;
+  agent?: AgentHealth | null;
+  checked_at?: string;
+}
+
+export interface ComfyDeploy {
+  stage?: "starting" | "installing" | "ready" | "stopped" | "error";
+  provider?: "runpod" | "modal";
+  gpu_type?: string;
+  gpu_count?: number;
+  cloud_type?: string;
+  image?: string | null;
+  volume_gb?: number;
+  variants?: string[];
+  auto_stop_minutes?: number | null;
+  agent_url?: string | null;
+  started_at?: string;
+  ready_at?: string;
+  cost_per_hour?: number | null;
+  log_tail?: string;
+  stopped_by?: string;
+}
+
+export interface ComfyConnection {
+  id: string;
+  name: string;
+  kind: ComfyKind;
+  base_url: string | null;
+  auth_type: "none" | "bearer" | "basic" | "agent";
+  masked_secret: string | null;
+  models_dir: string | null;
+  gpu_provider: "runpod" | "modal" | null;
+  workload_id: string | null;
+  status: "new" | "ready" | "error" | "deploying" | "stopped";
+  last_error: string | null;
+  last_checked_at: string | null;
+  info: ComfyInfo;
+  deploy: ComfyDeploy;
+  file_capability: "agent" | "folder" | "none";
+  created_at: string;
+}
+
+export interface Krea2Variant {
+  key: "turbo" | "raw";
+  model_key: string;
+  name: string;
+  description: string;
+  steps: number;
+  cfg: number;
+  sampler: string;
+  scheduler: string;
+  negative_prompt: boolean;
+  tiers: string[];
+  settings_source: string;
+  known_files: { filename: string; folder: string; precision: string; size_gb: number | null; url: string }[];
+}
+
+export interface ComfyCatalog {
+  krea2: {
+    architecture: Record<string, string | string[]>;
+    variants: Krea2Variant[];
+    text_encoder: { filename: string; size_gb: number | null; url: string };
+    vae: { filename: string; size_gb: number | null; url: string };
+    aspect_ratios: string[];
+    sizes: Record<string, Record<string, [number, number]>>;
+    seed_max: number;
+  };
+  deploy_images: Record<string, string>;
+  model_folders: string[];
+}
+
+export interface ComfyWorkflow {
+  id: string;
+  name: string;
+  family: string | null;
+  has_api: boolean;
+  has_ui: boolean;
+  bindings: Record<string, unknown>;
+  node_types: string[];
+  runnable: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface GenerationComfy {
+  connection_id: string | null;
+  connection_name: string | null;
+  variant: "turbo" | "raw" | null;
+  model_file: string | null;
+  workflow: { id: string | null; name: string } | null;
+  lora: {
+    lora_id: string;
+    version_id: string;
+    name: string;
+    version: number;
+    trigger_word: string;
+    strength: number;
+    file: string;
+  } | null;
+  test_group: string | null;
+  test_label: string | null;
+  test_prompt?: string | null;
+  cancel_requested: boolean;
+}
+
+// --- LoRA studio -----------------------------------------------------------------------------
+
+export interface LoraItem {
+  id: string;
+  reference_id: string;
+  url: string;
+  thumb_url: string;
+  original_name: string;
+  mime_type: string | null;
+  width: number | null;
+  height: number | null;
+  size_bytes: number | null;
+  caption: string;
+  caption_source: "manual" | "ai" | "empty";
+  split: "train" | "validation";
+  excluded: boolean;
+  crop: { x: number; y: number; w: number; h: number } | null;
+  position: number;
+}
+
+export interface LoraWarning {
+  code: string;
+  level: "error" | "warning" | "info";
+  n?: number;
+  items?: string[];
+  pairs?: string[][];
+}
+
+export interface LoraAnalysis {
+  total: number;
+  used: number;
+  train: number;
+  validation: number;
+  excluded: number;
+  captioned: number;
+  min_edge: number | null;
+  median_edge: number | null;
+  aspect_buckets: Record<string, number>;
+  warnings: LoraWarning[];
+  ready: boolean;
+}
+
+export interface TrainingConfig {
+  base_variant: "raw" | "turbo";
+  rank: number;
+  alpha: number;
+  learning_rate: number;
+  optimizer: string;
+  lr_scheduler: string;
+  steps: number;
+  batch_size: number;
+  gradient_accumulation: number;
+  gradient_checkpointing: boolean;
+  mixed_precision: "bf16" | "fp16";
+  resolutions: number[];
+  quantize: boolean;
+  low_vram: boolean;
+  timestep_type: string;
+  caption_dropout_rate: number;
+  diff_output_preservation: boolean;
+  diff_output_preservation_multiplier: number;
+  save_every: number;
+  max_checkpoints: number;
+  sample_every: number;
+  validation_prompts: string[];
+  seed: number;
+  save_dtype: "float16" | "bf16";
+}
+
+export type TrainingStatus =
+  | "queued"
+  | "preparing"
+  | "uploading"
+  | "running"
+  | "downloading"
+  | "completed"
+  | "failed"
+  | "cancelled"
+  | "interrupted";
+
+export interface LoraVersion {
+  id: string;
+  lora_id: string;
+  number: number;
+  status: TrainingStatus;
+  stage_detail: string;
+  preset: string;
+  config: Partial<TrainingConfig> & { image?: string | null; cloud_type?: string };
+  gpu_provider: "runpod" | "modal" | null;
+  gpu_type: string;
+  gpu_count: number;
+  workload_id: string | null;
+  auto_cleanup: boolean;
+  cost_per_hour: number | null;
+  cost_estimate: number | null;
+  cost_final: number | null;
+  step: number | null;
+  total_steps: number | null;
+  loss: [number, number][];
+  gpu: AgentGpu | null;
+  samples: { file: string; step: number | null; index: number | null; url: string }[];
+  file_url: string | null;
+  file_size: number | null;
+  file_sha256: string | null;
+  checkpoints: { step: number; size: number | null; url: string }[];
+  deployments: Record<string, { filename: string; at: string }>;
+  dataset_size: number;
+  source: string;
+  notes: string;
+  error_code: string | null;
+  error_message: string | null;
+  created_at: string;
+  started_at: string | null;
+  completed_at: string | null;
+  gpu_started_at: string | null;
+  gpu_stopped_at: string | null;
+}
+
+export interface LoraSummary {
+  id: string;
+  name: string;
+  trigger_word: string;
+  class_word: string;
+  architecture: string;
+  base_variant: "raw" | "turbo";
+  source: "trained" | "imported";
+  persona_id: string | null;
+  persona_name: string | null;
+  caption_template: string;
+  tags: string[];
+  notes: string;
+  preferred_version_id: string | null;
+  preferred_version: LoraVersion | null;
+  latest_version: LoraVersion | null;
+  usable_versions: { id: string; number: number; preferred: boolean }[];
+  active: boolean;
+  version_count: number;
+  dataset_count: number | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface LoraDetail extends LoraSummary {
+  dataset: LoraItem[];
+  analysis: LoraAnalysis;
+  versions: LoraVersion[];
+}
+
+export interface LoraPreset {
+  key: "character_identity" | "photorealistic" | "fast_experiment" | "high_quality";
+  name: string;
+  summary: string;
+  tradeoff: string;
+  config: TrainingConfig;
+}
+
+export interface LoraArchitecture {
+  key: string;
+  name: string;
+  trainer: string;
+  trainer_image: string;
+  variants: Record<
+    "raw" | "turbo",
+    { name: string; name_or_path: string; gated: boolean; usable_on: string[]; note: string }
+  >;
+  resolutions: number[];
+  optimizers: string[];
+  schedulers: string[];
+  timestep_types: string[];
+  unavailable: Record<string, string>;
+  vram_quantized_gb: number;
+  vram_full_gb: number;
+  bucketing: string;
+}
+
+export interface LoraCatalog {
+  architectures: LoraArchitecture[];
+  presets: LoraPreset[];
+  defaults: TrainingConfig;
+  gpu_providers: { key: "runpod" | "modal"; name: string; connected: boolean }[];
+  hf_token_set: boolean;
+}
+
+export interface LoraTestGroup {
+  group: string;
+  created_at: string | null;
+  runs: Generation[];
+}
+
+// --- Jobs ----------------------------------------------------------------------------------
+
+export type JobStatus =
+  | "queued"
+  | "preparing"
+  | "running"
+  | "completed"
+  | "failed"
+  | "cancelled"
+  | "interrupted";
+
+export interface JobItem {
+  id: string;
+  type: "generation" | "training" | "deployment";
+  name: string;
+  model: string;
+  model_key: string;
+  lora: string | null;
+  provider: string | null;
+  provider_name: string;
+  gpu: string | null;
+  status: JobStatus;
+  stage?: string;
+  stage_detail?: string;
+  queue_position: number | null;
+  progress: number | null;
+  step?: number | null;
+  total_steps?: number | null;
+  created_at: string | null;
+  started_at: string | null;
+  completed_at: string | null;
+  elapsed_seconds: number | null;
+  cost: number | null;
+  cost_is_final?: boolean;
+  error: string | null;
+  link: string;
+  artifacts: number;
+}
+
+export interface SecretInfo {
+  name: string;
+  set: boolean;
+  masked: string | null;
+  updated_at: string | null;
 }

@@ -6,6 +6,7 @@ from datetime import datetime
 from typing import Any
 
 from app.catalog import MODELS, PROVIDERS, get_model, resolve_variant, size_label
+from app.comfy.krea2 import MODEL_KEYS
 from app.models import Generation, Image, ProviderTask, ReferenceImage
 
 
@@ -15,10 +16,15 @@ def iso(value: datetime | None) -> str | None:
 
 def model_name(key: str) -> str:
     model = MODELS.get(key)
-    return model.name if model else key
+    if model:
+        return model.name
+    comfy = MODEL_KEYS.get(key)
+    return comfy.name if comfy else key
 
 
 def provider_name(key: str) -> str:
+    if key == "comfyui":
+        return "ComfyUI"
     return PROVIDERS.get(key, {}).get("name", key)
 
 
@@ -52,6 +58,7 @@ def image_json(image: Image, generation: Generation | None = None) -> dict[str, 
         "status": gen.status,
         "persona_id": str(gen.persona_id) if gen.persona_id else None,
         "persona_name": (gen.persona_meta or {}).get("name"),
+        "comfy": comfy_summary(gen),
     }
 
 
@@ -70,6 +77,25 @@ def persona_summary(gen: Generation) -> dict[str, Any] | None:
     }
 
 
+def comfy_summary(gen: Generation) -> dict[str, Any] | None:
+    """Workflow, model file and LoRA of a ComfyUI run (no credentials are ever stored)."""
+    if gen.provider != "comfyui":
+        return None
+    meta = gen.comfy_meta or {}
+    return {
+        "connection_id": meta.get("connection_id"),
+        "connection_name": meta.get("connection_name"),
+        "variant": meta.get("variant"),
+        "model_file": meta.get("model_file"),
+        "workflow": meta.get("workflow"),
+        "lora": meta.get("lora"),
+        "test_group": meta.get("test_group"),
+        "test_label": meta.get("test_label"),
+        "test_prompt": meta.get("test_prompt"),
+        "cancel_requested": bool(meta.get("cancel_requested")),
+    }
+
+
 def task_json(task: ProviderTask) -> dict[str, Any]:
     return {
         "index": task.index,
@@ -78,6 +104,7 @@ def task_json(task: ProviderTask) -> dict[str, Any]:
         "provider_task_id": task.provider_task_id,
         "error_code": task.error_code,
         "error_message": task.error_message,
+        "progress": task.progress or {},
     }
 
 
@@ -88,15 +115,19 @@ def generation_json(gen: Generation, *, images: list[Image] | None = None) -> di
         # Relationships are only read when they were loaded (no lazy I/O in async code).
         image_rows = list(gen.images) if "images" in gen.__dict__ else []
     target = None
-    try:
-        variant = resolve_variant(gen.model_key, gen.provider, gen.mode == "image-edit")
-        target = size_label(variant, gen.settings)
-    except ValueError:
-        pass
+    if gen.provider == "comfyui":
+        if gen.settings.get("width"):
+            target = f"{gen.settings['width']}×{gen.settings['height']}"
+    else:
+        try:
+            variant = resolve_variant(gen.model_key, gen.provider, gen.mode == "image-edit")
+            target = size_label(variant, gen.settings)
+        except ValueError:
+            pass
     try:
         name = get_model(gen.model_key).name
     except ValueError:
-        name = gen.model_key
+        name = model_name(gen.model_key)
     return {
         "id": str(gen.id),
         "model_key": gen.model_key,
@@ -125,6 +156,7 @@ def generation_json(gen: Generation, *, images: list[Image] | None = None) -> di
         "source_generation_id": str(gen.source_generation_id) if gen.source_generation_id else None,
         "final_prompt": gen.final_prompt,
         "persona": persona_summary(gen),
+        "comfy": comfy_summary(gen),
         "created_at": iso(gen.created_at),
         "started_at": iso(gen.started_at),
         "completed_at": iso(gen.completed_at),

@@ -18,7 +18,7 @@ from app.catalog import catalog_json
 from app.config import get_settings
 from app.db import get_db
 from app.deps import current_user
-from app.models import Generation, Image, PersonaImage, ReferenceImage, User
+from app.models import Generation, Image, LoraDatasetItem, PersonaImage, ReferenceImage, User
 from app.services import preferences, storage
 from app.services.events import broker
 from app.services.preferences import PreferencesPatch
@@ -265,6 +265,7 @@ async def storage_cleanup(
                 select(ReferenceImage).where(
                     ReferenceImage.user_id == user.id,
                     ~exists().where(PersonaImage.reference_image_id == ReferenceImage.id),
+                    ~exists().where(LoraDatasetItem.reference_image_id == ReferenceImage.id),
                 )
             )
         ).all()

@@ -28,6 +28,8 @@ class Settings(BaseSettings):
     worker_concurrency: int = 4
     # A provider request that is not finished after this many seconds is failed.
     job_timeout_seconds: int = 900
+    # ComfyUI runs: the first run loads ~17 GB of Krea 2 weights, so allow longer.
+    comfy_timeout_seconds: int = 1800
 
     # Only for tests and local development against a fake provider. Never set in production.
     wavespeed_base_url: str = "https://api.wavespeed.ai"
@@ -35,6 +37,7 @@ class Settings(BaseSettings):
     runpod_rest_url: str = "https://rest.runpod.io/v1"
     runpod_graphql_url: str = "https://api.runpod.io/graphql"
     runpod_serverless_url: str = "https://api.runpod.ai/v2"
+    runpod_proxy_url: str = "https://{pod_id}-{port}.proxy.runpod.net"
 
     @field_validator("storage_dir", mode="before")
     @classmethod

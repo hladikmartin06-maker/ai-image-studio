@@ -14,6 +14,7 @@ import {
   SettingsControls,
 } from "@/components/generate/controls";
 import { openAssistant } from "@/components/assistant/drawer";
+import { ComfyPanel } from "@/components/comfy/generate-panel";
 import {
   attachedPersonaImages,
   newPersonaDraft,
@@ -160,6 +161,28 @@ export default function GeneratePage() {
   );
 
   const [draft, setDraft] = useState<Draft | null>(null);
+  // Hosted models (WaveSpeed / Atlas) or Krea 2 on a ComfyUI connection.
+  const [engine, setEngineState] = useState<"hosted" | "comfy">(() => {
+    if (typeof window === "undefined") return "hosted";
+    if (new URLSearchParams(window.location.search).get("lora")) return "comfy";
+    try {
+      return localStorage.getItem("studio:engine") === "comfy" ? "comfy" : "hosted";
+    } catch {
+      return "hosted";
+    }
+  });
+  const [loraFromUrl] = useState<string | null>(() =>
+    typeof window === "undefined" ? null : new URLSearchParams(window.location.search).get("lora"),
+  );
+  const [comfyLoad, setComfyLoad] = useState<Generation | null>(null);
+  const setEngine = useCallback((value: "hosted" | "comfy") => {
+    setEngineState(value);
+    try {
+      localStorage.setItem("studio:engine", value);
+    } catch {
+      /* storage blocked */
+    }
+  }, []);
   const [viewer, setViewer] = useState<{ images: StudioImage[]; index: number } | null>(null);
   const [touched, setTouched] = useState(false);
   const submitting = useRef(false);
@@ -183,9 +206,18 @@ export default function GeneratePage() {
     if (from) {
       api<Generation>(`/api/generations/${from}`)
         .then((gen) => {
+          if (gen.provider === "comfyui") {
+            setComfyLoad(gen);
+            setEngine("comfy");
+            setDraft(defaults);
+            router.replace("/generate");
+            return;
+          }
           setDraft({
             model: gen.model_key,
-            provider: connected.includes(gen.provider) ? gen.provider : defaults.provider,
+            provider: connected.includes(gen.provider as ProviderKey)
+              ? (gen.provider as ProviderKey)
+              : defaults.provider,
             prompt: gen.prompt,
             count: gen.image_count,
             settings: {
@@ -226,7 +258,7 @@ export default function GeneratePage() {
         : (saved?.persona ?? null),
     });
     if (chosenPersona) router.replace("/generate");
-  }, [draft, prefs, integrations.data, catalog.data, connected, draftKey, router]);
+  }, [draft, prefs, integrations.data, catalog.data, connected, draftKey, router, setEngine]);
 
   // Remember the draft (prompt persistence).
   useEffect(() => {
@@ -383,9 +415,16 @@ export default function GeneratePage() {
   };
 
   const loadFrom = (gen: Generation) => {
+    if (gen.provider === "comfyui") {
+      setComfyLoad(gen);
+      setEngine("comfy");
+      toast.success(t("gen.loaded"));
+      return;
+    }
+    setEngine("hosted");
     update({
       model: gen.model_key,
-      provider: connected.includes(gen.provider) ? gen.provider : provider,
+      provider: connected.includes(gen.provider as ProviderKey) ? (gen.provider as ProviderKey) : provider,
       prompt: gen.prompt,
       count: gen.image_count,
       settings: { ...gen.settings, seed: gen.settings.seed !== undefined ? String(gen.settings.seed) : "" },
@@ -408,6 +447,110 @@ export default function GeneratePage() {
         <div className="studio-results">
           <Skeleton style={{ height: 320 }} />
         </div>
+      </div>
+    );
+  }
+
+  const resultsSection = (
+      <section className="studio-results" aria-label={t("gen.results")}>
+      <div className="row" style={{ marginBottom: 18 }}>
+        <div className="grow">
+          <h2 className="h2">{t("gen.results")}</h2>
+          <div className="small subtle">
+            {activeCount ? t("gen.activeNow", { n: activeCount }) : t("gen.resultsHint")}
+          </div>
+        </div>
+        <Link href="/library/history" className="btn btn-ghost btn-sm">
+          {t("gen.fullHistory")} <ArrowRight />
+        </Link>
+      </div>
+      {results.isLoading ? (
+        <div className="col gap-16">
+          <Skeleton style={{ height: 260 }} />
+          <Skeleton style={{ height: 260 }} />
+        </div>
+      ) : results.isError ? (
+        <Notice tone="danger">{(results.error as Error).message}</Notice>
+      ) : items.length === 0 ? (
+        <EmptyState
+          icon={<Wand2 />}
+          title={t("gen.emptyTitle")}
+          description={t("gen.emptyBody")}
+          action={
+            <Link href="/library" className="btn btn-sm">
+              <Images /> {t("nav.library")}
+            </Link>
+          }
+        />
+      ) : (
+        <>
+          {items.map((gen) => (
+            <JobCard
+              key={gen.id}
+              gen={gen}
+              showPrompts={prefs.show_prompts_on_cards}
+              blurNsfw={prefs.blur_nsfw}
+              onOpen={(g, index) => setViewer({ images: g.images, index })}
+              onLoad={loadFrom}
+            />
+          ))}
+          {results.hasNextPage ? (
+            <div className="row" style={{ justifyContent: "center" }}>
+              <Button onClick={() => results.fetchNextPage()} loading={results.isFetchingNextPage}>
+                {t("common.loadMore")}
+              </Button>
+            </div>
+          ) : null}
+        </>
+      )}
+      {results.isFetching && !results.isLoading ? (
+        <div className="row tiny subtle" style={{ justifyContent: "center", marginTop: 12 }}>
+          <Spinner size={12} />
+        </div>
+      ) : null}
+    </section>
+  );
+
+  const engineSwitch = (
+    <Segmented
+      label={t("k2.engine")}
+      value={engine}
+      block
+      onChange={setEngine}
+      options={[
+        { value: "hosted", label: t("k2.engineHosted") },
+        { value: "comfy", label: t("k2.engineComfy") },
+      ]}
+    />
+  );
+  const viewerNode = viewer ? (
+    <ViewerFromGeneration
+      viewer={viewer}
+      items={items}
+      onClose={() => setViewer(null)}
+      onIndex={(index: number) => setViewer((v) => (v ? { ...v, index } : v))}
+    />
+  ) : null;
+
+  if (engine === "comfy") {
+    return (
+      <div className="studio">
+        <ComfyPanel
+          key={comfyLoad?.id ?? "draft"}
+          storageKey={userId ? `studio:comfy-draft:${userId}` : null}
+          initial={comfyLoad}
+          loraFromUrl={loraFromUrl}
+          header={
+            <div className="col gap-12">
+              <div className="row">
+                <h1 className="h2 grow">{t("gen.title")}</h1>
+              </div>
+              {engineSwitch}
+            </div>
+          }
+        />
+        {resultsSection}
+        {viewerNode}
       </div>
     );
   }
@@ -443,6 +586,8 @@ export default function GeneratePage() {
               </span>
             ) : null}
           </div>
+
+          {engineSwitch}
 
           {!connected.length ? (
             <Notice tone="accent" icon={<Plug />}>
@@ -572,72 +717,9 @@ export default function GeneratePage() {
         </div>
       </section>
 
-      <section className="studio-results" aria-label={t("gen.results")}>
-        <div className="row" style={{ marginBottom: 18 }}>
-          <div className="grow">
-            <h2 className="h2">{t("gen.results")}</h2>
-            <div className="small subtle">
-              {activeCount ? t("gen.activeNow", { n: activeCount }) : t("gen.resultsHint")}
-            </div>
-          </div>
-          <Link href="/library/history" className="btn btn-ghost btn-sm">
-            {t("gen.fullHistory")} <ArrowRight />
-          </Link>
-        </div>
-        {results.isLoading ? (
-          <div className="col gap-16">
-            <Skeleton style={{ height: 260 }} />
-            <Skeleton style={{ height: 260 }} />
-          </div>
-        ) : results.isError ? (
-          <Notice tone="danger">{(results.error as Error).message}</Notice>
-        ) : items.length === 0 ? (
-          <EmptyState
-            icon={<Wand2 />}
-            title={t("gen.emptyTitle")}
-            description={t("gen.emptyBody")}
-            action={
-              <Link href="/library" className="btn btn-sm">
-                <Images /> {t("nav.library")}
-              </Link>
-            }
-          />
-        ) : (
-          <>
-            {items.map((gen) => (
-              <JobCard
-                key={gen.id}
-                gen={gen}
-                showPrompts={prefs.show_prompts_on_cards}
-                blurNsfw={prefs.blur_nsfw}
-                onOpen={(g, index) => setViewer({ images: g.images, index })}
-                onLoad={loadFrom}
-              />
-            ))}
-            {results.hasNextPage ? (
-              <div className="row" style={{ justifyContent: "center" }}>
-                <Button onClick={() => results.fetchNextPage()} loading={results.isFetchingNextPage}>
-                  {t("common.loadMore")}
-                </Button>
-              </div>
-            ) : null}
-          </>
-        )}
-        {results.isFetching && !results.isLoading ? (
-          <div className="row tiny subtle" style={{ justifyContent: "center", marginTop: 12 }}>
-            <Spinner size={12} />
-          </div>
-        ) : null}
-      </section>
+      {resultsSection}
 
-      {viewer ? (
-        <ViewerFromGeneration
-          viewer={viewer}
-          items={items}
-          onClose={() => setViewer(null)}
-          onIndex={(index) => setViewer((v) => (v ? { ...v, index } : v))}
-        />
-      ) : null}
+      {viewerNode}
     </div>
   );
 }

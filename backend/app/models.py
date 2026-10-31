@@ -8,6 +8,7 @@ from sqlalchemy import (
     BigInteger,
     Boolean,
     DateTime,
+    Float,
     ForeignKey,
     Index,
     Integer,
@@ -156,6 +157,12 @@ class Generation(Base):
     persona_meta: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
     # The prompt exactly as sent when the AI model's description was added to it.
     final_prompt: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # ComfyUI runs only: connection, workflow, model files, LoRAs, sampler values.
+    comfy_meta: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
+    # The LoRA version used (ComfyUI runs), for "images made with this LoRA".
+    lora_version_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("lora_versions.id", ondelete="SET NULL"), index=True
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
@@ -191,6 +198,8 @@ class ProviderTask(Base):
     nsfw_flags: Mapped[list[bool]] = mapped_column(JSONB, default=list)
     error_code: Mapped[str | None] = mapped_column(String(40), nullable=True)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Live state reported by the backend (ComfyUI: queue position, sampler step).
+    progress: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow, onupdate=utcnow
@@ -448,3 +457,219 @@ class GPUWorkload(Base):
     meta: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     stopped_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+# --- Secrets for other services -----------------------------------------------------------
+
+
+class UserSecret(Base):
+    """A credential for a service that is not a provider integration (e.g. a Hugging Face
+    token for gated model downloads on the user's GPU). Stored encrypted (AES-GCM)."""
+
+    __tablename__ = "user_secrets"
+    __table_args__ = (UniqueConstraint("user_id", "name", name="uq_user_secret_name"),)
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_id)
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), index=True
+    )
+    name: Mapped[str] = mapped_column(String(40))
+    encrypted_value: Mapped[bytes] = mapped_column(LargeBinary)
+    last4: Mapped[str] = mapped_column(String(8))
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow
+    )
+
+
+# --- ComfyUI --------------------------------------------------------------------------------
+
+
+class ComfyConnection(Base):
+    """A ComfyUI server: local, remote, or deployed by the studio on RunPod / Modal (then it
+    is reached through the studio agent and `gpu_provider` / `workload_id` are set)."""
+
+    __tablename__ = "comfy_connections"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_id)
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), index=True
+    )
+    name: Mapped[str] = mapped_column(String(80))
+    # local | remote | runpod | modal
+    kind: Mapped[str] = mapped_column(String(16))
+    base_url: Mapped[str] = mapped_column(String(400), default="")
+    # none | bearer | basic | agent
+    auth_type: Mapped[str] = mapped_column(String(16), default="none")
+    encrypted_secret: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
+    secret_last4: Mapped[str | None] = mapped_column(String(8), nullable=True)
+    # Local ComfyUI only: its folder, so LoRA files can be copied into models/loras.
+    models_dir: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    gpu_provider: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    workload_id: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    # new | ready | error | deploying | stopped
+    status: Mapped[str] = mapped_column(String(16), default="new")
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    last_checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # Last inspection: version, devices, detected model files, nodes (refreshed on test).
+    info: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
+    # Deployment settings and progress (studio-deployed connections).
+    deploy: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow
+    )
+
+
+class ComfyWorkflow(Base):
+    """An imported ComfyUI workflow. `api_json` (API format) is what runs; the UI-format
+    file is kept for export only. `bindings` say which node inputs the studio fills."""
+
+    __tablename__ = "comfy_workflows"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_id)
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), index=True
+    )
+    name: Mapped[str] = mapped_column(String(120))
+    # The model family it is configured for ("krea2") or None for any.
+    family: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    api_json: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+    ui_json: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+    bindings: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
+    node_types: Mapped[list[str]] = mapped_column(JSONB, default=list)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow
+    )
+
+
+# --- LoRA studio ----------------------------------------------------------------------------
+
+
+class Lora(Base):
+    """A character LoRA project: dataset, settings and its trained versions."""
+
+    __tablename__ = "loras"
+    __table_args__ = (
+        UniqueConstraint("user_id", "trigger_word", name="uq_lora_trigger"),
+        Index("ix_loras_user_updated", "user_id", "updated_at"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_id)
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), index=True
+    )
+    name: Mapped[str] = mapped_column(String(80))
+    trigger_word: Mapped[str] = mapped_column(String(40))
+    # Class word used with the trigger ("woman", "man", ...) and for output preservation.
+    class_word: Mapped[str] = mapped_column(String(40), default="")
+    persona_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("personas.id", ondelete="SET NULL"), index=True
+    )
+    # Architecture family (e.g. "krea2") and the base variant it was trained on.
+    architecture: Mapped[str] = mapped_column(String(32))
+    base_variant: Mapped[str] = mapped_column(String(32))
+    # trained | imported
+    source: Mapped[str] = mapped_column(String(16), default="trained")
+    caption_template: Mapped[str] = mapped_column(String(300), default="{trigger}, {caption}")
+    tags: Mapped[list[str]] = mapped_column(JSONB, default=list)
+    notes: Mapped[str] = mapped_column(Text, default="")
+    adult_confirmed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    preferred_version_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow
+    )
+
+
+class LoraDatasetItem(Base):
+    """One training image (the original file is a ReferenceImage and is never modified;
+    crop is applied to a copy when the dataset is packaged)."""
+
+    __tablename__ = "lora_dataset_items"
+    __table_args__ = (
+        UniqueConstraint("lora_id", "reference_image_id", name="uq_lora_dataset_image"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_id)
+    lora_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("loras.id", ondelete="CASCADE"), index=True
+    )
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), index=True
+    )
+    reference_image_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("reference_images.id", ondelete="CASCADE"), index=True
+    )
+    caption: Mapped[str] = mapped_column(Text, default="")
+    # manual | ai | empty
+    caption_source: Mapped[str] = mapped_column(String(16), default="empty")
+    # train | validation (validation images are kept out of training)
+    split: Mapped[str] = mapped_column(String(16), default="train")
+    excluded: Mapped[bool] = mapped_column(Boolean, default=False)
+    # Relative crop {x, y, w, h} in 0..1, or None for the whole image.
+    crop: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+    # 64-bit difference hash (hex) for near-duplicate detection.
+    dhash: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    position: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    reference: Mapped[ReferenceImage] = relationship()
+
+
+class LoraVersion(Base):
+    """One training run (or an imported file) of a LoRA: config, GPU job, artifacts."""
+
+    __tablename__ = "lora_versions"
+    __table_args__ = (
+        UniqueConstraint("lora_id", "number", name="uq_lora_version_number"),
+        UniqueConstraint("user_id", "client_request_id", name="uq_lora_version_request"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_id)
+    lora_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("loras.id", ondelete="CASCADE"), index=True
+    )
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), index=True
+    )
+    number: Mapped[int] = mapped_column(Integer)
+    client_request_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    preset: Mapped[str] = mapped_column(String(32), default="")
+    # The exact training settings (studio form) and the ai-toolkit config sent.
+    config: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
+    trainer_config: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
+    # queued | preparing | uploading | running | downloading | completed | failed |
+    # cancelled | interrupted   (imported files are "completed")
+    status: Mapped[str] = mapped_column(String(16), default="queued", index=True)
+    stage_detail: Mapped[str] = mapped_column(String(300), default="")
+    gpu_provider: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    gpu_type: Mapped[str] = mapped_column(String(80), default="")
+    gpu_count: Mapped[int] = mapped_column(Integer, default=1)
+    workload_id: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    agent_url: Mapped[str | None] = mapped_column(String(400), nullable=True)
+    encrypted_agent_token: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
+    cost_per_hour: Mapped[float | None] = mapped_column(Float, nullable=True)
+    auto_cleanup: Mapped[bool] = mapped_column(Boolean, default=True)
+    # {step, total, loss: [[step, loss], ...], samples: [{step, file}], gpu: {...}}
+    progress: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
+    # Final LoRA file and kept checkpoints (relative storage paths).
+    file_path: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    file_size: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    file_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    checkpoints: Mapped[list[dict[str, Any]]] = mapped_column(JSONB, default=list)
+    # ComfyUI connections this version was copied to: {connection_id: {filename, at}}.
+    deployments: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
+    # Dataset snapshot used for this run (item ids, captions, crop) for reproducibility.
+    dataset_manifest: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
+    notes: Mapped[str] = mapped_column(Text, default="")
+    error_code: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    gpu_started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    gpu_stopped_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow
+    )

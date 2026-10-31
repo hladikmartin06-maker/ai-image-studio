@@ -20,6 +20,7 @@ import anthropic
 from app.ai.providers.base import (
     AIError,
     ChatRequest,
+    ChatTurn,
     StreamEvent,
     Usage,
     classify_status,
@@ -72,7 +73,7 @@ class AnthropicProvider:
             "model": request.model,
             "max_tokens": request.max_tokens,
             "system": request.system,
-            "messages": [{"role": t.role, "content": t.content} for t in request.messages],
+            "messages": [_message(t) for t in request.messages],
             "cache_control": {"type": "ephemeral"},
         }
         if _EFFORT_MODELS.match(request.model):
@@ -108,3 +109,14 @@ class AnthropicProvider:
                 cached_tokens=getattr(usage, "cache_read_input_tokens", 0) or 0,
             ),
         )
+
+
+def _message(turn: ChatTurn) -> dict:
+    if not turn.images:
+        return {"role": turn.role, "content": turn.content}
+    blocks: list[dict] = [
+        {"type": "image", "source": {"type": "base64", "media_type": mime, "data": data}}
+        for mime, data in turn.images
+    ]
+    blocks.append({"type": "text", "text": turn.content})
+    return {"role": turn.role, "content": blocks}

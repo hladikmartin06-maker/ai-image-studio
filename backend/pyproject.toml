@@ -46,3 +46,5 @@ ignore = ["B008"]
 
 [tool.ruff.lint.per-file-ignores]
 "migrations/versions/*" = ["E501"]
+# Runs inside GPU containers on any Python 3.8+: no newer syntax.
+"app/gpu/agent/studio_agent.py" = ["UP"]

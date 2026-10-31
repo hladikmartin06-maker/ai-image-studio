@@ -106,9 +106,17 @@ class WorkloadSpec:
     cloud_type: Literal["SECURE", "COMMUNITY"] = "SECURE"
     container_disk_gb: int = 20
     volume_gb: int = 0
-    # Modal
+    # The container's start command (RunPod: entrypoint + args; Modal: sandbox command).
     command: list[str] = field(default_factory=list)
+    # Modal: sandbox time limit; RunPod pods have none.
     timeout_minutes: int = 60
+    # Sensitive environment (tokens): RunPod env, a Modal Secret on Modal.
+    secret_env: dict[str, str] = field(default_factory=dict)
+    # Modal: a persistent Volume mounted at /workspace (RunPod: volume_gb at /workspace).
+    volume_name: str | None = None
+    # Modal: add Python / apt packages to a registry image (modal.Image methods).
+    image_python: str | None = None
+    image_apt: list[str] = field(default_factory=list)
 
 
 class GPUProvider(Protocol):
@@ -139,3 +147,11 @@ class GPUProvider(Protocol):
     async def delete_endpoint(self, creds: dict[str, str], endpoint_id: str) -> None: ...
 
     async def account(self, creds: dict[str, str]) -> dict[str, Any]: ...
+
+    async def workload(self, creds: dict[str, str], workload_id: str) -> Workload | None:
+        """One workload, or None when it no longer exists."""
+        ...
+
+    async def port_url(self, creds: dict[str, str], workload_id: str, port: int) -> str | None:
+        """The HTTPS URL of an exposed port, or None while it is not reachable yet."""
+        ...

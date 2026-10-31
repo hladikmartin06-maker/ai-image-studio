@@ -25,12 +25,24 @@ import type {
   GpuUsage,
   GpuWorkload,
   IntegrationList,
+  ComfyCatalog,
+  ComfyConnection,
+  ComfyWorkflow,
+  JobItem,
+  LoraCatalog,
+  LoraDetail,
+  LoraItem,
+  LoraSummary,
+  LoraTestGroup,
+  LoraVersion,
   Page,
   Persona,
   PersonaList,
   Preferences,
   ReferenceImage,
+  SecretInfo,
   SessionInfo,
+  TrainingConfig,
   Stats,
   StorageInfo,
   StudioImage,
@@ -180,6 +192,7 @@ export interface ImageFilters {
   sort?: "newest" | "oldest" | "favorited";
   generation_id?: string;
   persona?: string;
+  lora_version?: string;
   limit?: number;
 }
 
@@ -673,5 +686,385 @@ export function useGpuUsage(provider: string, enabled: boolean) {
     queryFn: () => api<GpuUsage>(`/api/gpu/${provider}/usage`),
     enabled,
     staleTime: 15_000,
+  });
+}
+
+// --- ComfyUI --------------------------------------------------------------------------------
+
+export const comfyKeys = {
+  catalog: ["comfy", "catalog"] as const,
+  connections: ["comfy", "connections"] as const,
+  workflows: ["comfy", "workflows"] as const,
+};
+
+export function useComfyCatalog() {
+  return useQuery({
+    queryKey: comfyKeys.catalog,
+    queryFn: () => api<ComfyCatalog>("/api/comfy/catalog"),
+    staleTime: Infinity,
+  });
+}
+
+export function useComfyConnections(enabled = true) {
+  return useQuery({
+    queryKey: comfyKeys.connections,
+    queryFn: () => api<{ items: ComfyConnection[] }>("/api/comfy/connections"),
+    enabled,
+    // Deployments advance in the background: follow them while they start.
+    refetchInterval: (q) =>
+      q.state.data?.items.some((c) => c.status === "deploying") ? 4000 : false,
+  });
+}
+
+export function useComfyWorkflows() {
+  return useQuery({
+    queryKey: comfyKeys.workflows,
+    queryFn: () => api<{ items: ComfyWorkflow[] }>("/api/comfy/workflows"),
+  });
+}
+
+function useComfyMutation<TVars, TResult = unknown>(
+  fn: (vars: TVars) => Promise<TResult>,
+  key: readonly string[] = comfyKeys.connections,
+) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: fn,
+    onSuccess: () => qc.invalidateQueries({ queryKey: key }),
+  });
+}
+
+export function useAddComfy() {
+  return useComfyMutation((body: Record<string, unknown>) =>
+    api<ComfyConnection>("/api/comfy/connections", { body }),
+  );
+}
+
+export function useUpdateComfy() {
+  return useComfyMutation(({ id, ...body }: { id: string } & Record<string, unknown>) =>
+    api<ComfyConnection>(`/api/comfy/connections/${id}`, { method: "PATCH", body }),
+  );
+}
+
+export function useTestComfy() {
+  return useComfyMutation((id: string) =>
+    api<ComfyConnection>(`/api/comfy/connections/${id}/test`, { body: {} }),
+  );
+}
+
+export function useRemoveComfy() {
+  return useComfyMutation(({ id, terminate }: { id: string; terminate: boolean }) =>
+    api(`/api/comfy/connections/${id}?terminate=${terminate}`, { method: "DELETE" }),
+  );
+}
+
+export function useDeployComfy() {
+  return useComfyMutation((body: Record<string, unknown>) =>
+    api<ComfyConnection>("/api/comfy/deployments", { body }),
+  );
+}
+
+export function useComfyPower() {
+  return useComfyMutation(({ id, action }: { id: string; action: "start" | "stop" }) =>
+    api<ComfyConnection>(`/api/comfy/connections/${id}/${action}`, {
+      body: action === "start" ? { confirm_billing: true } : {},
+    }),
+  );
+}
+
+export function useComfyModelDownload() {
+  return useMutation({
+    mutationFn: ({ id, ...body }: { id: string; url: string; folder: string; filename: string }) =>
+      api<{ job: { id: string; status: string } }>(`/api/comfy/connections/${id}/models/download`, {
+        body,
+      }),
+  });
+}
+
+export function useComfyModelUpload() {
+  return useComfyMutation(({ id, upload_id, folder }: { id: string; upload_id: string; folder: string }) =>
+    api<ComfyConnection>(`/api/comfy/connections/${id}/models/upload`, { body: { upload_id, folder } }),
+  );
+}
+
+export function useImportWorkflow() {
+  return useComfyMutation(
+    (body: { name: string; family: string | null; data: Record<string, unknown> }) =>
+      api<ComfyWorkflow & { format: string; removed_secrets: string[] }>("/api/comfy/workflows", {
+        body,
+      }),
+    comfyKeys.workflows,
+  );
+}
+
+export function useDeleteWorkflow() {
+  return useComfyMutation(
+    (id: string) => api(`/api/comfy/workflows/${id}`, { method: "DELETE" }),
+    comfyKeys.workflows,
+  );
+}
+
+export interface ComfyGenerateBody {
+  connection_id: string;
+  variant: "turbo" | "raw";
+  model_file?: string | null;
+  workflow_id?: string | null;
+  prompt: string;
+  negative_prompt?: string;
+  aspect_ratio: string;
+  resolution: string;
+  seed?: number | null;
+  steps?: number | null;
+  cfg?: number | null;
+  count: number;
+  lora?: { version_id: string; strength: number; insert_trigger: boolean } | null;
+  persona?: { id: string; use_description: boolean } | null;
+  client_request_id: string;
+}
+
+export function useComfyGenerate() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: ComfyGenerateBody) =>
+      api<Generation>("/api/comfy/generate", { body: body as unknown as Record<string, unknown> }),
+    onSuccess: (gen) => {
+      upsertGeneration(qc, gen);
+      qc.invalidateQueries({ queryKey: keys.generations });
+      qc.invalidateQueries({ queryKey: keys.prompts });
+      qc.invalidateQueries({ queryKey: ["jobs"] });
+    },
+  });
+}
+
+// --- LoRA studio ----------------------------------------------------------------------------
+
+export const loraKeys = {
+  all: ["loras"] as const,
+  catalog: ["loras", "catalog"] as const,
+  list: (q: string, usable: boolean) => ["loras", "list", q, usable] as const,
+  one: (id: string) => ["loras", "one", id] as const,
+  tests: (id: string) => ["loras", "tests", id] as const,
+};
+
+export function useLoraCatalog() {
+  return useQuery({ queryKey: loraKeys.catalog, queryFn: () => api<LoraCatalog>("/api/loras/catalog") });
+}
+
+export function useLoras(q = "", usable = false, enabled = true) {
+  return useQuery({
+    queryKey: loraKeys.list(q, usable),
+    queryFn: () =>
+      api<{ items: LoraSummary[]; total: number }>(`/api/loras${query({ q: q || undefined, usable })}`),
+    enabled,
+    placeholderData: (prev) => prev,
+    refetchInterval: (qy) => (qy.state.data?.items.some((l) => l.active) ? 5000 : false),
+  });
+}
+
+export function useLora(id: string | null) {
+  return useQuery({
+    queryKey: loraKeys.one(id ?? ""),
+    queryFn: () => api<LoraDetail>(`/api/loras/${id}`),
+    enabled: Boolean(id),
+    refetchInterval: (q) =>
+      q.state.data?.versions.some((v) =>
+        ["queued", "preparing", "uploading", "running", "downloading"].includes(v.status),
+      )
+        ? 4000
+        : false,
+  });
+}
+
+function useLoraMutation<TVars, TResult>(
+  id: string,
+  fn: (vars: TVars) => Promise<TResult>,
+  pick?: (result: TResult) => LoraDetail | null,
+) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: fn,
+    onSuccess: (result) => {
+      const detail = pick ? pick(result) : null;
+      if (detail) qc.setQueryData(loraKeys.one(id), detail);
+      qc.invalidateQueries({ queryKey: loraKeys.all });
+    },
+  });
+}
+
+export function useCreateLora() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: Record<string, unknown>) => api<LoraDetail>("/api/loras", { body }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: loraKeys.all }),
+  });
+}
+
+export function useImportLora() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: Record<string, unknown>) => api<LoraDetail>("/api/loras/import", { body }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: loraKeys.all }),
+  });
+}
+
+export function useUpdateLora(id: string) {
+  return useLoraMutation(
+    id,
+    (body: Record<string, unknown>) => api<LoraDetail>(`/api/loras/${id}`, { method: "PATCH", body }),
+    (r) => r,
+  );
+}
+
+export function useDeleteLora() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => api(`/api/loras/${id}`, { method: "DELETE" }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: loraKeys.all }),
+  });
+}
+
+export function useUploadDatasetImage(id: string) {
+  return useLoraMutation(
+    id,
+    (file: File) => {
+      const form = new FormData();
+      form.append("file", file);
+      return api<{ added: number; lora: LoraDetail }>(`/api/loras/${id}/dataset/upload`, { body: form });
+    },
+    (r) => r.lora,
+  );
+}
+
+export function useAddDatasetImages(id: string) {
+  return useLoraMutation(
+    id,
+    (body: { library_image_ids?: string[]; reference_image_ids?: string[]; persona_id?: string }) =>
+      api<{ added: number; lora: LoraDetail }>(`/api/loras/${id}/dataset/add`, { body }),
+    (r) => r.lora,
+  );
+}
+
+export function useUpdateDatasetItem(id: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ itemId, ...body }: { itemId: string } & Record<string, unknown>) =>
+      api<LoraItem>(`/api/loras/${id}/dataset/${itemId}`, { method: "PATCH", body }),
+    onSuccess: (item) => {
+      qc.setQueryData<LoraDetail>(loraKeys.one(id), (d) =>
+        d ? { ...d, dataset: d.dataset.map((i) => (i.id === item.id ? item : i)) } : d,
+      );
+      qc.invalidateQueries({ queryKey: loraKeys.one(id) });
+    },
+  });
+}
+
+export function useBulkDataset(id: string) {
+  return useLoraMutation(
+    id,
+    (body: { item_ids: string[]; action: string }) =>
+      api<LoraDetail>(`/api/loras/${id}/dataset/bulk`, { body }),
+    (r) => r,
+  );
+}
+
+export function useCaptionItem(id: string) {
+  return useMutation({
+    mutationFn: ({ itemId, tier, overwrite }: { itemId: string; tier: string; overwrite: boolean }) =>
+      api<LoraItem>(`/api/loras/${id}/dataset/${itemId}/caption`, { body: { tier, overwrite } }),
+  });
+}
+
+export interface TrainBody {
+  preset: string;
+  config: TrainingConfig;
+  provider: string;
+  gpu_type: string;
+  gpu_count: number;
+  cloud_type: string;
+  image?: string | null;
+  auto_cleanup: boolean;
+  notes?: string;
+  client_request_id: string;
+  confirm_billing: boolean;
+}
+
+export function useStartTraining(id: string) {
+  return useLoraMutation(id, (body: TrainBody) =>
+    api<LoraVersion>(`/api/loras/${id}/versions`, { body: body as unknown as Record<string, unknown> }),
+  );
+}
+
+export function useVersionAction(id: string) {
+  return useLoraMutation(
+    id,
+    ({ versionId, action, body }: { versionId: string; action: string; body?: Record<string, unknown> }) => {
+      const base = `/api/loras/${id}/versions/${versionId}`;
+      if (action === "delete") return api(base, { method: "DELETE" });
+      if (action === "notes") return api(base, { method: "PATCH", body });
+      return api(`${base}/${action}`, { body: body ?? {} });
+    },
+  );
+}
+
+export function useLoraLogs(id: string, versionId: string | null, live: boolean) {
+  return useQuery({
+    queryKey: ["loras", "logs", id, versionId],
+    queryFn: () =>
+      api<{ text: string; next_offset: number }>(`/api/loras/${id}/versions/${versionId}/logs`),
+    enabled: Boolean(versionId),
+    refetchInterval: live ? 5000 : false,
+  });
+}
+
+export function useLoraTests(id: string) {
+  return useQuery({
+    queryKey: loraKeys.tests(id),
+    queryFn: () => api<{ items: LoraTestGroup[] }>(`/api/loras/${id}/tests`),
+    refetchInterval: (q) =>
+      q.state.data?.items.some((g) => g.runs.some((r) => r.status === "queued" || r.status === "processing"))
+        ? 3000
+        : false,
+  });
+}
+
+export function useRunLoraTest(id: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: Record<string, unknown>) =>
+      api<{ group: string; count: number }>(`/api/loras/${id}/tests`, { body }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: loraKeys.tests(id) });
+      qc.invalidateQueries({ queryKey: keys.generations });
+    },
+  });
+}
+
+// --- jobs & secrets -------------------------------------------------------------------------
+
+export function useJobs(filters: { type?: string; status?: string; provider?: string }) {
+  return useQuery({
+    queryKey: ["jobs", filters],
+    queryFn: () =>
+      api<{ items: JobItem[]; counts: Record<string, number> }>(`/api/jobs${query(filters)}`),
+    refetchInterval: 5000,
+    placeholderData: (prev) => prev,
+  });
+}
+
+export function useSecrets() {
+  return useQuery({ queryKey: ["secrets"], queryFn: () => api<{ items: SecretInfo[] }>("/api/secrets") });
+}
+
+export function useSaveSecret() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ name, value }: { name: string; value: string | null }) =>
+      value === null
+        ? api(`/api/secrets/${name}`, { method: "DELETE" })
+        : api(`/api/secrets/${name}`, { method: "PUT", body: { value } }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["secrets"] });
+      qc.invalidateQueries({ queryKey: loraKeys.catalog });
+    },
   });
 }

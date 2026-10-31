@@ -7,6 +7,13 @@ Then set in backend/.env:
   ATLAS_BASE_URL=http://127.0.0.1:8900/atlas
 Any API key that starts with "test-" is accepted. Prompts containing "fail" fail.
 The images it returns are generated test patterns, clearly not AI output.
+
+RunPod: also set RUNPOD_REST_URL=http://127.0.0.1:8900/runpod/rest/v1,
+RUNPOD_GRAPHQL_URL=http://127.0.0.1:8900/runpod/graphql and
+RUNPOD_PROXY_URL=http://127.0.0.1:8900/runpod/proxy/{pod_id}/{port}. A pod created with the
+studio agent in its environment runs that (real) agent as a local process, with a fake
+ai-toolkit and a fake ComfyUI (tests/gpu_fakes.py), and its port is reached through
+/runpod/proxy/… like RunPod's HTTP proxy.
 """
 
 from __future__ import annotations
@@ -16,8 +23,15 @@ import hashlib
 import io
 import itertools
 import json
+import os
+import signal
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
 from typing import Any
 
+import httpx
 from fastapi import FastAPI, File, Request, UploadFile
 from fastapi.responses import JSONResponse, Response
 from PIL import Image, ImageDraw
@@ -235,7 +249,11 @@ async def chat_completions(request: Request):
         return _unauthorized()
     body = await request.json()
     question = body["messages"][-1]["content"]
-    answer = _chat_answer(question)
+    if isinstance(question, list):
+        # A vision request (dataset caption): describe what varies, as instructed.
+        answer = "standing by a window in a cream knit sweater, soft daylight, half-body shot"
+    else:
+        answer = _chat_answer(question)
 
     async def stream():
         for i in range(0, len(answer), 12):
@@ -329,7 +347,103 @@ async def runpod_create(request: Request):
         "ports": body.get("ports", []),
         "gpu": {"id": body["gpuTypeIds"][0], "displayName": body["gpuTypeIds"][0]},
     }
+    _bodies[pod_id] = body
+    _spawn(pod_id)
     return _pods[pod_id]
+
+
+@app.get("/runpod/rest/v1/pods/{pod_id}")
+async def runpod_get(pod_id: str, request: Request):
+    if not _authorized(request):
+        return _unauthorized()
+    if pod_id not in _pods:
+        return JSONResponse({"error": "pod not found"}, status_code=404)
+    return _pods[pod_id]
+
+
+# --- pods that run the studio agent locally ----------------------------------------------
+
+_bodies: dict[str, dict[str, Any]] = {}
+_procs: dict[str, tuple[subprocess.Popen, int]] = {}
+_root = Path(tempfile.gettempdir()) / "ais-fake-gpu"
+
+
+def _free_port() -> int:
+    import socket
+
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        return sock.getsockname()[1]
+
+
+def _spawn(pod_id: str) -> None:
+    from tests.gpu_fakes import make_comfy_dir, make_toolkit
+
+    body = _bodies[pod_id]
+    env_in = body.get("env") or {}
+    if "STUDIO_AGENT_CODE" not in env_in:
+        return
+    base = _root / pod_id
+    port = _free_port()
+    env = {
+        "PATH": os.environ.get("PATH", ""),
+        "HOME": str(base),
+        **env_in,
+        "STUDIO_AGENT_PORT": str(port),
+        "STUDIO_WORKSPACE": str(base / "workspace"),
+        "STUDIO_AITK_DIR": str(make_toolkit(_root / "image")),
+        "STUDIO_PYTHON": sys.executable,
+        "STUDIO_COMFY_DIR": str(make_comfy_dir(base / "gpu")),
+        "STUDIO_COMFY_PORT": str(_free_port()),
+        "FAKE_TRAIN_SLEEP": "0.4",
+    }
+    (base / "workspace").mkdir(parents=True, exist_ok=True)
+    log = (base / "container.log").open("ab")
+    proc = subprocess.Popen(
+        [*body["dockerEntrypoint"], *body["dockerStartCmd"]],
+        env=env,
+        stdout=log,
+        stderr=subprocess.STDOUT,
+        start_new_session=True,
+    )
+    _procs[pod_id] = (proc, port)
+
+
+def _kill(pod_id: str) -> None:
+    entry = _procs.pop(pod_id, None)
+    if entry and entry[0].poll() is None:
+        os.killpg(entry[0].pid, signal.SIGTERM)
+
+
+@app.api_route(
+    "/runpod/proxy/{pod_id}/{port}/{path:path}", methods=["GET", "POST", "PUT", "DELETE"]
+)
+async def runpod_proxy(pod_id: str, port: int, path: str, request: Request):
+    entry = _procs.get(pod_id)
+    if entry is None or _pods.get(pod_id, {}).get("desiredStatus") != "RUNNING":
+        return Response("Bad Gateway", status_code=502)
+    headers = {
+        k: v
+        for k, v in request.headers.items()
+        if k.lower() in ("authorization", "content-type", "range")
+    }
+    try:
+        async with httpx.AsyncClient(timeout=300) as client:
+            upstream = await client.request(
+                request.method,
+                f"http://127.0.0.1:{entry[1]}/{path}",
+                params=request.query_params,
+                content=await request.body(),
+                headers=headers,
+            )
+    except httpx.HTTPError:
+        return Response("Bad Gateway", status_code=502)
+    keep = {
+        k: v
+        for k, v in upstream.headers.items()
+        if k.lower() in ("content-type", "content-range", "x-next-offset", "accept-ranges")
+    }
+    return Response(upstream.content, status_code=upstream.status_code, headers=keep)
 
 
 @app.post("/runpod/rest/v1/pods/{pod_id}/{action}")
@@ -339,6 +453,10 @@ async def runpod_action(pod_id: str, action: str, request: Request):
     if pod_id not in _pods:
         return JSONResponse({"error": "pod not found"}, status_code=404)
     _pods[pod_id]["desiredStatus"] = "RUNNING" if action == "start" else "EXITED"
+    if action == "start":
+        _spawn(pod_id)
+    else:
+        _kill(pod_id)
     return {}
 
 
@@ -347,6 +465,7 @@ async def runpod_delete(pod_id: str, request: Request):
     if not _authorized(request):
         return _unauthorized()
     _pods.pop(pod_id, None)
+    _kill(pod_id)
     return {}
 
 

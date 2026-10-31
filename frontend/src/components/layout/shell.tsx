@@ -7,6 +7,8 @@ import {
   MessagesSquare,
   Images,
   LayoutDashboard,
+  Library,
+  ListChecks,
   LogOut,
   PanelLeftClose,
   PanelLeftOpen,
@@ -15,6 +17,8 @@ import {
   Sparkles,
   SquareUserRound,
   UserRound,
+  Wand,
+  Workflow,
 } from "lucide-react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
@@ -38,16 +42,37 @@ import {
 } from "@/lib/queries";
 import type { Generation, User } from "@/lib/types";
 
-const NAV: { href: string; label: MessageKey; icon: typeof LayoutDashboard }[] = [
-  { href: "/dashboard", label: "nav.dashboard", icon: LayoutDashboard },
-  { href: "/generate", label: "nav.generate", icon: Sparkles },
-  { href: "/ai-models", label: "nav.aiModels", icon: SquareUserRound },
-  { href: "/assistant", label: "nav.assistant", icon: MessagesSquare },
-  { href: "/library", label: "nav.library", icon: Images },
-  { href: "/favorites", label: "nav.favorites", icon: Heart },
-  { href: "/compute", label: "nav.compute", icon: Cpu },
-  { href: "/integrations", label: "nav.integrations", icon: Plug },
-  { href: "/settings", label: "nav.settings", icon: Settings },
+type NavItem = { href: string; label: MessageKey; icon: typeof LayoutDashboard };
+
+const NAV: { group: MessageKey | null; items: NavItem[] }[] = [
+  {
+    group: null,
+    items: [
+      { href: "/dashboard", label: "nav.dashboard", icon: LayoutDashboard },
+      { href: "/generate", label: "nav.generate", icon: Sparkles },
+      { href: "/ai-models", label: "nav.aiModels", icon: SquareUserRound },
+      { href: "/assistant", label: "nav.assistant", icon: MessagesSquare },
+      { href: "/library", label: "nav.library", icon: Images },
+      { href: "/favorites", label: "nav.favorites", icon: Heart },
+    ],
+  },
+  {
+    group: "nav.production",
+    items: [
+      { href: "/comfyui", label: "nav.comfyui", icon: Workflow },
+      { href: "/lora-studio", label: "nav.loraStudio", icon: Wand },
+      { href: "/loras", label: "nav.myLoras", icon: Library },
+      { href: "/jobs", label: "nav.jobs", icon: ListChecks },
+      { href: "/compute", label: "nav.compute", icon: Cpu },
+    ],
+  },
+  {
+    group: "nav.system",
+    items: [
+      { href: "/integrations", label: "nav.integrations", icon: Plug },
+      { href: "/settings", label: "nav.settings", icon: Settings },
+    ],
+  },
 ];
 
 export function useSignOut() {
@@ -158,7 +183,13 @@ function Sidebar({ activeJobs }: { activeJobs: number }) {
         </div>
       </div>
       <nav className="nav" aria-label={t("nav.main")}>
-        {NAV.map(({ href, label, icon: Icon }) => {
+        {NAV.flatMap(({ group, items }) => [
+          group ? (
+            <div key={group} className="nav-label eyebrow">
+              {t(group)}
+            </div>
+          ) : null,
+          ...items.map(({ href, label, icon: Icon }) => {
           const current = pathname === href || pathname.startsWith(`${href}/`);
           const link = (
             <Link
@@ -184,7 +215,8 @@ function Sidebar({ activeJobs }: { activeJobs: number }) {
           ) : (
             link
           );
-        })}
+          }),
+        ])}
       </nav>
       <div className="sidebar-foot">
         <Link href="/integrations" className="provider-pill" aria-label={t("nav.provider")}>

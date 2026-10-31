@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.catalog import MAX_IMAGES_PER_GENERATION, MODELS
+from app.comfy.krea2 import MODEL_KEYS
 from app.db import get_db
 from app.deps import api_error, current_user
 from app.models import Generation, Image, ReferenceImage, User
@@ -91,7 +92,7 @@ async def list_generations(
         wanted = [s for s in status.split(",") if s in STATUSES]
         if wanted:
             conditions.append(Generation.status.in_(wanted))
-    if model and model in MODELS:
+    if model and (model in MODELS or model in MODEL_KEYS):
         conditions.append(Generation.model_key == model)
     if provider:
         conditions.append(Generation.provider == provider)
@@ -134,6 +135,14 @@ async def regenerate(
     references. With a fixed seed the provider can reproduce the result."""
     source = await _owned(db, user, gen_id)
     body = body or RegenerateBody()
+    if source.provider == "comfyui":
+        from app.comfy.generation import repeat
+
+        try:
+            gen = await repeat(db, user, source, body.count, body.client_request_id)
+        except GenerationRejected as exc:
+            raise _rejected(exc) from exc
+        return generation_json(gen)
     existing_refs = (
         await db.scalars(
             select(ReferenceImage.id).where(
@@ -176,7 +185,16 @@ async def cancel(
     gen_id: uuid.UUID, user: User = Depends(current_user), db: AsyncSession = Depends(get_db)
 ):
     """Only a job that has not been sent yet can be cancelled: neither provider documents
-    cancelling a request once it was accepted."""
+    cancelling a request once it was accepted. ComfyUI runs can be cancelled while running
+    (removed from its queue or interrupted)."""
+    running = await _owned(db, user, gen_id)
+    if running.provider == "comfyui" and running.status == "processing":
+        running.comfy_meta = {**(running.comfy_meta or {}), "cancel_requested": True}
+        await db.commit()
+        from app.comfy.runner import request_cancel
+
+        await request_cancel(running)
+        return generation_json(await _owned(db, user, gen_id))
     result = await db.execute(
         update(Generation)
         .where(

@@ -38,7 +38,13 @@ Next.js 16 (127.0.0.1:3000) ── /api/* rewrite ──▶ FastAPI (127.0.0.1:8
 | `ai/router.py` | local complexity routing → tier, output cap, effort |
 | `ai/context.py` | cacheable system prompt, studio context, history window, summaries |
 | `ai/service.py` | one assistant turn: local/cached/streamed answer, usage, background summary |
-| `gpu/` | `base.py` contract, `runpod.py` (REST + GraphQL), `modal_provider.py` (SDK), `registry.py` |
+| `gpu/` | `base.py` contract, `runpod.py` (REST + GraphQL), `modal_provider.py` (SDK), `registry.py`, `service.py` (credentials, launch + record, cost) |
+| `gpu/agent/` | `studio_agent.py`: stdlib HTTP agent that runs inside a GPU container (files with offsets/ranges, jobs: train / comfyui / download, logs, ComfyUI proxy), sent compressed in the environment |
+| `gpu/agent_client.py` | client for the agent (chunked resumable upload, ranged resumable download with SHA-256) |
+| `comfy/` | `client.py` (ComfyUI HTTP API), `krea2.py` (verified facts, file detection, sizes, workflow, LoRA compatibility), `workflows.py` (import, secret scrubbing, bindings, LoRA insertion), `service.py` (connections, inspection, LoRA placement), `generation.py`, `runner.py` (in the job worker), `deploy.py` (ComfyUI on RunPod/Modal) |
+| `lora/` | `presets.py` (per-architecture options and presets), `aitoolkit.py` (job file), `dataset.py` (analysis, dHash, packing with crop), `captions.py` (vision captions via the assistant provider), `safetensors_meta.py`, `runner.py` (training state machine), `serial.py` |
+| `services/gpu_runner.py` | background loop that advances training runs and deployments (state in the database) |
+| `services/uploads.py` | chunked uploads (8 MB pieces) for LoRA and model files |
 
 ### Database
 
@@ -57,6 +63,10 @@ Next.js 16 (127.0.0.1:3000) ── /api/* rewrite ──▶ FastAPI (127.0.0.1:8
 | `chat_conversations` / `chat_messages` | conversations (title, rolling summary) and messages with the exact text sent, model, tier, tokens |
 | `ai_usage_events` | every chat/summary call and every free (local/cached) answer |
 | `gpu_integrations` / `gpu_workloads` | encrypted GPU credentials; workloads started from the studio |
+| `user_secrets` | other encrypted credentials (Hugging Face token) |
+| `comfy_connections` | ComfyUI servers: kind, URL, encrypted auth or agent token, inspection result, deployment state |
+| `comfy_workflows` | imported workflows (API format runs, UI format export only), bindings |
+| `loras` / `lora_dataset_items` / `lora_versions` | LoRA projects, dataset (links to reference images + caption, split, crop, dHash), training runs and imported files (config, ai-toolkit config, GPU, progress, artifacts, deployments) |
 
 Images are files on disk; the database stores only relative paths. Every query filters by
 `user_id`.
@@ -98,6 +108,25 @@ upload URL is reused for 24 h (how long providers keep uploads is not documented
 file is uploaded again. Deleting an AI model or one of its images deletes the file unless
 another AI model links it or a running generation needs it.
 
+### ComfyUI and LoRA training
+
+```
+Generate (ComfyUI · Krea 2) ─▶ POST /api/comfy/generate ─▶ Generation(provider "comfyui")
+  worker: place the LoRA file on the connection (folder copy / agent upload, once)
+          prompt_id chosen and saved, then POST /prompt (a run that may have been accepted
+          is looked up after a restart, never resent) ─▶ /queue + /history (+ /ws progress)
+          ─▶ /view ─▶ library (model, LoRA, prompt, seed, workflow kept in comfy_meta)
+
+LoRA run: queued ─▶ create pod/sandbox (ai-toolkit image + agent, confirm_billing)
+          preparing (agent health) ─▶ uploading (dataset copy + captions + config.json)
+          running (agent job "train": python run.py; step/loss parsed, logs, samples)
+          downloading (final + checkpoints, ranged, SHA-256) ─▶ completed ─▶ GPU removed
+```
+
+ComfyUI deployed by the studio is never exposed: only the agent port is, and every request
+needs the agent token. Files in a container are copied to this Mac before the workload is
+removed; RunPod keeps a pod volume across stop/start, Modal a named Volume.
+
 ### Assistant turn
 
 ```
@@ -120,7 +149,8 @@ in answers can be applied back to it ("Use in studio", "Apply settings").
 |---|---|
 | `proxy.ts` | refuses requests with a foreign `Host` (DNS rebinding protection) |
 | `app/welcome` | sign in / create account |
-| `app/(studio)/…` | dashboard, generate, ai-models (list, `[id]` detail), assistant, library, library/history, favorites, compute (GPU), integrations (image / AI / GPU tabs), settings |
+| `app/(studio)/…` | dashboard, generate, ai-models, assistant, library, library/history, favorites, comfyui, lora-studio (`[id]` workspace), loras (`[id]` versions/tests), jobs, compute (GPU providers), integrations, settings |
+| `components/comfy`, `components/lora`, `components/studio` | ComfyUI connections, workflows, Krea 2 panel on Generate; dataset, captions, training, runs, comparison; shared status, GPU picker, loss chart, Hugging Face token |
 | `components/personas` | AI model picker and Generate section, profile form, reference collection, "Add to AI model" |
 | `components/assistant` | chat panel, safe Markdown with prompt/settings action cards, floating drawer |
 | `components/integrations` | image, AI and GPU provider management |

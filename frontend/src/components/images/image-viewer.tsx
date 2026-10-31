@@ -174,6 +174,33 @@ export function ImageViewer({
             <dd>{image.provider_name}</dd>
             <dt>{t("viewer.mode")}</dt>
             <dd>{image.mode === "image-edit" ? t("gen.modeEdit") : t("gen.modeText")}</dd>
+            {image.comfy ? (
+              <>
+                <dt>{t("k2.workflow")}</dt>
+                <dd>{image.comfy.workflow?.name ?? "—"}</dd>
+                <dt>{t("k2.modelFile")}</dt>
+                <dd className="mono truncate" title={image.comfy.model_file ?? ""}>{image.comfy.model_file}</dd>
+                {image.comfy.lora ? (
+                  <>
+                    <dt>LoRA</dt>
+                    <dd>
+                      <Link href={`/loras/${image.comfy.lora.lora_id}`} className="link" onClick={onClose}>
+                        {image.comfy.lora.name} v{image.comfy.lora.version}
+                      </Link>{" "}
+                      · {image.comfy.lora.strength}
+                    </dd>
+                  </>
+                ) : null}
+                {image.settings.steps ? (
+                  <>
+                    <dt>{t("k2.steps")} · CFG</dt>
+                    <dd>
+                      {image.settings.steps} · {image.settings.cfg} · {image.settings.sampler}
+                    </dd>
+                  </>
+                ) : null}
+              </>
+            ) : null}
             {image.persona_name ? (
               <>
                 <dt>{t("pm.section")}</dt>

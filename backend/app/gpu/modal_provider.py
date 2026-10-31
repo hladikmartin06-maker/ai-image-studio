@@ -78,13 +78,28 @@ class ModalSDK:
 
         gpu = spec.gpu_type if spec.gpu_count <= 1 else f"{spec.gpu_type}:{spec.gpu_count}"
         command = spec.command or ["sleep", "infinity"]
+        volumes: dict[str, Any] = {}
+        if spec.volume_name:
+            volumes["/workspace"] = modal.Volume.from_name(
+                spec.volume_name, create_if_missing=True, client=client
+            )
+        secrets = [modal.Secret.from_dict(spec.secret_env)] if spec.secret_env else None
+        image = (
+            modal.Image.from_registry(spec.image, add_python=spec.image_python)
+            if spec.image_python
+            else modal.Image.from_registry(spec.image)
+        )
+        if spec.image_apt:
+            image = image.apt_install(*spec.image_apt)
         return await modal.Sandbox.create.aio(
             *command,
             app=app,
             name=spec.name or None,
             tags=TAGS,
-            image=modal.Image.from_registry(spec.image),
+            image=image,
             env=spec.env or None,
+            secrets=secrets,
+            volumes=volumes,
             gpu=gpu,
             timeout=spec.timeout_minutes * 60,
             encrypted_ports=spec.ports,
@@ -226,3 +241,36 @@ class ModalProvider:
 
     async def account(self, creds: dict[str, str]) -> dict[str, Any]:
         return {"balance": None, "spend_per_hour": None, "source": None}
+
+    async def workload(self, creds: dict[str, str], workload_id: str) -> Workload | None:
+        client = await self._client(creds)
+        try:
+            sandbox = await self.sdk.from_id(client, workload_id)
+            code = await self.sdk.poll(sandbox)
+        except Exception as exc:  # noqa: BLE001
+            error = exc if isinstance(exc, GPUError) else _error(exc)
+            if error.code == "not_found":
+                return None
+            raise error from exc
+        finally:
+            await self.sdk.close(client)
+        running = code is None
+        return Workload(
+            id=workload_id,
+            name=workload_id,
+            kind="sandbox",
+            status="running" if running else "exited",
+            dashboard_url="https://modal.com/apps",
+            can_terminate=running,
+        )
+
+    async def port_url(self, creds: dict[str, str], workload_id: str, port: int) -> str | None:
+        client = await self._client(creds)
+        try:
+            sandbox = await self.sdk.from_id(client, workload_id)
+            tunnels = await self.sdk.tunnels(sandbox)
+        except Exception:  # noqa: BLE001 - not ready yet
+            return None
+        finally:
+            await self.sdk.close(client)
+        return tunnels.get(port)

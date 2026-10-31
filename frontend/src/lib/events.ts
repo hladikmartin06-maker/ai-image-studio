@@ -25,6 +25,7 @@ export function useLiveGenerations(enabled: boolean, onFinished?: Notify) {
     let source: EventSource | null = null;
     let pollTimer: number | undefined;
     let invalidateTimer: number | undefined;
+    let trainingTimer: number | undefined;
     let failures = 0;
     let closed = false;
     const lastStatus = new Map<string, string>();
@@ -80,6 +81,14 @@ export function useLiveGenerations(enabled: boolean, onFinished?: Notify) {
         // Catch up on anything that changed while disconnected.
         qc.invalidateQueries({ queryKey: keys.generations });
       });
+      source.addEventListener("training", () => {
+        // LoRA training progress: refresh the LoRA pages and the job list.
+        window.clearTimeout(trainingTimer);
+        trainingTimer = window.setTimeout(() => {
+          qc.invalidateQueries({ queryKey: ["loras"] });
+          qc.invalidateQueries({ queryKey: ["jobs"] });
+        }, 600);
+      });
       source.addEventListener("generation", (event) => {
         try {
           handle(JSON.parse((event as MessageEvent).data) as Generation);
@@ -108,6 +117,7 @@ export function useLiveGenerations(enabled: boolean, onFinished?: Notify) {
       source?.close();
       window.clearTimeout(pollTimer);
       window.clearTimeout(invalidateTimer);
+      window.clearTimeout(trainingTimer);
     };
   }, [enabled, qc]);
 }

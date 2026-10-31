@@ -20,6 +20,7 @@ from sqlalchemy.orm import contains_eager
 from starlette.background import BackgroundTask
 
 from app.catalog import MODELS, PROVIDERS
+from app.comfy.krea2 import MODEL_KEYS
 from app.db import get_db
 from app.deps import api_error, current_user
 from app.models import Generation, Image, User
@@ -93,6 +94,7 @@ async def list_images(
     scope: Literal["library", "all", "unsaved"] = "library",
     generation_id: uuid.UUID | None = None,
     persona: uuid.UUID | None = None,
+    lora_version: uuid.UUID | None = None,
     sort: Literal["newest", "oldest", "favorited"] = "newest",
     cursor: str | None = None,
     limit: int = Query(default=48, ge=1, le=120),
@@ -108,8 +110,10 @@ async def list_images(
         conditions.append(Image.generation_id == generation_id)
     if persona:
         conditions.append(Generation.persona_id == persona)
+    if lora_version:
+        conditions.append(Generation.lora_version_id == lora_version)
     if model:
-        keys = [m for m in model.split(",") if m in MODELS]
+        keys = [m for m in model.split(",") if m in MODELS or m in MODEL_KEYS]
         if keys:
             conditions.append(Generation.model_key.in_(keys))
     if provider:

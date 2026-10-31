@@ -74,7 +74,16 @@ class GeminiProvider:
 
     def _body(self, request: ChatRequest, *, thinking: bool) -> dict[str, Any]:
         contents = [
-            {"role": "model" if t.role == "assistant" else "user", "parts": [{"text": t.content}]}
+            {
+                "role": "model" if t.role == "assistant" else "user",
+                "parts": [
+                    *(
+                        {"inline_data": {"mime_type": mime, "data": data}}
+                        for mime, data in t.images
+                    ),
+                    {"text": t.content},
+                ],
+            }
             for t in request.messages
         ]
         config: dict[str, Any] = {"maxOutputTokens": request.max_tokens}

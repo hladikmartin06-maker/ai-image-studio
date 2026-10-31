@@ -1,0 +1,307 @@
+"""Runs a ComfyUI generation inside the job worker.
+
+One prompt per generation (batch_size = image count). The prompt id is chosen by the
+studio and saved before sending, so after a restart a run that may have been accepted is
+looked up in ComfyUI's queue/history instead of being sent twice. Progress comes from
+GET /queue (position) and, for direct connections, the /ws "progress" events.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import contextlib
+import json
+import logging
+import time
+import uuid
+from datetime import UTC, datetime, timedelta
+from typing import Any
+
+from sqlalchemy import select, update
+
+from app.comfy.client import (
+    ComfyClient,
+    ComfyError,
+    history_error,
+    history_outputs,
+    queue_position,
+)
+from app.comfy.service import client_for, file_capability, place_lora
+from app.config import get_settings
+from app.db import SessionLocal
+from app.models import ComfyConnection, Generation, Lora, LoraVersion
+from app.services.events import broker
+from app.services.serializers import generation_json
+
+log = logging.getLogger("studio.comfy")
+
+# Tests make polling instant.
+POLL_INITIAL = 1.0
+POLL_MAX = 3.0
+ABSENT_LIMIT = 6
+
+
+class RunFailed(Exception):
+    def __init__(self, code: str, message: str):
+        super().__init__(message)
+        self.code = code
+        self.message = message
+
+
+async def _publish(gen_id: uuid.UUID) -> None:
+    from app.services.worker import publish
+
+    await publish(gen_id)
+
+
+async def _connection(gen: Generation) -> ComfyConnection:
+    conn_id = (gen.comfy_meta or {}).get("connection_id")
+    async with SessionLocal() as db:
+        conn = (
+            await db.scalar(
+                select(ComfyConnection).where(
+                    ComfyConnection.id == uuid.UUID(conn_id), ComfyConnection.user_id == gen.user_id
+                )
+            )
+            if conn_id
+            else None
+        )
+    if conn is None:
+        raise RunFailed("not_found", "The ComfyUI connection of this run was removed.")
+    return conn
+
+
+async def _ensure_lora(gen: Generation, conn: ComfyConnection) -> None:
+    lora_meta = (gen.comfy_meta or {}).get("lora")
+    if not lora_meta or file_capability(conn) == "none":
+        return
+    async with SessionLocal() as db:
+        version = await db.scalar(
+            select(LoraVersion).where(
+                LoraVersion.id == uuid.UUID(lora_meta["version_id"]),
+                LoraVersion.user_id == gen.user_id,
+            )
+        )
+        lora = await db.get(Lora, version.lora_id) if version else None
+        if version is None or lora is None:
+            raise RunFailed("not_found", "The LoRA of this run was deleted.")
+        try:
+            name = await place_lora(db, conn, lora, version)
+        except ComfyError as exc:
+            raise RunFailed("lora_upload_failed", exc.message) from exc
+    if name != lora_meta.get("file"):
+        raise RunFailed("lora_upload_failed", "The LoRA file name changed; start the run again.")
+
+
+async def _known(client: ComfyClient, prompt_id: str) -> bool:
+    with contextlib.suppress(ComfyError):
+        if await client.history(prompt_id):
+            return True
+        state, _ = queue_position(await client.queue(), prompt_id)
+        return state != "absent"
+    return False
+
+
+async def _set_progress(task_id: uuid.UUID, gen_id: uuid.UUID, progress: dict[str, Any]) -> None:
+    from app.models import ProviderTask
+
+    async with SessionLocal() as db:
+        await db.execute(
+            update(ProviderTask).where(ProviderTask.id == task_id).values(progress=progress)
+        )
+        await db.commit()
+    await _publish(gen_id)
+
+
+async def _listen(conn: ComfyConnection, client: ComfyClient, gen: Generation, state: dict) -> None:
+    """Sampler progress from ComfyUI's websocket (direct connections only)."""
+    if conn.auth_type == "agent":
+        return
+    from websockets.asyncio.client import connect
+
+    url = client.base_url.replace("https://", "wss://").replace("http://", "ws://")
+    url = f"{url}/ws?clientId={gen.id}"
+    try:
+        async with connect(url, additional_headers=client.headers, open_timeout=10) as ws:
+            async for raw in ws:
+                if not isinstance(raw, str):
+                    continue
+                with contextlib.suppress(ValueError, TypeError):
+                    message = json.loads(raw)
+                    if message.get("type") == "progress":
+                        data = message.get("data") or {}
+                        if data.get("prompt_id") in (None, state.get("prompt_id")):
+                            state["value"] = data.get("value")
+                            state["max"] = data.get("max")
+    except Exception:  # noqa: BLE001 - progress is optional
+        return
+
+
+async def _cancel_requested(gen_id: uuid.UUID) -> bool:
+    async with SessionLocal() as db:
+        meta = await db.scalar(select(Generation.comfy_meta).where(Generation.id == gen_id))
+    return bool((meta or {}).get("cancel_requested"))
+
+
+async def _poll(client: ComfyClient, gen: Generation, task: Any, prompt_id: str) -> dict:
+    deadline = (task.created_at or datetime.now(UTC)) + timedelta(
+        seconds=get_settings().comfy_timeout_seconds
+    )
+    delay = POLL_INITIAL
+    absent = 0
+    failures = 0
+    live: dict[str, Any] = {"prompt_id": prompt_id}
+    last: dict[str, Any] = {}
+    last_write = 0.0
+    while True:
+        if await _cancel_requested(gen.id):
+            with contextlib.suppress(ComfyError):
+                await client.delete_queued(prompt_id)
+                await client.interrupt(prompt_id)
+            raise RunFailed("cancelled", "Cancelled.")
+        try:
+            entry = await client.history(prompt_id)
+            failures = 0
+        except ComfyError as exc:
+            if exc.code == "unauthorized":
+                raise RunFailed(exc.code, exc.message) from exc
+            failures += 1
+            if failures > 20:
+                raise RunFailed(exc.code, exc.message) from exc
+            entry = None
+        if entry:
+            error = history_error(entry)
+            if error:
+                raise RunFailed("generation_failed", error)
+            status = entry.get("status") or {}
+            if status.get("completed", True) and entry.get("outputs") is not None:
+                return entry
+        else:
+            try:
+                state, position = queue_position(await client.queue(), prompt_id)
+            except ComfyError:
+                state, position = "unknown", None
+            if state == "absent":
+                absent += 1
+                if absent >= ABSENT_LIMIT:
+                    raise RunFailed(
+                        "lost", "ComfyUI no longer knows this job (it may have restarted)."
+                    )
+            else:
+                absent = 0
+            progress = {"state": state, "queue_position": position}
+            if live.get("max"):
+                progress.update({"value": live.get("value"), "max": live.get("max")})
+            now = time.monotonic()
+            if progress != last and now - last_write > 0.8:
+                last, last_write = progress, now
+                await _set_progress(task.id, gen.id, progress)
+        if datetime.now(UTC) > deadline:
+            with contextlib.suppress(ComfyError):
+                await client.interrupt(prompt_id)
+            raise RunFailed("timeout", "ComfyUI did not finish in time.")
+        await asyncio.sleep(delay)
+        delay = min(delay * 1.3, POLL_MAX)
+
+
+async def run(worker: Any, gen: Generation) -> None:
+    task = gen.tasks[0] if gen.tasks else None
+    if task is None or task.status in ("completed", "failed"):
+        return
+    listener: asyncio.Task | None = None
+    try:
+        conn = await _connection(gen)
+        client = client_for(conn)
+        prompt_id = task.provider_task_id
+        if task.status == "submitting":
+            # The app stopped while sending: resume only if ComfyUI has the job.
+            if not prompt_id or not await _known(client, prompt_id):
+                raise RunFailed(
+                    "interrupted",
+                    "The app stopped while this run was being sent; it was not sent again.",
+                )
+            await worker.set_task(task.id, status="processing")
+        elif task.status == "pending":
+            await _ensure_lora(gen, conn)
+            prompt_id = str(uuid.uuid4())
+            await worker.set_task(task.id, status="submitting", provider_task_id=prompt_id)
+            try:
+                returned = await client.submit(gen.request_payload, prompt_id, str(gen.id))
+            except ComfyError as exc:
+                if exc.code == "unreachable" and await _known(client, prompt_id):
+                    returned = prompt_id
+                else:
+                    raise
+            await worker.set_task(task.id, status="processing", provider_task_id=returned)
+            prompt_id = returned
+            await _publish(gen.id)
+        assert prompt_id
+        state: dict[str, Any] = {"prompt_id": prompt_id}
+        listener = asyncio.create_task(_listen(conn, client, gen, state))
+        entry = await _poll(client, gen, task, prompt_id)
+        images = history_outputs(entry)
+        if not images:
+            raise RunFailed("generation_failed", "The workflow finished without saving an image.")
+        datas = [await client.view(i["filename"], i["subfolder"], i["type"]) for i in images]
+        await worker.store_outputs(gen, task, datas, [])
+        await worker.set_task(
+            task.id,
+            status="completed",
+            outputs=[f"{i['subfolder']}/{i['filename']}".lstrip("/") for i in images],
+            progress={},
+        )
+    except RunFailed as exc:
+        await worker.set_task(
+            task.id, status="failed", error_code=exc.code, error_message=exc.message, progress={}
+        )
+    except ComfyError as exc:
+        await worker.set_task(
+            task.id, status="failed", error_code=exc.code, error_message=exc.message, progress={}
+        )
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        log.exception("ComfyUI run %s failed", gen.id)
+        await worker.set_task(
+            task.id,
+            status="failed",
+            error_code="provider_error",
+            error_message=f"Unexpected error: {type(exc).__name__}",
+            progress={},
+        )
+    finally:
+        if listener is not None:
+            listener.cancel()
+    await _publish(gen.id)
+
+
+async def after_finish(gen_id: uuid.UUID) -> None:
+    """A cancelled run ends as "cancelled" rather than "failed"."""
+    async with SessionLocal() as db:
+        gen = await db.get(Generation, gen_id)
+        if gen is None or not (gen.comfy_meta or {}).get("cancel_requested"):
+            return
+        if gen.status == "failed":
+            gen.status = "cancelled"
+            gen.error_code = None
+            gen.error_message = "Cancelled while running on ComfyUI."
+            await db.commit()
+    from app.services.worker import load_generation
+
+    loaded = await load_generation(gen_id)
+    if loaded is not None:
+        broker.publish(loaded.user_id, "generation", generation_json(loaded))
+
+
+async def request_cancel(gen: Generation) -> None:
+    """Best effort right away; the running job loop also sees the flag."""
+    task = gen.tasks[0] if gen.tasks else None
+    if task is None or not task.provider_task_id:
+        return
+    try:
+        conn = await _connection(gen)
+        client = client_for(conn)
+        await client.delete_queued(task.provider_task_id)
+        await client.interrupt(task.provider_task_id)
+    except (RunFailed, ComfyError):
+        return

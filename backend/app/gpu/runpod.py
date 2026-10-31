@@ -188,12 +188,33 @@ class RunPodProvider:
             "volumeInGb": spec.volume_gb,
             "ports": [f"{p}/http" for p in spec.ports],
         }
-        if spec.env:
-            body["env"] = spec.env
+        env = {**spec.env, **spec.secret_env}
+        if env:
+            body["env"] = env
+        if spec.command:
+            # Entrypoint + arguments, so the image's own entrypoint does not wrap them.
+            body["dockerEntrypoint"] = spec.command[:1]
+            body["dockerStartCmd"] = spec.command[1:]
+        if spec.volume_gb:
+            body["volumeMountPath"] = "/workspace"
         data = await self._call(creds, "POST", f"{_rest()}/pods", json=body)
         if not isinstance(data, dict) or not data.get("id"):
             raise GPUError("provider_error", "No pod id in the response")
-        return self._workload({**body, **data})
+        return self._workload({**{k: v for k, v in body.items() if k != "env"}, **data})
+
+    async def workload(self, creds: dict[str, str], workload_id: str) -> Workload | None:
+        try:
+            data = await self._call(creds, "GET", f"{_rest()}/pods/{workload_id}")
+        except GPUError as exc:
+            if exc.code == "not_found":
+                return None
+            raise
+        return self._workload(data) if isinstance(data, dict) and data.get("id") else None
+
+    async def port_url(self, creds: dict[str, str], workload_id: str, port: int) -> str | None:
+        # RunPod's HTTP proxy (documented): https://{podId}-{port}.proxy.runpod.net
+        base = get_settings().runpod_proxy_url
+        return base.format(pod_id=workload_id, port=port)
 
     async def start(self, creds: dict[str, str], workload_id: str) -> None:
         await self._call(creds, "POST", f"{_rest()}/pods/{workload_id}/start")

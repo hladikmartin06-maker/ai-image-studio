@@ -36,6 +36,23 @@ First steps in the app:
   attached when the chosen model and provider accept references (primary first, within that
   endpoint's limit), for the same face and look in every image. Duplicate, edit, delete, add
   images from the library, and see everything generated with each AI model.
+- **ComfyUI** — connect ComfyUI on this Mac, on a server, or a pod/sandbox you run on RunPod or
+  Modal, or let the studio deploy one on your GPU account (token-protected agent, auto-stop
+  when idle). Shows version, GPU and VRAM, installed Krea 2 files, nodes and LoRAs; uploads
+  and downloads model files; imports and exports workflow JSON.
+- **Krea 2** (open weights, RAW and Turbo) as a model family on Generate through ComfyUI: the
+  verified Comfy-Org workflow, Turbo 8 steps / 1K–2K, RAW up to 1K with negative prompt,
+  custom workflows, trained LoRAs with strict compatibility checks.
+- **LoRA Studio** — create a character LoRA for a fictional adult: dataset manager (upload,
+  library and AI model import, duplicates, resolution and aspect analysis, crop on a copy,
+  train/held-out split), captions (templates, trigger word, AI captions through your
+  assistant provider), architecture-aware presets and advanced ai-toolkit settings, training
+  on your RunPod or Modal GPU with live progress, loss, validation images, logs and cost; the
+  LoRA, checkpoints and samples are saved to this Mac and the GPU is removed.
+- **My LoRAs** — versions, preferred version, checkpoints as versions, download, copy to a
+  ComfyUI, base-vs-LoRA and version-vs-version tests with a comparison slider.
+- **Training Jobs** — generations, training runs and ComfyUI deployments in one list with
+  status, progress, queue position, time and cost.
 - **Image Library** — justified grid, search (prompt, model, provider, size, seed), filters,
   full-resolution viewer with details, bulk download (ZIP), favorite and delete;
   **History** tab with every request, its exact settings and "regenerate".
