@@ -23,6 +23,7 @@ from app.services.gpu_runner import gpu_runner
 from tests.ai_fakes import AI_KEY, FakeAI
 from tests.conftest import Api, make_user, wait_done
 from tests.fake_comfy_server import FakeComfy
+from tests.fakes import FakeHub
 from tests.gpu_fakes import LocalRunPodProvider, SpawningRunPod, make_toolkit
 from tests.test_gpu import RUNPOD_KEY
 
@@ -197,7 +198,7 @@ async def test_ai_captions(user: Api):
             set_adapter(key, None)
 
 
-async def test_training_on_runpod_end_to_end(user: Api, tmp_path: Path):
+async def test_training_on_runpod_end_to_end(user: Api, tmp_path: Path, hub: FakeHub):
     toolkit = make_toolkit(tmp_path / "image")
     fake = SpawningRunPod(tmp_path / "pods", {"STUDIO_AITK_DIR": str(toolkit)})
     set_gpu_adapter("runpod", LocalRunPodProvider(fake))
@@ -229,11 +230,37 @@ async def test_training_on_runpod_end_to_end(user: Api, tmp_path: Path):
             f"/api/loras/{lora['id']}/versions", json={**body, "confirm_billing": True}
         )
         assert gated.status_code == 409 and gated.json()["error"]["code"] == "hf_token_required"
+        # Hugging Face: a rejected token is never saved; the license is checked before a GPU.
+        empty = (await user.get("/api/secrets/huggingface/status")).json()
+        assert not empty["set"] and {r["repo"] for r in empty["repos"]} == {
+            "krea/Krea-2-Raw",
+            "krea/Krea-2-Turbo",
+        }
+        hub.invalid_tokens.add("hf_badtoken999")
+        bad = await user.put("/api/secrets/huggingface", json={"value": "hf_badtoken999"})
+        assert bad.status_code == 400 and bad.json()["error"]["code"] == "invalid_key"
+        hub.no_license["hf_testtoken123"] = {"krea/Krea-2-Raw"}
         assert (
             await user.put("/api/secrets/huggingface", json={"value": "hf_testtoken123"})
         ).status_code == 200
         secrets = (await user.get("/api/secrets")).json()["items"][0]
         assert secrets["set"] and "hf_testtoken123" not in json.dumps(secrets)
+        status = (await user.get("/api/secrets/huggingface/status")).json()
+        assert status["token"] == "valid" and status["account"] == "studio-user"
+        assert not status["ready"] and "hf_testtoken123" not in json.dumps(status)
+        assert {r["repo"]: r["access"] for r in status["repos"]} == {
+            "krea/Krea-2-Raw": "needs_license",
+            "krea/Krea-2-Turbo": "granted",
+        }
+        blocked = await user.post(
+            f"/api/loras/{lora['id']}/versions", json={**body, "confirm_billing": True}
+        )
+        assert blocked.status_code == 409
+        assert blocked.json()["error"]["code"] == "hf_license_required"
+        assert fake.pods == {} and not fake.bodies  # nothing rented
+        hub.no_license.clear()  # the user clicked "Agree" on huggingface.co
+        status = (await user.get("/api/secrets/huggingface/status?refresh=true")).json()
+        assert status["ready"]
         r = await user.post(
             f"/api/loras/{lora['id']}/versions", json={**body, "confirm_billing": True}
         )

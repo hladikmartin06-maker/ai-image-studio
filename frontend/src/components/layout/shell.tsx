@@ -2,13 +2,9 @@
 
 import { useQueryClient } from "@tanstack/react-query";
 import {
-  Cpu,
-  Heart,
   MessagesSquare,
   Images,
   LayoutDashboard,
-  Library,
-  ListChecks,
   LogOut,
   PanelLeftClose,
   PanelLeftOpen,
@@ -18,7 +14,6 @@ import {
   SquareUserRound,
   UserRound,
   Wand,
-  Workflow,
 } from "lucide-react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
@@ -51,19 +46,9 @@ const NAV: { group: MessageKey | null; items: NavItem[] }[] = [
       { href: "/dashboard", label: "nav.dashboard", icon: LayoutDashboard },
       { href: "/generate", label: "nav.generate", icon: Sparkles },
       { href: "/ai-models", label: "nav.aiModels", icon: SquareUserRound },
-      { href: "/assistant", label: "nav.assistant", icon: MessagesSquare },
+      { href: "/loras", label: "nav.lora", icon: Wand },
       { href: "/library", label: "nav.library", icon: Images },
-      { href: "/favorites", label: "nav.favorites", icon: Heart },
-    ],
-  },
-  {
-    group: "nav.production",
-    items: [
-      { href: "/comfyui", label: "nav.comfyui", icon: Workflow },
-      { href: "/lora-studio", label: "nav.loraStudio", icon: Wand },
-      { href: "/loras", label: "nav.myLoras", icon: Library },
-      { href: "/jobs", label: "nav.jobs", icon: ListChecks },
-      { href: "/compute", label: "nav.compute", icon: Cpu },
+      { href: "/assistant", label: "nav.assistant", icon: MessagesSquare },
     ],
   },
   {

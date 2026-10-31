@@ -1,6 +1,6 @@
 "use client";
 
-import { Check, Download, EyeOff, Heart } from "lucide-react";
+import { Check, Download, EyeOff } from "lucide-react";
 import type { CSSProperties, KeyboardEvent, MouseEvent } from "react";
 
 import { IconButton, cx } from "@/components/ui";
@@ -11,7 +11,6 @@ import type { StudioImage } from "@/lib/types";
 export function ImageTile({
   image,
   onOpen,
-  onFavorite,
   onDownload,
   selecting,
   selected,
@@ -23,7 +22,6 @@ export function ImageTile({
 }: {
   image: StudioImage;
   onOpen: () => void;
-  onFavorite: () => void;
   onDownload: () => void;
   selecting?: boolean;
   selected?: boolean;
@@ -67,11 +65,6 @@ export function ImageTile({
           </span>
         </div>
       ) : null}
-      {image.is_favorite ? (
-        <span className="tile-fav" aria-hidden>
-          <Heart />
-        </span>
-      ) : null}
       <div className="tile-overlay">
         <div className="row">
           {selecting || onSelect ? (
@@ -90,14 +83,6 @@ export function ImageTile({
           ) : null}
           <span className="spacer" />
           <div className="tile-actions" onClick={stop}>
-            <IconButton
-              label={image.is_favorite ? t("images.unfavorite") : t("images.favorite")}
-              onMedia
-              aria-pressed={image.is_favorite}
-              onClick={onFavorite}
-            >
-              <Heart fill={image.is_favorite ? "currentColor" : "none"} />
-            </IconButton>
             <IconButton label={t("common.download")} onMedia onClick={onDownload}>
               <Download />
             </IconButton>

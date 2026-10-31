@@ -72,6 +72,20 @@ repositories.
   controls (local routing, tier caps, caching, summaries, context only when changed, local
   and cached answers). Never show prices that no API returns; show reported tokens.
 - GPU: anything that starts billing needs `confirm_billing: true` from a UI confirmation.
+- Simple for beginners (the owner's rule): short menu — Dashboard, Generate, AI Models, LoRA,
+  Image Library, Assistant, Integrations, Settings. No Favorites. ComfyUI is chosen inside
+  Generate (Krea 2) with only two options: "This Mac" and "Rent a GPU". LoRA is one page
+  (projects, photos, captions, training, versions, tests, training history). GPU providers are
+  connected in Integrations and picked only where they are used (Krea 2 on Generate, LoRA
+  training) — no separate GPU page. Advanced options stay collapsed; no fields beginners do
+  not need (e.g. trainer image, run notes). Training always removes the GPU afterwards.
+- Hugging Face: token in Integrations › Hugging Face, checked with `whoami-v2` and the Krea 2
+  repositories' `auth-check` (`services/huggingface.py`). Accepting the license is the user's
+  own click on huggingface.co (no API exists); the studio links there and checks again, and
+  training checks it before renting a GPU.
+- Image Library shows generated images and AI model photos. AI models hold up to 200 photos.
+- Assistant photos: up to 4 per message, the user's own uploads only, sent downscaled and only
+  with that message.
 
 ## Code rules
 

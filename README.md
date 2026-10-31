@@ -26,45 +26,43 @@ First steps in the app:
 
 ## What is inside
 
-- **Dashboard** — real statistics, recent images, live activity, quick generate, provider usage
-  and WaveSpeed balance.
-- **Generate** — model cards, large prompt editor with history, reference images (drag & drop),
-  only the settings the selected model and provider support, live progress.
-- **AI Models** — your own fictional adult characters: name, description, appearance (age,
-  hair, face, body, style, …) and a collection of reference images with a primary image.
-  Select one on Generate: its description is added to the prompt and its reference images are
-  attached when the chosen model and provider accept references (primary first, within that
-  endpoint's limit), for the same face and look in every image. Duplicate, edit, delete, add
-  images from the library, and see everything generated with each AI model.
-- **ComfyUI** — connect ComfyUI on this Mac, on a server, or a pod/sandbox you run on RunPod or
-  Modal, or let the studio deploy one on your GPU account (token-protected agent, auto-stop
-  when idle). Shows version, GPU and VRAM, installed Krea 2 files, nodes and LoRAs; uploads
-  and downloads model files; imports and exports workflow JSON.
-- **Krea 2** (open weights, RAW and Turbo) as a model family on Generate through ComfyUI: the
-  verified Comfy-Org workflow, Turbo 8 steps / 1K–2K, RAW up to 1K with negative prompt,
-  custom workflows, trained LoRAs with strict compatibility checks.
-- **LoRA Studio** — create a character LoRA for a fictional adult: dataset manager (upload,
-  library and AI model import, duplicates, resolution and aspect analysis, crop on a copy,
-  train/held-out split), captions (templates, trigger word, AI captions through your
-  assistant provider), architecture-aware presets and advanced ai-toolkit settings, training
-  on your RunPod or Modal GPU with live progress, loss, validation images, logs and cost; the
-  LoRA, checkpoints and samples are saved to this Mac and the GPU is removed.
-- **My LoRAs** — versions, preferred version, checkpoints as versions, download, copy to a
-  ComfyUI, base-vs-LoRA and version-vs-version tests with a comparison slider.
-- **Training Jobs** — generations, training runs and ComfyUI deployments in one list with
-  status, progress, queue position, time and cost.
-- **Image Library** — justified grid, search (prompt, model, provider, size, seed), filters,
-  full-resolution viewer with details, bulk download (ZIP), favorite and delete;
-  **History** tab with every request, its exact settings and "regenerate".
+The menu is short on purpose: Dashboard, Generate, AI Models, LoRA, Image Library, Assistant,
+Integrations and Settings.
+
+- **Dashboard** — real statistics, recent images, live activity, provider usage and WaveSpeed
+  balance.
+- **Generate** — two choices at the top:
+  - **Online models** (Nano Banana Pro, Seedream, Wan 2.7, Wan 2.7 Pro through WaveSpeed or
+    Atlas Cloud): model cards, prompt editor with history, reference images (drag & drop), only
+    the settings the selected model and provider support, live progress.
+  - **Krea 2** (open weights, RAW and Turbo) through ComfyUI, chosen right there: **This Mac**
+    (your own ComfyUI on port 8188) or **Rent a GPU** (the studio starts ComfyUI with the Krea 2
+    files on your RunPod or Modal account through a token-protected agent and stops it when
+    idle). Trained LoRAs with strict compatibility checks; seed, steps and CFG under "More
+    settings"; model files, logs and custom workflows under "Manage".
+- **AI Models** — your own fictional adult characters with up to 200 photos (shown across the
+  whole page, primary photo first). The profile (description, age, hair, face, body, style, …)
+  is optional and opens in a window. Select one on Generate: its description is added to the
+  prompt and its photos are attached when the chosen model and provider accept references
+  (primary first, within that endpoint's limit), for the same face and look in every image.
+- **LoRA** — one page for everything: create a character LoRA for a fictional adult, add
+  photos (upload, library or AI model import, duplicates, resolution check, crop on a copy),
+  captions (templates, trigger word, AI captions), choose a training type and a GPU, train on
+  your RunPod or Modal account with live progress, loss, test images, logs and cost. The LoRA
+  is saved to this Mac and the GPU is always removed afterwards. Versions, preferred version,
+  download, copy to a ComfyUI, base-vs-LoRA tests with a comparison slider, import of existing
+  Krea 2 LoRA files and the training history with time and cost.
+- **Image Library** — generated images and **AI model photos** in one place; search, filters,
+  full-resolution viewer, bulk download (ZIP), add to an AI model and delete; **History** tab
+  with every request, its exact settings and "regenerate".
 - **Assistant** — chat that improves prompts, picks models and settings and explains failed
-  generations; it sees your current setup and can apply its suggestions to the studio. Works
-  with Claude, GPT, Grok, Gemini or any OpenAI-compatible API, in Low cost, Balanced or High
-  quality mode, with automatic routing to cheaper models for simple questions.
-- **GPU Compute** — start, stop and terminate GPU workloads on your own RunPod (pods,
-  serverless endpoints) or Modal (sandboxes) account, with GPU catalog and usage.
-- **Favorites**, **Integrations** (image providers, AI assistant, GPU compute — each separate,
-  keys encrypted), **Settings** (theme, language EN/SK, defaults, appearance, assistant,
-  storage, account and sessions).
+  generations; you can **attach photos** (button or paste) and ask it to describe them or write
+  a prompt for a similar image. Works with Claude, GPT, Grok, Gemini or any OpenAI-compatible
+  API, in Low cost, Balanced or High quality mode.
+- **Integrations** — image providers, AI assistant, GPU compute (RunPod, Modal) and
+  **Hugging Face** (token plus a check of the Krea 2 license, needed for LoRA training); keys
+  encrypted. **Settings** — theme, language EN/SK, defaults, appearance, assistant, storage,
+  account and sessions.
 
 ## Everyday commands
 

@@ -127,3 +127,36 @@ class FakeProviders:
                 pid = self._new_prediction("atlas", body["model"], body)
                 return httpx.Response(200, json={"code": 200, "data": {"id": pid}})
         return httpx.Response(404, json={"message": "unknown route"})
+
+
+@dataclass
+class FakeHub:
+    """Hugging Face Hub: GET /api/whoami-v2 and GET /api/models/{repo}/auth-check, with the
+    status codes and X-Error-Code header huggingface_hub reads."""
+
+    invalid_tokens: set[str] = field(default_factory=set)
+    # Tokens that have not accepted the license of these repositories yet.
+    no_license: dict[str, set[str]] = field(default_factory=dict)
+    calls: list[str] = field(default_factory=list)
+
+    def transport(self) -> httpx.MockTransport:
+        def handler(request: httpx.Request) -> httpx.Response:
+            token = request.headers.get("authorization", "").removeprefix("Bearer ")
+            path = request.url.path
+            self.calls.append(path)
+            if token in self.invalid_tokens:
+                return httpx.Response(401, json={"error": "Invalid credentials"})
+            if path == "/api/whoami-v2":
+                return httpx.Response(200, json={"type": "user", "name": "studio-user"})
+            if path.startswith("/api/models/") and path.endswith("/auth-check"):
+                repo = path.removeprefix("/api/models/").removesuffix("/auth-check")
+                if repo in self.no_license.get(token, set()):
+                    return httpx.Response(
+                        403,
+                        headers={"X-Error-Code": "GatedRepo"},
+                        json={"error": "Access to model is restricted."},
+                    )
+                return httpx.Response(200, json={})
+            return httpx.Response(404, headers={"X-Error-Code": "RepoNotFound"})
+
+        return httpx.MockTransport(handler)

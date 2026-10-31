@@ -47,7 +47,8 @@ from app.models import (
     User,
     UserSecret,
 )
-from app.services import personas, references, storage, uploads
+from app.routes.secrets import hf_token
+from app.services import huggingface, personas, references, storage, uploads
 from app.services.generation import GenerationRejected
 from app.services.safety import mentions_minors
 from app.services.serializers import generation_json
@@ -671,16 +672,31 @@ async def start_training(
     if connected is None:
         raise api_error(409, "not_connected", "Connect this GPU provider in Integrations first.")
     variant = ARCHITECTURES[lora.architecture]["variants"][lora.base_variant]
-    hf = await db.scalar(
-        select(UserSecret.id).where(UserSecret.user_id == user.id, UserSecret.name == "huggingface")
-    )
-    if variant["gated"] and hf is None:
-        raise api_error(
-            409,
-            "hf_token_required",
-            f"{variant['name_or_path']} is gated on Hugging Face: accept its license there and "
-            "add a Hugging Face token in LoRA Studio first.",
-        )
+    if variant["gated"]:
+        token = await hf_token(db, user)
+        if token is None:
+            raise api_error(
+                409,
+                "hf_token_required",
+                "Add your Hugging Face token in Integrations › Hugging Face first.",
+            )
+        # Checked before any GPU is rented; when Hugging Face cannot be reached the run goes
+        # ahead and the trainer reports a download error itself.
+        access = await huggingface.repo_access(token, variant["name_or_path"], refresh=True)
+        if access == "needs_license":
+            raise api_error(
+                409,
+                "hf_license_required",
+                f"Accept the Krea 2 license once on https://huggingface.co/"
+                f"{variant['name_or_path']} (button “Agree and access repository”), "
+                "then start again.",
+            )
+        if access == "invalid_token":
+            raise api_error(
+                409,
+                "hf_token_invalid",
+                "Hugging Face rejected your token. Add a new one in Integrations › Hugging Face.",
+            )
     if any(v.status in ACTIVE for v in await _versions(db, lora)):
         raise api_error(409, "in_progress", "This LoRA is already training.")
     items = await _items(db, lora)

@@ -16,6 +16,7 @@ os.environ["APP_SECRET_KEY"] = "t" * 64
 os.environ["STORAGE_DIR"] = tempfile.mkdtemp(prefix="studio-test-")
 os.environ["WAVESPEED_BASE_URL"] = "https://api.wavespeed.fake"
 os.environ["ATLAS_BASE_URL"] = "https://api.atlas.fake"
+os.environ["HUGGINGFACE_URL"] = "https://hf.fake"
 
 import httpx  # noqa: E402
 import pytest  # noqa: E402
@@ -25,8 +26,9 @@ from app import providers  # noqa: E402
 from app.main import app  # noqa: E402
 from app.providers.atlas import AtlasAdapter  # noqa: E402
 from app.providers.wavespeed import WaveSpeedAdapter  # noqa: E402
+from app.services import huggingface  # noqa: E402
 from app.services.worker import worker  # noqa: E402
-from tests.fakes import VALID_KEY, FakeProviders  # noqa: E402
+from tests.fakes import VALID_KEY, FakeHub, FakeProviders  # noqa: E402
 
 BACKEND = Path(__file__).resolve().parent.parent
 
@@ -48,6 +50,15 @@ async def _database() -> AsyncIterator[None]:
     await worker.start()
     yield
     await worker.stop()
+
+
+@pytest.fixture(autouse=True)
+def hub() -> FakeHub:
+    """Hugging Face never reached from tests: a fake Hub answers token and license checks."""
+    h = FakeHub()
+    huggingface.HubClient.transport = h.transport()
+    huggingface.clear_cache()
+    return h
 
 
 @pytest.fixture

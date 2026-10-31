@@ -1,10 +1,11 @@
 "use client";
 
-import { ArrowRight, Dices, Plug, Sparkles, TriangleAlert } from "lucide-react";
+import { ChevronDown, Dices, Sparkles, TriangleAlert } from "lucide-react";
 import Link from "next/link";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 
+import { ComfyConnectionBar } from "@/components/comfy/connection-bar";
 import { PromptEditor } from "@/components/generate/controls";
 import { newPersonaDraft, type PersonaDraft, PersonaSection } from "@/components/personas/persona-picker";
 import { newRequestId } from "@/components/studio/common";
@@ -106,6 +107,7 @@ export function ComfyPanel({
   const personas = usePersonas();
   const generate = useComfyGenerate();
   const submitting = useRef(false);
+  const [more, setMore] = useState(false);
   const [draft, setDraft] = useState<ComfyDraft>(() => {
     let saved: Partial<ComfyDraft> = {};
     if (storageKey && typeof window !== "undefined") {
@@ -133,8 +135,9 @@ export function ComfyPanel({
   }, [draft, storageKey]);
 
   const set = (patch: Partial<ComfyDraft>) => setDraft((d) => ({ ...d, ...patch }));
-  const ready = (conns.data?.items ?? []).filter((c) => c.status === "ready");
-  const conn = ready.find((c) => c.id === draft.connectionId) ?? ready[0];
+  const all = conns.data?.items ?? [];
+  const conn = all.find((c) => c.id === draft.connectionId) ?? all.find((c) => c.status === "ready") ?? all[0];
+  const connReady = conn?.status === "ready";
   const detection = conn?.info.krea2;
   const variantSpec = catalog.data?.krea2.variants.find((v) => v.key === draft.variant);
   const files = detection?.variants[draft.variant]?.files ?? [];
@@ -177,6 +180,7 @@ export function ComfyPanel({
 
   const problems: string[] = [];
   if (!conn) problems.push(t("k2.noConnection"));
+  else if (!connReady) problems.push(conn.status === "deploying" ? t("k2.starting") : t("k2.notReady"));
   else if (!detection?.supported) problems.push(t("k2.notSupported"));
   else if (!files.length) problems.push(t("k2.variantMissing", { name: variantSpec?.name ?? "" }));
   else if (!detection.text_encoders.length || !detection.vaes.length) problems.push(detection.missing.join(" · "));
@@ -234,25 +238,15 @@ export function ComfyPanel({
     <section className="studio-controls" aria-label={t("gen.controls")}>
       <div className="studio-scroll">
         {header}
-        {!ready.length ? (
-          <Notice tone="accent" icon={<Plug />}>
-            <strong>{t("k2.connectTitle")}</strong>
-            <div style={{ margin: "4px 0 10px" }}>{t("k2.connectBody")}</div>
-            <Link href="/comfyui" className="btn btn-sm btn-primary">
-              ComfyUI <ArrowRight />
-            </Link>
-          </Notice>
-        ) : (
+        <div>
+          <div className="section-title">
+            <span className="eyebrow grow">{t("cf.runsOn")}</span>
+          </div>
+          <ComfyConnectionBar selected={conn} onSelect={(id) => set({ connectionId: id })} />
+        </div>
+        {!all.length ? null : (
           <>
-            <div className="form-grid">
-              <Field label="ComfyUI">
-                <Select
-                  label="ComfyUI"
-                  value={conn?.id ?? null}
-                  onChange={(id) => set({ connectionId: id })}
-                  options={ready.map((c) => ({ value: c.id, label: c.name }))}
-                />
-              </Field>
+            {runnable.length ? (
               <Field label={t("k2.workflow")}>
                 <Select
                   label={t("k2.workflow")}
@@ -261,7 +255,7 @@ export function ComfyPanel({
                   options={[{ value: "", label: t("wf.builtin") }, ...runnable.map((w) => ({ value: w.id, label: w.name }))]}
                 />
               </Field>
-            </div>
+            ) : null}
             <div>
               <div className="section-title">
                 <span className="eyebrow grow">{t("k2.variant")}</span>
@@ -324,7 +318,7 @@ export function ComfyPanel({
             <div>
               <div className="section-title">
                 <span className="eyebrow grow">LoRA</span>
-                <Link href="/loras" className="tiny subtle">{t("nav.myLoras")}</Link>
+                <Link href="/loras" className="tiny subtle">{t("lo.tabLoras")}</Link>
               </div>
               <Select
                 label="LoRA"
@@ -385,24 +379,29 @@ export function ComfyPanel({
                   <Segmented label={t("gen.resolution")} value={resolution} onChange={(r) => set({ resolution: r })} options={tiers.map((r) => ({ value: r, label: r }))} />
                   <Segmented label={t("gen.imageCount")} value={draft.count} onChange={(n) => set({ count: n })} options={[1, 2, 3, 4].map((n) => ({ value: n, label: String(n) }))} />
                 </div>
-                <div className="form-grid">
-                  <Field label={t("gen.seed")} hint={t("gen.seedHint")}>
-                    <div className="input-wrap">
-                      <input className="input mono" value={draft.seed} placeholder={t("gen.seedRandom")} onChange={(e) => set({ seed: e.target.value.trim() })} />
-                      <span className="input-action">
-                        <IconButton label={t("gen.randomSeed")} onClick={() => set({ seed: String(Math.floor(Math.random() * 2 ** 32)) })}>
-                          <Dices />
-                        </IconButton>
-                      </span>
-                    </div>
-                  </Field>
-                  <Field label={t("k2.steps")} hint={t("k2.default", { n: variantSpec?.steps ?? "" })}>
-                    <input className="input" type="number" min={1} max={150} value={draft.steps} placeholder={String(variantSpec?.steps ?? "")} onChange={(e) => set({ steps: e.target.value })} />
-                  </Field>
-                  <Field label="CFG" hint={t("k2.default", { n: variantSpec?.cfg ?? "" })}>
-                    <input className="input" type="number" min={0} max={20} step={0.1} value={draft.cfg} placeholder={String(variantSpec?.cfg ?? "")} onChange={(e) => set({ cfg: e.target.value })} />
-                  </Field>
-                </div>
+                <button type="button" className="link-button tiny" onClick={() => setMore((v) => !v)} aria-expanded={more}>
+                  {t("gen.moreSettings")} <ChevronDown size={13} style={{ transform: more ? "rotate(180deg)" : undefined }} />
+                </button>
+                {more ? (
+                  <div className="form-grid">
+                    <Field label={t("gen.seed")} hint={t("gen.seedHint")}>
+                      <div className="input-wrap">
+                        <input className="input mono" value={draft.seed} placeholder={t("gen.seedRandom")} onChange={(e) => set({ seed: e.target.value.trim() })} />
+                        <span className="input-action">
+                          <IconButton label={t("gen.randomSeed")} onClick={() => set({ seed: String(Math.floor(Math.random() * 2 ** 32)) })}>
+                            <Dices />
+                          </IconButton>
+                        </span>
+                      </div>
+                    </Field>
+                    <Field label={t("k2.steps")} hint={t("k2.default", { n: variantSpec?.steps ?? "" })}>
+                      <input className="input" type="number" min={1} max={150} value={draft.steps} placeholder={String(variantSpec?.steps ?? "")} onChange={(e) => set({ steps: e.target.value })} />
+                    </Field>
+                    <Field label="CFG" hint={t("k2.default", { n: variantSpec?.cfg ?? "" })}>
+                      <input className="input" type="number" min={0} max={20} step={0.1} value={draft.cfg} placeholder={String(variantSpec?.cfg ?? "")} onChange={(e) => set({ cfg: e.target.value })} />
+                    </Field>
+                  </div>
+                ) : null}
               </div>
             </div>
             {problems.length ? (
@@ -421,7 +420,7 @@ export function ComfyPanel({
           size="lg"
           block
           loading={generate.isPending}
-          disabled={!ready.length || problems.length > 0 || generate.isPending}
+          disabled={problems.length > 0 || generate.isPending}
           onClick={submit}
           icon={<Sparkles />}
         >

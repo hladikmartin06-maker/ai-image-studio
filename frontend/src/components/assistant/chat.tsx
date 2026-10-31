@@ -8,6 +8,7 @@ import {
   Eye,
   EyeOff,
   Gauge,
+  ImagePlus,
   Lightbulb,
   Plug,
   RefreshCw,
@@ -16,6 +17,7 @@ import {
   Square,
   Wand2,
   Wrench,
+  X,
 } from "lucide-react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
@@ -23,7 +25,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 
 import { Markdown } from "@/components/assistant/markdown";
-import { Badge, Button, Notice, Segmented, Select, Skeleton, Tooltip, cx } from "@/components/ui";
+import { Badge, Button, IconButton, Notice, Segmented, Select, Skeleton, Spinner, Tooltip, cx } from "@/components/ui";
 import { api, ApiError } from "@/lib/api";
 import { streamChat, type SendBody } from "@/lib/chat-stream";
 import { useI18n } from "@/lib/i18n";
@@ -35,9 +37,12 @@ import {
   useConversation,
   useSettings,
   useUpdateSettings,
+  useUploadReference,
 } from "@/lib/queries";
 import { readStudioContext } from "@/lib/studio-bridge";
-import type { AIMode, ChatMessage, Conversation } from "@/lib/types";
+import type { AIMode, ChatMessage, Conversation, ReferenceImage } from "@/lib/types";
+
+const MAX_PHOTOS = 4;
 
 type QuickAction = NonNullable<SendBody["quick_action"]>;
 
@@ -97,7 +102,10 @@ export function ChatPanel({
   const [input, setInput] = useState("");
   const [pending, setPending] = useState<ChatMessage[]>([]);
   const [busy, setBusy] = useState(false);
-  const [lastSend, setLastSend] = useState<{ content: string; action?: QuickAction } | null>(null);
+  const [photos, setPhotos] = useState<ReferenceImage[]>([]);
+  const uploadPhoto = useUploadReference();
+  const photoInput = useRef<HTMLInputElement>(null);
+  const [lastSend, setLastSend] = useState<{ content: string; action?: QuickAction; photos?: ReferenceImage[] } | null>(null);
   const abort = useRef<AbortController | null>(null);
   const scroller = useRef<HTMLDivElement>(null);
   const prefs = settings.data;
@@ -131,15 +139,32 @@ export function ChatPanel({
     // Re-read whenever messages change (a send is a good moment) or the page changes.
   }, [prefs?.ai_share_context, auth.data, pathname, catalog.data, messages.length]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const send = async (content: string, action?: QuickAction) => {
-    const text = content.trim();
-    if (!text || busy) return;
+  const addPhotos = async (files: File[]) => {
+    const images = files.filter((f) => f.type.startsWith("image/")).slice(0, MAX_PHOTOS - photos.length);
+    if (!images.length) {
+      if (files.length) toast.error(t("chat.photoLimit", { n: MAX_PHOTOS }));
+      return;
+    }
+    for (const file of images) {
+      try {
+        const ref = await uploadPhoto.mutateAsync(file);
+        setPhotos((list) => [...list, ref].slice(0, MAX_PHOTOS));
+      } catch (e) {
+        toast.error((e as Error).message);
+      }
+    }
+  };
+
+  const send = async (content: string, action?: QuickAction, attached: ReferenceImage[] = photos) => {
+    // A photo alone is enough: the assistant then describes it.
+    const text = content.trim() || (attached.length ? t("chat.photoDefault") : "");
+    if (!text || busy || uploadPhoto.isPending) return;
     if (!connected.length) {
       toast.error(t("chat.noProvider"));
       return;
     }
     setBusy(true);
-    setLastSend({ content: text, action });
+    setLastSend({ content: text, action, photos: attached });
     let convId = conversationId;
     try {
       if (!convId) {
@@ -148,12 +173,13 @@ export function ChatPanel({
         onConversationChange(conv.id);
       }
       setInput("");
+      setPhotos([]);
       const controller = new AbortController();
       abort.current = controller;
       const context = prefs?.ai_share_context ? readStudioContext(auth.data?.user?.id, pathname) : null;
       await streamChat(
         convId,
-        { content: text, quick_action: action, context },
+        { content: text, quick_action: action, context, image_ids: attached.map((p) => p.id) },
         {
           onStart: (user, assistant) => setPending([user, assistant]),
           onDelta: (delta) =>
@@ -183,7 +209,10 @@ export function ChatPanel({
               ? { label: t("nav.integrations"), onClick: () => router.push("/integrations?tab=ai") }
               : undefined,
         });
-        if (!pending.length) setInput(text);
+        if (!pending.length) {
+          setInput(text);
+          setPhotos(attached);
+        }
       }
     } finally {
       abort.current = null;
@@ -290,7 +319,18 @@ export function ChatPanel({
             {messages.map((m) => (
               <div key={m.id} className={cx("chat-msg", m.role)}>
                 {m.role === "user" ? (
-                  <div className="chat-bubble">{m.content}</div>
+                  <div className="chat-bubble">
+                    {m.meta?.images?.length ? (
+                      <div className="chat-photos">
+                        {m.meta.images.map((img) => (
+                          <a key={img.id} href={img.url} target="_blank" rel="noreferrer">
+                            <img src={img.thumb_url} alt="" />
+                          </a>
+                        ))}
+                      </div>
+                    ) : null}
+                    {m.content}
+                  </div>
                 ) : (
                   <div className="chat-answer">
                     {m.content ? (
@@ -310,7 +350,7 @@ export function ChatPanel({
                             size="sm"
                             style={{ marginTop: 8 }}
                             icon={<RefreshCw />}
-                            onClick={() => send(lastSend.content, lastSend.action)}
+                            onClick={() => send(lastSend.content, lastSend.action, lastSend.photos ?? [])}
                           >
                             {t("chat.retry")}
                           </Button>
@@ -336,7 +376,7 @@ export function ChatPanel({
                   type="button"
                   className="chip"
                   disabled={busy}
-                  onClick={() => send(q.text, q.action)}
+                  onClick={() => send(q.text, q.action, [])}
                 >
                   {q.icon}
                   {q.label}
@@ -345,10 +385,34 @@ export function ChatPanel({
             </div>
           ) : null}
           <div className="chat-input">
+            {photos.length || uploadPhoto.isPending ? (
+              <div className="chat-photos pending">
+                {photos.map((p) => (
+                  <span key={p.id} className="chat-photo">
+                    <img src={p.thumb_url} alt="" />
+                    <button type="button" aria-label={t("chat.removePhoto")} onClick={() => setPhotos((list) => list.filter((x) => x.id !== p.id))}>
+                      <X size={12} />
+                    </button>
+                  </span>
+                ))}
+                {uploadPhoto.isPending ? (
+                  <span className="chat-photo loading">
+                    <Spinner size={14} />
+                  </span>
+                ) : null}
+              </div>
+            ) : null}
             <textarea
+              onPaste={(e) => {
+                const files = Array.from(e.clipboardData.files);
+                if (files.some((f) => f.type.startsWith("image/"))) {
+                  e.preventDefault();
+                  void addPhotos(files);
+                }
+              }}
               value={input}
               onChange={(e) => setInput(e.target.value)}
-              placeholder={t("chat.placeholder")}
+              placeholder={t("chat.placeholderPhoto")}
               rows={compact ? 2 : 3}
               maxLength={8000}
               aria-label={t("chat.placeholder")}
@@ -371,6 +435,24 @@ export function ChatPanel({
                   {prefs?.ai_share_context ? (contextLabel ?? t("chat.contextOn")) : t("chat.contextOff")}
                 </button>
               </Tooltip>
+              <input
+                ref={photoInput}
+                type="file"
+                accept="image/png,image/jpeg,image/webp"
+                multiple
+                hidden
+                onChange={(e) => {
+                  void addPhotos(Array.from(e.target.files ?? []));
+                  e.target.value = "";
+                }}
+              />
+              <IconButton
+                label={t("chat.addPhoto")}
+                onClick={() => photoInput.current?.click()}
+                disabled={busy || photos.length >= MAX_PHOTOS}
+              >
+                <ImagePlus />
+              </IconButton>
               <span className="spacer" />
               {active ? (
                 <Tooltip label={t("chat.routeTip")}>
@@ -390,7 +472,7 @@ export function ChatPanel({
                   size="sm"
                   variant="primary"
                   icon={<ArrowUp />}
-                  disabled={!input.trim()}
+                  disabled={(!input.trim() && !photos.length) || uploadPhoto.isPending}
                   onClick={() => send(input)}
                   aria-label={t("chat.send")}
                 >

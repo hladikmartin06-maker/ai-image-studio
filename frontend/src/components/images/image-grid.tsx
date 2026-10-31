@@ -20,7 +20,6 @@ function ratio(img: StudioImage) {
 export function ImageGrid({
   images,
   onOpen,
-  onFavorite,
   onDownload,
   selection,
   selecting,
@@ -33,7 +32,6 @@ export function ImageGrid({
 }: {
   images: StudioImage[];
   onOpen: (index: number) => void;
-  onFavorite: (img: StudioImage) => void;
   onDownload: (img: StudioImage) => void;
   selection?: Set<string> | null;
   selecting?: boolean;
@@ -74,7 +72,6 @@ export function ImageGrid({
                 maxHeight: "calc(var(--row-h) * 1.6)",
               }}
               onOpen={() => onOpen(index)}
-              onFavorite={() => onFavorite(img)}
               onDownload={() => onDownload(img)}
               selecting={Boolean(selecting || (selection && selection.size > 0))}
               selected={selection?.has(img.id)}

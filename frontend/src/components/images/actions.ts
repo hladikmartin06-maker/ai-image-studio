@@ -7,7 +7,7 @@ import { toast } from "sonner";
 import { useConfirm } from "@/components/ui";
 import { ApiError, downloadUrl } from "@/lib/api";
 import { useT } from "@/lib/i18n";
-import { useDeleteImage, useRegenerate, useSaveToLibrary, useToggleFavorite } from "@/lib/queries";
+import { useDeleteImage, useRegenerate, useSaveToLibrary } from "@/lib/queries";
 import type { StudioImage } from "@/lib/types";
 
 export async function copyText(text: string) {
@@ -32,24 +32,9 @@ export function useImageActions() {
   const t = useT();
   const router = useRouter();
   const confirm = useConfirm();
-  const favorite = useToggleFavorite();
   const remove = useDeleteImage();
   const regenerate = useRegenerate();
   const save = useSaveToLibrary();
-
-  const toggleFavorite = useCallback(
-    (img: StudioImage) => {
-      favorite.mutate(
-        { id: img.id, value: !img.is_favorite },
-        {
-          onSuccess: (res) =>
-            toast.success(res.is_favorite ? t("images.addedFavorite") : t("images.removedFavorite")),
-          onError: (e) => toast.error((e as Error).message),
-        },
-      );
-    },
-    [favorite, t],
-  );
 
   const download = useCallback((img: StudioImage) => downloadUrl(img.download_url), []);
 
@@ -117,7 +102,6 @@ export function useImageActions() {
   );
 
   return {
-    toggleFavorite,
     download,
     copyPrompt,
     deleteImage,

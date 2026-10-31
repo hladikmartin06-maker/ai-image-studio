@@ -144,7 +144,7 @@ def _deployment(conn: ComfyConnection) -> dict[str, Any]:
         "cost": run_cost(d.get("cost_per_hour"), started, end or datetime.now(UTC)),
         "cost_is_final": False,
         "error": conn.last_error,
-        "link": "/comfyui",
+        "link": "/generate?engine=comfy",
         "artifacts": 0,
     }
 

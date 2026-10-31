@@ -38,7 +38,7 @@ class CaptionError(Exception):
         self.message = message
 
 
-def _small_jpeg(data: bytes) -> str:
+def small_jpeg(data: bytes) -> str:
     """Downscaled copy for the request (fewer image tokens); the dataset keeps the original."""
     with PILImage.open(io.BytesIO(data)) as img:
         img = ImageOps.exif_transpose(img).convert("RGB")
@@ -90,7 +90,7 @@ async def describe(
         system=CAPTION_SYSTEM,
         messages=[
             ChatTurn(
-                "user", "Caption this training image.", images=[("image/jpeg", _small_jpeg(data))]
+                "user", "Caption this training image.", images=[("image/jpeg", small_jpeg(data))]
             )
         ],
         max_tokens=200,

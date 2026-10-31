@@ -88,6 +88,12 @@ async def test_profile_and_collection(user: Api):
     lena = await _add_images(user, lena["id"], 3)
     ids = [i["id"] for i in lena["images"]]
     assert lena["image_count"] == 3 and lena["primary_image"]["id"] == ids[0]
+    # The library shows these photos and can download them as files.
+    url = lena["images"][0]["url"]
+    shown = await user.get(url)
+    assert shown.status_code == 200 and "content-disposition" not in shown.headers
+    saved = await user.get(f"{url}?download=1")
+    assert saved.headers["content-disposition"].startswith("attachment")
 
     # The same file again is not stored twice.
     files = {"file": ("again.png", png_bytes(100, 80, (0, 40, 90)), "image/png")}
@@ -130,6 +136,19 @@ async def test_profile_and_collection(user: Api):
     # The reference of an AI model cannot be deleted from the generic uploads route.
     blocked = await user.delete(f"/api/reference-images/{ids[0]}")
     assert blocked.status_code == 409
+
+
+async def test_collection_holds_more_than_24_images(user: Api):
+    big = await _persona(user, name="Big collection")
+    body: dict = {}
+    for i in range(26):
+        color = (i * 9, 20, 200 - i * 5)
+        files = {"file": (f"m{i}.png", png_bytes(80 + i, 70, color), "image/png")}
+        r = await user.post(f"/api/personas/{big['id']}/images", files=files)
+        assert r.status_code == 201, r.text
+        body = r.json()["persona"]
+    assert body["image_count"] == 26
+    assert body["max_images"] == personas.MAX_PERSONA_IMAGES == 200
 
 
 async def test_generation_attaches_references_within_the_endpoint_limit(connected: Api, fake):

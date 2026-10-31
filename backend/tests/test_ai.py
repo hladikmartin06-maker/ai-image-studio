@@ -17,6 +17,7 @@ from app.db import SessionLocal
 from app.models import AIIntegration, ChatConversation
 from tests.ai_fakes import AI_KEY, FakeAI
 from tests.conftest import Api, make_user
+from tests.fakes import png_bytes
 
 
 @pytest.fixture
@@ -345,3 +346,38 @@ async def test_conversation_search_rename_delete(user: Api, ai: FakeAI):
     assert (await user.get(f"/api/ai/conversations/{conv}")).json()["title"] == "Coast"
     await user.delete(f"/api/ai/conversations/{conv}")
     assert (await user.get(f"/api/ai/conversations/{conv}")).status_code == 404
+
+
+async def test_photos_are_sent_with_their_message(user: Api, ai: FakeAI):
+    await connect(user, "openai")
+    conv = await new_conversation(user)
+    files = {"file": ("look.png", png_bytes(320, 240, (200, 120, 60)), "image/png")}
+    ref = (await user.post("/api/reference-images", files=files)).json()
+
+    # Even a greeting with a photo goes to the model (no free local answer).
+    ev = await chat(user, conv, "hi", image_ids=[ref["id"]])
+    assert ev[-1][0] == "done"
+    last = ai.calls[-1]["body"]["messages"][-1]
+    parts = last["content"]
+    assert parts[0]["type"] == "image_url"
+    assert parts[0]["image_url"]["url"].startswith("data:image/jpeg;base64,")
+    assert parts[-1] == {"type": "text", "text": "hi"}
+    detail = (await user.get(f"/api/ai/conversations/{conv}")).json()
+    shown = detail["messages"][0]["meta"]["images"]
+    assert shown[0]["id"] == ref["id"] and shown[0]["thumb_url"].endswith("/thumb")
+
+    # Later turns replay a note instead of the photo (no image tokens again).
+    await chat(user, conv, "Now write a prompt for it")
+    msgs = ai.calls[-1]["body"]["messages"]
+    assert all(isinstance(m["content"], str) for m in msgs)
+    assert msgs[1]["content"].startswith("[The user attached 1 photo(s) to this message.]")
+
+    # Another user's upload cannot be attached.
+    other = await make_user("photo-other@example.com")
+    conv2 = (await other.post("/api/ai/conversations", json={})).json()["id"]
+    r = await other.post(
+        f"/api/ai/conversations/{conv2}/messages",
+        json={"content": "what is this?", "image_ids": [ref["id"]]},
+    )
+    assert r.status_code == 404
+    await other.client.aclose()

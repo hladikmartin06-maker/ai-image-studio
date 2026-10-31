@@ -21,8 +21,8 @@ import { useRef, useState } from "react";
 import { toast } from "sonner";
 
 import { formatMoney, GpuMeter, type GpuChoice, GpuPicker, StatusPill } from "@/components/studio/common";
-import { Badge, Button, Field, IconButton, Modal, Notice, Segmented, Select, Switch, useConfirm } from "@/components/ui";
-import { ApiError, api, uploadInChunks } from "@/lib/api";
+import { Badge, Button, Field, IconButton, Modal, Notice, Select, Switch, useConfirm } from "@/components/ui";
+import { ApiError, uploadInChunks } from "@/lib/api";
 import { formatBytes, formatRelative } from "@/lib/format";
 import { useI18n, useT } from "@/lib/i18n";
 import {
@@ -36,7 +36,7 @@ import {
   useTestComfy,
   useUpdateComfy,
 } from "@/lib/queries";
-import type { ComfyConnection, GpuWorkload } from "@/lib/types";
+import type { ComfyConnection } from "@/lib/types";
 
 const KIND_ICON = { local: Laptop, remote: Server, runpod: CloudCog, modal: CloudCog };
 
@@ -241,42 +241,23 @@ export function ConnectionCard({ conn }: { conn: ComfyConnection }) {
 
 // --- add / deploy ------------------------------------------------------------------------
 
-type AddMode = "local" | "remote" | "existing" | "deploy";
+export type AddMode = "local" | "deploy";
 
-export function AddConnectionModal({ open, onClose }: { open: boolean; onClose: () => void }) {
-  return open ? <AddConnection onClose={onClose} /> : null;
+export function AddConnectionModal({ open, onClose, mode }: { open: boolean; onClose: () => void; mode?: AddMode }) {
+  return open ? <AddConnection onClose={onClose} initialMode={mode ?? "local"} /> : null;
 }
 
-function AddConnection({ onClose }: { onClose: () => void }) {
+function AddConnection({ onClose, initialMode }: { onClose: () => void; initialMode: AddMode }) {
   const t = useT();
   const confirm = useConfirm();
   const add = useAddComfy();
   const deploy = useDeployComfy();
-  const [mode, setMode] = useState<AddMode>("local");
-  const [name, setName] = useState("");
+  const [mode, setMode] = useState<AddMode>(initialMode);
   const [url, setUrl] = useState("http://127.0.0.1:8188");
-  const [auth, setAuth] = useState<"none" | "bearer" | "basic">("none");
-  const [secret, setSecret] = useState("");
   const [folder, setFolder] = useState("");
-  const [provider, setProvider] = useState<"runpod" | "modal">("runpod");
-  const [workloads, setWorkloads] = useState<GpuWorkload[] | null>(null);
   const [gpu, setGpu] = useState<GpuChoice>({ provider: "", gpu_type: "", gpu_count: 1, cloud_type: "SECURE" });
-  const [variants, setVariants] = useState<string[]>(["turbo"]);
   const [autoStop, setAutoStop] = useState(30);
-  const [image, setImage] = useState("");
   const [error, setError] = useState<string | null>(null);
-
-  const loadWorkloads = async (p: "runpod" | "modal") => {
-    setProvider(p);
-    setWorkloads(null);
-    try {
-      const res = await api<{ items: GpuWorkload[] }>(`/api/comfy/workloads?provider=${p}`);
-      setWorkloads(res.items);
-    } catch (e) {
-      setError((e as Error).message);
-      setWorkloads([]);
-    }
-  };
 
   const submit = async () => {
     setError(null);
@@ -293,26 +274,25 @@ function AddConnection({ onClose }: { onClose: () => void }) {
         });
         if (!ok) return;
         await deploy.mutateAsync({
-          name: name.trim() || `ComfyUI ${gpu.provider === "modal" ? "Modal" : "RunPod"}`,
+          name: `Krea 2 · ${gpu.provider === "modal" ? "Modal" : "RunPod"}`,
           provider: gpu.provider,
           gpu_type: gpu.gpu_type,
-          gpu_count: gpu.gpu_count,
-          cloud_type: gpu.cloud_type,
-          image: image.trim() || null,
-          variants,
+          gpu_count: 1,
+          cloud_type: "SECURE",
+          image: null,
+          variants: ["turbo"],
           auto_stop_minutes: autoStop,
           confirm_billing: true,
         });
         toast.success(t("cf.deployStarted"));
       } else {
-        const kind = mode === "existing" ? provider : mode;
         const created = await add.mutateAsync({
-          name: name.trim() || (mode === "local" ? "ComfyUI on this Mac" : "ComfyUI"),
-          kind,
+          name: t("cf.localName"),
+          kind: "local",
           base_url: url.trim(),
-          auth_type: auth,
-          secret: auth === "none" ? null : secret,
-          models_dir: mode === "local" ? folder.trim() || null : null,
+          auth_type: "none",
+          secret: null,
+          models_dir: folder.trim() || null,
         });
         const c = created as ComfyConnection;
         if (c.status === "ready") toast.success(t("cf.connected"));
@@ -344,137 +324,48 @@ function AddConnection({ onClose }: { onClose: () => void }) {
       }
     >
       <div className="col gap-16">
-        <Segmented
-          label={t("cf.addTitle")}
-          value={mode}
-          block
-          onChange={(m) => {
-            setMode(m);
-            setError(null);
-            if (m === "local") setUrl("http://127.0.0.1:8188");
-            if (m === "remote") setUrl("https://");
-            if (m === "existing") void loadWorkloads(provider);
-          }}
-          options={[
-            { value: "local", label: t("cf.mode.local") },
-            { value: "remote", label: t("cf.mode.remote") },
-            { value: "existing", label: t("cf.mode.existing") },
-            { value: "deploy", label: t("cf.mode.deploy") },
-          ]}
-        />
-        <div className="hint">{t(`cf.modeHint.${mode}`)}</div>
-        <Field label={t("cf.name")}>
-          <input className="input" value={name} maxLength={80} onChange={(e) => setName(e.target.value)} placeholder={t("cf.namePlaceholder")} />
-        </Field>
+        <div className="connect-choices" role="radiogroup" aria-label={t("cf.addTitle")}>
+          {(["local", "deploy"] as const).map((m) => (
+            <button
+              key={m}
+              type="button"
+              role="radio"
+              aria-checked={mode === m}
+              className="model-card"
+              onClick={() => {
+                setMode(m);
+                setError(null);
+              }}
+            >
+              <span className="row" style={{ gap: 8 }}>
+                {m === "local" ? <Laptop size={18} /> : <CloudCog size={18} />}
+                <span className="name">{t(`cf.mode.${m}`)}</span>
+              </span>
+              <span className="desc">{t(`cf.modeHint.${m}`)}</span>
+            </button>
+          ))}
+        </div>
 
-        {mode === "existing" ? (
+        {mode === "local" ? (
           <>
-            <Segmented
-              label={t("gpu.provider")}
-              value={provider}
-              onChange={(p) => void loadWorkloads(p)}
-              options={[
-                { value: "runpod", label: "RunPod" },
-                { value: "modal", label: "Modal" },
-              ]}
-            />
-            {workloads === null ? (
-              <div className="hint">{t("common.loading")}</div>
-            ) : workloads.length === 0 ? (
-              <div className="hint">{t("cf.noWorkloads")}</div>
-            ) : (
-              <div className="col" style={{ gap: 6 }}>
-                {workloads.flatMap((w) =>
-                  w.urls.map((u) => (
-                    <button
-                      key={u}
-                      type="button"
-                      className="chip"
-                      aria-pressed={url === u}
-                      onClick={() => {
-                        setUrl(u);
-                        if (!name) setName(w.name);
-                      }}
-                    >
-                      {w.name} · {u}
-                    </button>
-                  )),
-                )}
-              </div>
-            )}
-          </>
-        ) : null}
-
-        {mode !== "deploy" ? (
-          <>
-            <Field label={t("cf.url")} hint={mode === "local" ? t("cf.urlLocalHint") : t("cf.urlRemoteHint")}>
+            <Field label={t("cf.url")} hint={t("cf.urlLocalHint")}>
               <input className="input mono" value={url} onChange={(e) => setUrl(e.target.value)} />
             </Field>
-            <div className="form-grid">
-              <Field label={t("cf.auth")}>
-                <Select
-                  label={t("cf.auth")}
-                  value={auth}
-                  onChange={setAuth}
-                  options={[
-                    { value: "none", label: t("cf.authNone") },
-                    { value: "bearer", label: t("cf.authBearer") },
-                    { value: "basic", label: t("cf.authBasic") },
-                  ]}
-                />
-              </Field>
-              {auth !== "none" ? (
-                <Field label={auth === "basic" ? t("cf.userPass") : t("cf.token")}>
-                  <input
-                    className="input"
-                    type="password"
-                    autoComplete="off"
-                    value={secret}
-                    placeholder={auth === "basic" ? "user:password" : ""}
-                    onChange={(e) => setSecret(e.target.value)}
-                  />
-                </Field>
-              ) : null}
-            </div>
-            {mode === "local" ? (
-              <Field label={t("cf.folder")} hint={t("cf.folderHint")}>
-                <input className="input mono" value={folder} placeholder="~/ComfyUI" onChange={(e) => setFolder(e.target.value)} />
-              </Field>
-            ) : null}
+            <Field label={t("cf.folder")} hint={t("cf.folderHint")}>
+              <input className="input mono" value={folder} placeholder="~/ComfyUI" onChange={(e) => setFolder(e.target.value)} />
+            </Field>
           </>
         ) : (
           <>
             <GpuPicker value={gpu} onChange={setGpu} minMemoryGb={24} />
-            <Field label={t("cf.variantsToInstall")} hint={t("cf.variantsHint")}>
-              <div className="chips">
-                {(["turbo", "raw"] as const).map((v) => (
-                  <button
-                    key={v}
-                    type="button"
-                    className="chip"
-                    aria-pressed={variants.includes(v)}
-                    disabled={v === "raw"}
-                    title={v === "raw" ? t("cf.rawNoUrl") : undefined}
-                    onClick={() => setVariants((cur) => (cur.includes(v) ? cur.filter((x) => x !== v) : [...cur, v]))}
-                  >
-                    Krea 2 {v === "turbo" ? "Turbo" : "RAW"}
-                  </button>
-                ))}
-              </div>
+            <Field label={t("cf.autoStop")} hint={t("cf.autoStopHint")}>
+              <Select
+                label={t("cf.autoStop")}
+                value={autoStop}
+                onChange={(m) => setAutoStop(Number(m))}
+                options={[15, 30, 60, 120, 0].map((m) => ({ value: m, label: m ? `${m} min` : t("common.off") }))}
+              />
             </Field>
-            <div className="form-grid">
-              <Field label={t("cf.autoStop")} hint={t("cf.autoStopHint")}>
-                <Select
-                  label={t("cf.autoStop")}
-                  value={autoStop}
-                  onChange={(m) => setAutoStop(Number(m))}
-                  options={[0, 15, 30, 60, 120].map((m) => ({ value: m, label: m ? `${m} min` : t("common.off") }))}
-                />
-              </Field>
-              <Field label={t("cf.image")} hint={t("cf.imageHint")}>
-                <input className="input mono" value={image} placeholder={t("cf.imageDefault")} onChange={(e) => setImage(e.target.value)} />
-              </Field>
-            </div>
             <Notice>{t("cf.deployNote")}</Notice>
           </>
         )}

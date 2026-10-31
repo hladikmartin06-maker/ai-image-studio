@@ -5,11 +5,10 @@ import {
   CalendarRange,
   CheckSquare,
   Download,
-  Heart,
-  HeartOff,
   ImageOff,
   LibraryBig,
   Search,
+  SlidersHorizontal,
   Sparkles,
   Trash2,
   X,
@@ -60,11 +59,11 @@ function since(range: DateRange): string | undefined {
 }
 
 export function ImageBrowser({
-  favoritesOnly,
   header,
+  toolbarStart,
 }: {
-  favoritesOnly?: boolean;
   header: (total: number | undefined) => ReactNode;
+  toolbarStart?: ReactNode;
 }) {
   const { t, locale } = useI18n();
   const catalog = useCatalog();
@@ -77,11 +76,11 @@ export function ImageBrowser({
   const [models, setModels] = useState<ModelKey[]>([]);
   const [providers, setProviders] = useState<ProviderKey[]>([]);
   const [range, setRange] = useState<DateRange>("any");
-  const [onlyFavorites, setOnlyFavorites] = useState(false);
   const [status, setStatus] = useState<StatusFilter>("any");
-  const [sort, setSort] = useState<ImageFilters["sort"]>(favoritesOnly ? "favorited" : "newest");
+  const [sort, setSort] = useState<ImageFilters["sort"]>("newest");
   const [scope, setScope] = useState<"library" | "unsaved">("library");
   const [persona, setPersona] = useState<string>("any");
+  const [showMore, setShowMore] = useState(false);
   const personas = usePersonas();
   const [selection, setSelection] = useState<Set<string>>(new Set());
   const [selecting, setSelecting] = useState(false);
@@ -95,15 +94,14 @@ export function ImageBrowser({
       q: q || undefined,
       model: models.length ? models.join(",") : undefined,
       provider: providers.length ? providers.join(",") : undefined,
-      favorite: favoritesOnly || onlyFavorites ? true : undefined,
       status: status === "complete" || status === "partial" ? status : undefined,
       date_from: since(range),
       sort,
-      scope: favoritesOnly ? "all" : scope,
+      scope,
       persona: persona === "any" ? undefined : persona,
       limit: 60,
     }),
-    [q, models, providers, favoritesOnly, onlyFavorites, status, range, sort, scope, persona],
+    [q, models, providers, status, range, sort, scope, persona],
   );
   const images = useImages(filters, !generationStatus);
   const gens = useGenerations(
@@ -125,7 +123,6 @@ export function ImageBrowser({
     models.length > 0 ||
     providers.length > 0 ||
     range !== "any" ||
-    onlyFavorites ||
     status !== "any" ||
     persona !== "any";
 
@@ -134,7 +131,6 @@ export function ImageBrowser({
     setModels([]);
     setProviders([]);
     setRange("any");
-    setOnlyFavorites(false);
     setStatus("any");
     setPersona("any");
   };
@@ -162,7 +158,7 @@ export function ImageBrowser({
     setSelecting(false);
   };
 
-  const runBulk = async (action: "favorite" | "unfavorite" | "delete" | "save") => {
+  const runBulk = async (action: "delete" | "save") => {
     if (action === "delete") {
       const ok = await confirm({
         title: t("lib.bulkDeleteTitle", { n: ids.length }),
@@ -175,7 +171,7 @@ export function ImageBrowser({
     try {
       const res = await bulk.mutateAsync({ ids, action });
       toast.success(t(`lib.bulkDone.${action}`, { n: res.changed }));
-      if (action === "delete" || (favoritesOnly && action === "unfavorite")) clear();
+      if (action === "delete") clear();
     } catch (e) {
       toast.error((e as Error).message);
     }
@@ -196,6 +192,7 @@ export function ImageBrowser({
     <>
       {header(total)}
       <div className="toolbar">
+        {toolbarStart}
         <div className="input-wrap search">
           <Search />
           <input
@@ -232,7 +229,7 @@ export function ImageBrowser({
             ]}
           />
         ) : null}
-        {!favoritesOnly ? (
+        {showMore ? (
           <>
             <MultiSelect
               label={t("lib.provider")}
@@ -270,16 +267,12 @@ export function ImageBrowser({
                 { value: "failed", label: t("status.failed") },
               ]}
             />
-            <Button
-              variant={onlyFavorites ? "primary" : "default"}
-              icon={<Heart fill={onlyFavorites ? "currentColor" : "none"} />}
-              onClick={() => setOnlyFavorites((v) => !v)}
-              aria-pressed={onlyFavorites}
-            >
-              {t("nav.favorites")}
-            </Button>
           </>
-        ) : null}
+        ) : (
+          <Button variant="ghost" icon={<SlidersHorizontal />} onClick={() => setShowMore(true)}>
+            {t("lib.moreFilters")}
+          </Button>
+        )}
         <span className="spacer" />
         <Select
           label={t("lib.sort")}
@@ -287,12 +280,11 @@ export function ImageBrowser({
           value={sort}
           onChange={setSort}
           options={[
-            ...(favoritesOnly ? [{ value: "favorited" as const, label: t("lib.sortFavorited") }] : []),
             { value: "newest" as const, label: t("lib.sortNewest") },
             { value: "oldest" as const, label: t("lib.sortOldest") },
           ]}
         />
-        {!favoritesOnly && settings.data && !settings.data.auto_save ? (
+        {settings.data && !settings.data.auto_save ? (
           <Select
             label={t("lib.show")}
             icon={<LibraryBig />}
@@ -352,17 +344,6 @@ export function ImageBrowser({
             description={t("lib.noMatchesBody")}
             action={<Button onClick={resetFilters}>{t("lib.resetFilters")}</Button>}
           />
-        ) : favoritesOnly ? (
-          <EmptyState
-            icon={<Heart />}
-            title={t("fav.emptyTitle")}
-            description={t("fav.emptyBody")}
-            action={
-              <Link href="/library" className="btn btn-sm">
-                {t("nav.library")}
-              </Link>
-            }
-          />
         ) : (
           <EmptyState
             icon={<Sparkles />}
@@ -379,7 +360,6 @@ export function ImageBrowser({
         <ImageGrid
           images={items}
           onOpen={setViewer}
-          onFavorite={actions.toggleFavorite}
           onDownload={actions.download}
           selection={selection}
           selecting={selecting}
@@ -403,19 +383,11 @@ export function ImageBrowser({
           <Button size="sm" icon={<Download />} onClick={downloadSelected}>
             {t("common.download")}
           </Button>
-          {scope === "unsaved" && !favoritesOnly ? (
+          {scope === "unsaved" ? (
             <Button size="sm" icon={<LibraryBig />} onClick={() => runBulk("save")}>
               {t("images.saveToLibrary")}
             </Button>
           ) : null}
-          {!favoritesOnly ? (
-            <Button size="sm" icon={<Heart />} onClick={() => runBulk("favorite")}>
-              {t("images.favorite")}
-            </Button>
-          ) : null}
-          <Button size="sm" icon={<HeartOff />} onClick={() => runBulk("unfavorite")}>
-            {t("images.unfavorite")}
-          </Button>
           <AddToPersona imageIds={ids} />
           <Button size="sm" variant="danger" icon={<Trash2 />} onClick={() => runBulk("delete")}>
             {t("common.delete")}

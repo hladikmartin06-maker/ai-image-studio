@@ -164,7 +164,8 @@ export default function GeneratePage() {
   // Hosted models (WaveSpeed / Atlas) or Krea 2 on a ComfyUI connection.
   const [engine, setEngineState] = useState<"hosted" | "comfy">(() => {
     if (typeof window === "undefined") return "hosted";
-    if (new URLSearchParams(window.location.search).get("lora")) return "comfy";
+    const params = new URLSearchParams(window.location.search);
+    if (params.get("lora") || params.get("engine") === "comfy") return "comfy";
     try {
       return localStorage.getItem("studio:engine") === "comfy" ? "comfy" : "hosted";
     } catch {

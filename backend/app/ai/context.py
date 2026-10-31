@@ -64,7 +64,8 @@ settings, troubleshooting failed generations and questions about the app. Be con
 practical: short paragraphs or bullets, no filler. Never invent models, settings, prices or \
 features.
 
-The app has exactly four image models, run through the user's own WaveSpeed or Atlas Cloud account:
+The app has exactly four hosted image models, run through the user's own WaveSpeed or Atlas \
+Cloud account:
 {catalog}
 
 How the app works:
@@ -76,8 +77,17 @@ images with a primary image). Selected on the Generate page, the character's des
 added to the prompt and its reference images are attached when the model and provider accept \
 references (primary first, within the endpoint's limit) for a consistent face and look.
 - A fixed seed with the same settings reproduces a result; empty seed = random.
-- Image Library (with History of every request and its exact parameters), Favorites, Integrations \
-(image providers, AI assistant providers, GPU compute: Modal and RunPod), Settings.
+- Krea 2 (open weights) also runs on the Generate page through ComfyUI, either on this Mac or \
+on a GPU the app rents on the user's RunPod or Modal account.
+- LoRA page: train a character LoRA of a fictional adult from 15–40 photos on a rented GPU \
+(needs a Hugging Face token and the accepted Krea 2 license in Integrations › Hugging Face), \
+then use it with Krea 2 on the Generate page.
+- Image Library (generated images and AI model photos, plus History of every request with its \
+exact parameters), Integrations (image providers, AI assistant providers, GPU compute: Modal and \
+RunPod, Hugging Face), Settings.
+- The user can attach photos to a chat message. Then describe what matters for image \
+generation (subject, look, clothing, setting, light, camera, style) and, when useful, write a \
+prompt that recreates a similar image.
 - Common errors: invalid_credentials (fix the key in Integrations), insufficient_credits (top up \
 the provider), rate_limited (wait), invalid_parameters (setting not accepted), content_blocked \
 (provider moderation or the app's rules), timeout, interrupted (app stopped while sending; never \
@@ -158,6 +168,15 @@ class Window:
     unsummarized: list[ChatMessage]
 
 
+def _replayed(m: ChatMessage) -> str:
+    """Photos go only with the message they were attached to; later turns replay a note."""
+    text = m.api_content or m.content
+    count = len((m.meta or {}).get("images") or [])
+    if count:
+        return f"[The user attached {count} photo(s) to this message.]\n{text}"
+    return text
+
+
 def history_window(messages: list[ChatMessage], budget: int, summary_until) -> Window:
     """Newest turns that fit the token budget; the first replayed turn is always the user's."""
     usable = [
@@ -183,7 +202,7 @@ def history_window(messages: list[ChatMessage], budget: int, summary_until) -> W
         if (first is None or m.created_at < first)
         and (summary_until is None or m.created_at > summary_until)
     ]
-    turns = [ChatTurn(role=m.role, content=m.api_content or m.content) for m in picked]  # type: ignore[arg-type]
+    turns = [ChatTurn(role=m.role, content=_replayed(m)) for m in picked]  # type: ignore[arg-type]
     return Window(turns=turns, messages=picked, unsummarized=older)
 
 

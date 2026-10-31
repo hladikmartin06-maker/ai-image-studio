@@ -225,3 +225,34 @@ reproduces the API.
 Presets are the studio's starting points, not published recommendations. Progress and loss
 come from ai-toolkit's own output. **Not run on a real RunPod or Modal GPU** — verified with a
 fake RunPod that starts the real agent locally and a fake `run.py`.
+
+# Hugging Face (token and Krea 2 license)
+
+Integrations › Hugging Face stores the user's token (encrypted, `user_secrets`) and checks it;
+LoRA training checks the license again before any GPU is rented. Code:
+`backend/app/services/huggingface.py`.
+
+| What | Request | Meaning |
+|---|---|---|
+| Token owner | `GET https://huggingface.co/api/whoami-v2`, `Authorization: Bearer <token>` | 200 `{name, …}`; 401 = invalid token (never saved). Strictly rate-limited, so cached 10 min |
+| Repository access | `GET https://huggingface.co/api/models/{repo}/auth-check` | 200 = can download; 403 with header `X-Error-Code: GatedRepo` = license not accepted (or request pending); 401 = invalid token; 404 = not found |
+
+Repositories checked: `krea/Krea-2-Raw` and `krea/Krea-2-Turbo` (both gated, from
+`lora/presets.py`). There is **no API to accept a license for a user**: it is the user's own
+agreement, made with "Agree and access repository" on the repository page, so the studio links
+there and checks again.
+
+Status (2026-10-31): endpoints, headers and status codes read from the source of
+`huggingface_hub` 2.4.0 (`hf_api.py` `whoami` / `auth_check`, `utils/_http.py`
+`hf_raise_for_status`). huggingface.co could not be reached from the build sandbox: **not run
+against the real Hub** — verified with a fake Hub (`tests/fakes.py` `FakeHub`, and
+`tests/fake_server.py` for trying the app). When the Hub cannot be reached, the token is still
+saved and training is not blocked (the trainer then reports a download error itself).
+
+# Assistant photos
+
+A chat message can carry up to 4 photos (uploaded like reference images). They are sent
+downscaled to 1024 px JPEG in the provider's own image format (Anthropic image blocks, OpenAI
+`image_url` data URLs, Gemini `inline_data`) — the same code path as AI captions in LoRA
+training — and only with the message they belong to; later turns replay a short note instead
+of the image. Models without vision answer with the provider's error.

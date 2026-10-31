@@ -32,21 +32,25 @@ from app.ai.providers.base import AIError, ChatRequest, ChatTurn
 from app.ai.registry import AI_PROVIDERS, get_adapter, resolve_tier_models
 from app.ai.router import HISTORY_BUDGET, Route, route
 from app.db import SessionLocal
+from app.lora.captions import small_jpeg
 from app.models import (
     AIIntegration,
     AIUsageEvent,
     ChatConversation,
     ChatMessage,
     Generation,
+    ReferenceImage,
     User,
 )
 from app.security import decrypt_secret
-from app.services import preferences
+from app.services import preferences, storage
 
 log = logging.getLogger("studio.ai")
 
 QuickAction = Literal["improve_prompt", "suggest_settings", "troubleshoot", "compare_models"]
 _TROUBLE_WORDS = ("error", "fail", "failed", "chyba", "chybu", "zlyhal", "nefunguje", "nejde")
+# Photos per message (uploaded like reference images; sent downscaled, only with that message).
+MAX_CHAT_IMAGES = 4
 
 
 class SendBody(BaseModel):
@@ -55,6 +59,8 @@ class SendBody(BaseModel):
     quick_action: QuickAction | None = None
     provider: str | None = Field(default=None, max_length=32)
     mode: Literal["low", "balanced", "high"] | None = None
+    # Uploaded reference images (POST /api/reference-images) the user attached.
+    image_ids: list[uuid.UUID] = Field(default_factory=list, max_length=MAX_CHAT_IMAGES)
 
 
 class TurnRejected(Exception):
@@ -79,7 +85,10 @@ def _cache_key(user_id: uuid.UUID, provider: str, request: ChatRequest) -> str:
             provider,
             request.model,
             request.system,
-            [(t.role, t.content) for t in request.messages],
+            [
+                (t.role, t.content, [hashlib.sha256(d.encode()).hexdigest() for _, d in t.images])
+                for t in request.messages
+            ],
         ],
         ensure_ascii=False,
     )
@@ -226,19 +235,51 @@ async def prepare_turn(
         )
     ).all()
 
+    # Attached photos: the user's own uploads only.
+    image_ids = list(dict.fromkeys(body.image_ids))
+    refs: list[ReferenceImage] = []
+    if image_ids:
+        rows = (
+            await db.scalars(
+                select(ReferenceImage).where(
+                    ReferenceImage.user_id == user.id, ReferenceImage.id.in_(image_ids)
+                )
+            )
+        ).all()
+        by_id = {r.id: r for r in rows}
+        if len(by_id) != len(image_ids):
+            raise TurnRejected("not_found", "The attached photo was not found.", 404)
+        refs = [by_id[i] for i in image_ids]
+
     user_message = ChatMessage(
         conversation_id=conversation.id,
         user_id=user.id,
         role="user",
         content=content,
         api_content=content,
-        meta={"quick_action": body.quick_action} if body.quick_action else {},
+        meta={
+            **({"quick_action": body.quick_action} if body.quick_action else {}),
+            **(
+                {
+                    "images": [
+                        {
+                            "id": str(r.id),
+                            "url": f"/api/reference-images/{r.id}/file",
+                            "thumb_url": f"/api/reference-images/{r.id}/thumb",
+                        }
+                        for r in refs
+                    ]
+                }
+                if refs
+                else {}
+            ),
+        },
     )
     if not conversation.title:
         conversation.title = local_title(content)
 
     # Zero-cost local answer (greetings, thanks): no provider needed at all.
-    local = None if body.quick_action else local_answer(content, prefs.language)
+    local = None if body.quick_action or refs else local_answer(content, prefs.language)
     if local is not None:
         assistant = ChatMessage(
             conversation_id=conversation.id,
@@ -287,10 +328,18 @@ async def prepare_turn(
         user_message.meta = {**(user_message.meta or {}), "context": True}
         conversation.last_context = ctx_text
 
+    photos: list[tuple[str, str]] = []
+    for ref in refs:
+        try:
+            data = await asyncio.to_thread(storage.absolute(ref.file_path).read_bytes)
+            photos.append(("image/jpeg", await asyncio.to_thread(small_jpeg, data)))
+        except (OSError, ValueError) as exc:
+            raise TurnRejected("not_found", "The attached photo could not be read.", 404) from exc
+
     request = ChatRequest(
         model=str(model),
         system=system_prompt(conversation.summary),
-        messages=[*window.turns, ChatTurn("user", user_message.api_content)],
+        messages=[*window.turns, ChatTurn("user", user_message.api_content, images=photos)],
         max_tokens=chosen.max_tokens,
         effort=chosen.effort,
     )

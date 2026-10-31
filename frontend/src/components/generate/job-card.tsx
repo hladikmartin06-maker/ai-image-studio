@@ -135,7 +135,6 @@ export function JobCard({
               key={img.id}
               image={img}
               onOpen={() => onOpen(gen, i)}
-              onFavorite={() => actions.toggleFavorite(img)}
               onDownload={() => actions.download(img)}
               showPrompt={false}
               blurNsfw={blurNsfw}

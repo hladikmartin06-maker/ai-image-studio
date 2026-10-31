@@ -5,7 +5,6 @@ import {
   ChevronRight,
   Copy,
   Download,
-  Heart,
   LibraryBig,
   RefreshCw,
   SlidersHorizontal,
@@ -127,14 +126,6 @@ export function ImageViewer({
             <StatusBadge status={image.status} />
           </div>
           <div className="row wrap" style={{ gap: 6 }}>
-            <Button
-              size="sm"
-              variant={image.is_favorite ? "primary" : "default"}
-              icon={<Heart fill={image.is_favorite ? "currentColor" : "none"} />}
-              onClick={() => actions.toggleFavorite(image)}
-            >
-              {image.is_favorite ? t("images.favorited") : t("images.favorite")}
-            </Button>
             <Button size="sm" icon={<Download />} onClick={() => actions.download(image)}>
               {t("common.download")}
             </Button>

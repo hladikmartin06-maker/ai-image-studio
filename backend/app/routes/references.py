@@ -64,13 +64,21 @@ async def get_one(
 
 @router.get("/{ref_id}/file")
 async def file(
-    ref_id: uuid.UUID, user: User = Depends(current_user), db: AsyncSession = Depends(get_db)
+    ref_id: uuid.UUID,
+    download: bool = False,
+    user: User = Depends(current_user),
+    db: AsyncSession = Depends(get_db),
 ):
+    """The original upload; with ?download=1 it is saved as a file (AI model photos in the
+    library)."""
     ref = await _owned(db, user, ref_id)
+    path = storage.absolute(ref.file_path)
     return FileResponse(
-        storage.absolute(ref.file_path),
+        path,
         media_type=ref.mime_type,
         headers={"Cache-Control": "private, max-age=86400"},
+        filename=(ref.original_name or path.name) if download else None,
+        content_disposition_type="attachment",
     )
 
 

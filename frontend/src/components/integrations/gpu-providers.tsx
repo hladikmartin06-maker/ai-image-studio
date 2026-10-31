@@ -1,8 +1,7 @@
 "use client";
 
 import { useQueryClient } from "@tanstack/react-query";
-import { ArrowRight, Cpu, ExternalLink, KeyRound, PlugZap, Settings2, ShieldCheck, Unplug } from "lucide-react";
-import Link from "next/link";
+import { Cpu, ExternalLink, KeyRound, PlugZap, Settings2, ShieldCheck, Unplug } from "lucide-react";
 import { type FormEvent, useState } from "react";
 import { toast } from "sonner";
 
@@ -167,9 +166,6 @@ function GPUCard({ provider }: { provider: GPUProvider }) {
       <div className="row wrap" style={{ marginTop: "auto" }}>
         {connected ? (
           <>
-            <Link href="/compute" className="btn btn-primary">
-              {t("gpuint.manage")} <ArrowRight />
-            </Link>
             <Button icon={<Settings2 />} onClick={() => setDialog(true)}>
               {t("int.configure")}
             </Button>

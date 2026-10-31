@@ -14,6 +14,10 @@ RUNPOD_PROXY_URL=http://127.0.0.1:8900/runpod/proxy/{pod_id}/{port}. A pod creat
 studio agent in its environment runs that (real) agent as a local process, with a fake
 ai-toolkit and a fake ComfyUI (tests/gpu_fakes.py), and its port is reached through
 /runpod/proxy/… like RunPod's HTTP proxy.
+
+Hugging Face: set HUGGINGFACE_URL=http://127.0.0.1:8900/hf. Tokens that start with "hf_test"
+are valid; "hf_test_nolicense…" still has to accept the Krea 2 RAW license
+(GET /hf/accept?token=… stands in for the button on huggingface.co).
 """
 
 from __future__ import annotations
@@ -487,3 +491,46 @@ async def runpod_scale(endpoint_id: str, request: Request):
 @app.get("/runpod/serverless/{endpoint_id}/health")
 async def runpod_health(endpoint_id: str):
     return {"jobs": {"completed": 12, "inQueue": 0}, "workers": {"idle": 0, "running": 0}}
+
+
+# --- Hugging Face Hub (token and license checks) ---------------------------------------------
+# Tokens that start with "hf_test" are valid; "hf_test_nolicense…" has not accepted the
+# Krea 2 RAW license yet. Each token can "accept" it at /hf/accept?token=… (the real site
+# has a button on the repository page instead).
+
+_hf_accepted: set[str] = set()
+
+
+def _hf_token(request: Request) -> str:
+    return request.headers.get("authorization", "").removeprefix("Bearer ")
+
+
+@app.get("/hf/api/whoami-v2")
+async def hf_whoami(request: Request):
+    if not _hf_token(request).startswith("hf_test"):
+        return JSONResponse({"error": "Invalid credentials in Authorization header"}, 401)
+    return {"type": "user", "name": "studio-tester"}
+
+
+@app.get("/hf/api/models/{repo:path}/auth-check")
+async def hf_auth_check(repo: str, request: Request):
+    token = _hf_token(request)
+    if not token.startswith("hf_test"):
+        return JSONResponse({"error": "Invalid credentials in Authorization header"}, 401)
+    if (
+        token.startswith("hf_test_nolicense")
+        and token not in _hf_accepted
+        and repo == "krea/Krea-2-Raw"
+    ):
+        return JSONResponse(
+            {"error": "Access to model krea/Krea-2-Raw is restricted."},
+            403,
+            headers={"X-Error-Code": "GatedRepo"},
+        )
+    return {}
+
+
+@app.get("/hf/accept")
+async def hf_accept(token: str):
+    _hf_accepted.add(token)
+    return {"ok": True}

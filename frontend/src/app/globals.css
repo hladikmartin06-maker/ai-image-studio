@@ -462,7 +462,7 @@ button.nav-item {
   width: 100%;
   max-width: 1480px;
   margin: 0 auto;
-  padding: 28px 36px 64px;
+  padding: 28px 36px 104px;
   animation: page-in var(--t-med) var(--ease);
 }
 .page-wide {
@@ -2665,7 +2665,7 @@ a.persona-name:hover {
 }
 .persona-images {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(116px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
   gap: 10px;
 }
 .persona-image {
@@ -3405,4 +3405,115 @@ a.job-row:hover {
   .job-row > :nth-child(4) {
     display: none;
   }
+}
+
+/* --- Hugging Face ----------------------------------------------------------------------- */
+
+.hf-layout {
+  max-width: 760px;
+}
+.hf-steps {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.hf-steps > li {
+  padding: 16px;
+  border-radius: var(--r-md);
+  border: 1px solid var(--border);
+  background: var(--surface);
+}
+.hf-repo {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border-radius: var(--r-md);
+  border: 1px solid var(--border);
+  background: var(--surface-2);
+}
+
+/* --- simple choices ---------------------------------------------------------------------- */
+
+.link-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  align-self: flex-start;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--accent-text);
+  cursor: pointer;
+}
+.link-button:hover {
+  text-decoration: underline;
+}
+.connect-box {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 16px;
+  border-radius: var(--r-md);
+  border: 1px dashed var(--border-strong, var(--border));
+  background: var(--surface);
+}
+.connect-choices {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+.connect-choices .model-card {
+  text-align: left;
+}
+
+/* --- chat photos ------------------------------------------------------------------------ */
+
+.chat-photos {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 6px;
+}
+.chat-photos img {
+  display: block;
+  width: 72px;
+  height: 72px;
+  object-fit: cover;
+  border-radius: 10px;
+}
+.chat-photos.pending {
+  padding: 10px 12px 0;
+  margin-bottom: 0;
+}
+.chat-photo {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 56px;
+  height: 56px;
+  border-radius: 10px;
+  overflow: hidden;
+  background: var(--surface-2);
+}
+.chat-photo img {
+  width: 56px;
+  height: 56px;
+}
+.chat-photo button {
+  position: absolute;
+  top: 3px;
+  right: 3px;
+  display: grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  border: 0;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.65);
+  color: #fff;
+  cursor: pointer;
 }

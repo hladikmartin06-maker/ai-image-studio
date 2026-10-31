@@ -37,7 +37,7 @@ Next.js 16 (127.0.0.1:3000) ── /api/* rewrite ──▶ FastAPI (127.0.0.1:8
 | `ai/providers/` | `anthropic_provider.py` (official SDK), `openai_compat.py` (OpenAI, xAI, any compatible API), `gemini.py` |
 | `ai/router.py` | local complexity routing → tier, output cap, effort |
 | `ai/context.py` | cacheable system prompt, studio context, history window, summaries |
-| `ai/service.py` | one assistant turn: local/cached/streamed answer, usage, background summary |
+| `ai/service.py` | one assistant turn: local/cached/streamed answer, attached photos (downscaled, sent only with their message), usage, background summary |
 | `gpu/` | `base.py` contract, `runpod.py` (REST + GraphQL), `modal_provider.py` (SDK), `registry.py`, `service.py` (credentials, launch + record, cost) |
 | `gpu/agent/` | `studio_agent.py`: stdlib HTTP agent that runs inside a GPU container (files with offsets/ranges, jobs: train / comfyui / download, logs, ComfyUI proxy), sent compressed in the environment |
 | `gpu/agent_client.py` | client for the agent (chunked resumable upload, ranged resumable download with SHA-256) |
@@ -45,6 +45,7 @@ Next.js 16 (127.0.0.1:3000) ── /api/* rewrite ──▶ FastAPI (127.0.0.1:8
 | `lora/` | `presets.py` (per-architecture options and presets), `aitoolkit.py` (job file), `dataset.py` (analysis, dHash, packing with crop), `captions.py` (vision captions via the assistant provider), `safetensors_meta.py`, `runner.py` (training state machine), `serial.py` |
 | `services/gpu_runner.py` | background loop that advances training runs and deployments (state in the database) |
 | `services/uploads.py` | chunked uploads (8 MB pieces) for LoRA and model files |
+| `services/huggingface.py` | Hugging Face token check (`whoami-v2`) and access to the gated Krea 2 repositories (`auth-check`), cached; used by Integrations › Hugging Face and before training rents a GPU |
 
 ### Database
 
@@ -58,7 +59,7 @@ Next.js 16 (127.0.0.1:3000) ── /api/* rewrite ──▶ FastAPI (127.0.0.1:8
 | `personas` / `persona_images` | AI models (saved fictional adult characters): name, description, private notes, appearance JSON, primary image; their reference images (links to `reference_images`, so a duplicate shares files) |
 | `generations` | the history entry: model, provider, endpoint, prompt (and `final_prompt` as sent with an AI model's description), settings, request body, AI model used (`persona_id`, `persona_meta`), status, error, timestamps, idempotency key |
 | `provider_tasks` | one provider request each: status, provider id, outputs, error |
-| `images` | file paths, size, dimensions, favorite, in-library flag, NSFW flag |
+| `images` | file paths, size, dimensions, favorite (kept in the data, no longer shown), in-library flag, NSFW flag |
 | `ai_integrations` | chat provider, encrypted key, base URL (compatible APIs), cached model list, tier choices |
 | `chat_conversations` / `chat_messages` | conversations (title, rolling summary) and messages with the exact text sent, model, tier, tokens |
 | `ai_usage_events` | every chat/summary call and every free (local/cached) answer |
@@ -149,16 +150,16 @@ in answers can be applied back to it ("Use in studio", "Apply settings").
 |---|---|
 | `proxy.ts` | refuses requests with a foreign `Host` (DNS rebinding protection) |
 | `app/welcome` | sign in / create account |
-| `app/(studio)/…` | dashboard, generate, ai-models, assistant, library, library/history, favorites, comfyui, lora-studio (`[id]` workspace), loras (`[id]` versions/tests), jobs, compute (GPU providers), integrations, settings |
-| `components/comfy`, `components/lora`, `components/studio` | ComfyUI connections, workflows, Krea 2 panel on Generate; dataset, captions, training, runs, comparison; shared status, GPU picker, loss chart, Hugging Face token |
+| `app/(studio)/…` | dashboard, generate (online models or Krea 2 with the ComfyUI choice inside), ai-models, loras (list + training history; `[id]` photos, captions, training, runs/versions, tests, details), library (generated images or AI model photos), library/history, assistant, integrations (images, AI, GPU, Hugging Face), settings |
+| `components/comfy`, `components/lora`, `components/studio` | ComfyUI connection bar (This Mac / Rent a GPU), manage window, workflows, Krea 2 panel on Generate; dataset, captions, simplified training form, runs, comparison; shared status, GPU picker, loss chart |
 | `components/personas` | AI model picker and Generate section, profile form, reference collection, "Add to AI model" |
 | `components/assistant` | chat panel, safe Markdown with prompt/settings action cards, floating drawer |
-| `components/integrations` | image, AI and GPU provider management |
+| `components/integrations` | image, AI and GPU provider management; Hugging Face token and Krea 2 license check |
 | `components/ui` | design-system components (button, select, popover, modal, confirm, switch, …) |
 | `components/layout` | shell, sidebar, user menu, page header |
-| `components/images` | justified grid, tile, viewer, browser (filters + bulk), actions |
+| `components/images` | justified grid, tile, viewer, browser (filters + bulk), AI model photos, actions |
 | `components/generate` | model picker, prompt editor, references, settings controls, job card |
-| `lib/api.ts`, `lib/queries.ts` | fetch wrapper and TanStack Query hooks (cache, optimistic favorites) |
+| `lib/api.ts`, `lib/queries.ts` | fetch wrapper and TanStack Query hooks (cache, optimistic updates) |
 | `lib/events.ts` | live updates (SSE → query cache) |
 | `lib/i18n` | English and Slovak |
 

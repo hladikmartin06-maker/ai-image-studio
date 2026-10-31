@@ -385,7 +385,16 @@ export interface ChatMessage {
   usage_estimated: boolean;
   error_code: string | null;
   error_message: string | null;
-  meta: { complexity?: string; route?: string; mode?: AIMode; truncated?: boolean; served_by?: string; quick_action?: string; context?: boolean };
+  meta: {
+    complexity?: string;
+    route?: string;
+    mode?: AIMode;
+    truncated?: boolean;
+    served_by?: string;
+    quick_action?: string;
+    context?: boolean;
+    images?: { id: string; url: string; thumb_url: string }[];
+  };
   created_at: string;
 }
 
@@ -887,6 +896,17 @@ export interface JobItem {
   error: string | null;
   link: string;
   artifacts: number;
+}
+
+export type HfAccess = "granted" | "needs_license" | "invalid_token" | "not_found" | "unknown";
+
+export interface HfStatus {
+  set: boolean;
+  masked: string | null;
+  token: "valid" | "invalid" | "unknown" | null;
+  account: string | null;
+  ready: boolean;
+  repos: { repo: string; variant: "raw" | "turbo"; name: string; url: string; access: HfAccess }[];
 }
 
 export interface SecretInfo {

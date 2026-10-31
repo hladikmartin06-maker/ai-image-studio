@@ -1,14 +1,13 @@
 "use client";
 
-import { Cpu, KeyRound } from "lucide-react";
-import { useState } from "react";
-import { toast } from "sonner";
+import { ArrowRight, Cpu } from "lucide-react";
+import Link from "next/link";
 
-import { Badge, Button, Field, Select, Spinner } from "@/components/ui";
+import { Badge, Field, Notice, Select, Spinner } from "@/components/ui";
 import { formatBytes } from "@/lib/format";
 import { useI18n, useT } from "@/lib/i18n";
 import type { MessageKey } from "@/lib/i18n";
-import { useGPUProviders, useGpuTypes, useSaveSecret, useSecrets } from "@/lib/queries";
+import { useGPUProviders, useGpuTypes } from "@/lib/queries";
 import type { AgentGpu, GpuType, JobStatus, TrainingStatus } from "@/lib/types";
 
 // --- status -----------------------------------------------------------------------------
@@ -172,7 +171,14 @@ export function GpuPicker({
 
   if (providers.isLoading) return <Spinner />;
   if (!connected.length) {
-    return <div className="hint">{t("gpu.noProviderConnected")}</div>;
+    return (
+      <Notice tone="accent">
+        <div>{t("gpu.noProviderConnected")}</div>
+        <Link href="/integrations?tab=gpu" className="btn btn-sm btn-primary" style={{ marginTop: 10 }}>
+          {t("gpu.connectProvider")} <ArrowRight />
+        </Link>
+      </Notice>
+    );
   }
   return (
     <div className="col gap-12">
@@ -205,27 +211,6 @@ export function GpuPicker({
             />
           )}
         </Field>
-        <Field label={t("gpu.gpuCount")}>
-          <Select
-            label={t("gpu.gpuCount")}
-            value={value.gpu_count}
-            onChange={(n) => onChange({ ...value, gpu_count: Number(n) })}
-            options={[1, 2, 4].map((n) => ({ value: n, label: `${n}×` }))}
-          />
-        </Field>
-        {value.provider === "runpod" ? (
-          <Field label={t("gpu.cloud")}>
-            <Select
-              label={t("gpu.cloud")}
-              value={value.cloud_type}
-              onChange={(c) => onChange({ ...value, cloud_type: c as GpuChoice["cloud_type"] })}
-              options={[
-                { value: "SECURE", label: "Secure Cloud" },
-                { value: "COMMUNITY", label: "Community Cloud" },
-              ]}
-            />
-          </Field>
-        ) : null}
       </div>
       {selected && minMemoryGb && selected.memory_gb && selected.memory_gb < minMemoryGb ? (
         <div className="error-text">{t("gpu.tooSmall", { n: minMemoryGb })}</div>
@@ -233,74 +218,10 @@ export function GpuPicker({
       {selected ? (
         <div className="hint">
           {price(selected) !== null && price(selected) !== undefined
-            ? t("gpu.priceHint", { price: formatMoney((price(selected) ?? 0) * value.gpu_count, locale) })
+            ? t("gpu.priceHint", { price: formatMoney(price(selected) ?? 0, locale) })
             : t("gpu.noPrice")}
         </div>
       ) : null}
-    </div>
-  );
-}
-
-// --- Hugging Face token -----------------------------------------------------------------
-
-export function HfTokenCard() {
-  const t = useT();
-  const secrets = useSecrets();
-  const save = useSaveSecret();
-  const [value, setValue] = useState("");
-  const hf = secrets.data?.items.find((s) => s.name === "huggingface");
-  return (
-    <div className="card card-pad col gap-12">
-      <div className="row" style={{ gap: 10 }}>
-        <KeyRound size={16} />
-        <div className="grow">
-          <div className="h3">{t("hf.title")}</div>
-          <div className="tiny subtle">{t("hf.body")}</div>
-        </div>
-        {hf?.set ? <Badge tone="success">{hf.masked}</Badge> : <Badge tone="warning">{t("hf.missing")}</Badge>}
-      </div>
-      <form
-        className="row"
-        style={{ gap: 8 }}
-        onSubmit={async (e) => {
-          e.preventDefault();
-          try {
-            await save.mutateAsync({ name: "huggingface", value: value.trim() });
-            setValue("");
-            toast.success(t("hf.saved"));
-          } catch (err) {
-            toast.error((err as Error).message);
-          }
-        }}
-      >
-        <input
-          className="input grow"
-          type="password"
-          autoComplete="off"
-          placeholder="hf_…"
-          value={value}
-          onChange={(e) => setValue(e.target.value)}
-          aria-label={t("hf.title")}
-        />
-        <Button type="submit" size="sm" disabled={!value.trim()} loading={save.isPending}>
-          {t("common.save")}
-        </Button>
-        {hf?.set ? (
-          <Button size="sm" variant="ghost" onClick={() => save.mutate({ name: "huggingface", value: null })}>
-            {t("common.delete")}
-          </Button>
-        ) : null}
-      </form>
-      <div className="tiny subtle">
-        {t("hf.howto")}{" "}
-        <a className="link" href="https://huggingface.co/krea/Krea-2-Raw" target="_blank" rel="noreferrer">
-          krea/Krea-2-Raw
-        </a>{" "}
-        ·{" "}
-        <a className="link" href="https://huggingface.co/settings/tokens" target="_blank" rel="noreferrer">
-          huggingface.co/settings/tokens
-        </a>
-      </div>
     </div>
   );
 }

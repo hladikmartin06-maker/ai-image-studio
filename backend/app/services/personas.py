@@ -20,7 +20,7 @@ from app.models import Generation, Persona, PersonaImage, ReferenceImage
 from app.services.safety import PromptRefused, check_prompt, mentions_minors
 from app.services.serializers import iso
 
-MAX_PERSONA_IMAGES = 24
+MAX_PERSONA_IMAGES = 200
 NAME_MAX = 80
 DESCRIPTION_MAX = 1500
 NOTES_MAX = 4000

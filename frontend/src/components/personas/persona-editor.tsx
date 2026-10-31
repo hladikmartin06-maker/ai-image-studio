@@ -73,7 +73,7 @@ function sameForm(a: ProfileForm, b: ProfileForm) {
   return norm(a) === norm(b);
 }
 
-export function PersonaProfile({ persona }: { persona: Persona }) {
+export function PersonaProfile({ persona, onSaved }: { persona: Persona; onSaved?: () => void }) {
   const t = useT();
   const update = useUpdatePersona(persona.id);
   const baseline = toForm(persona);
@@ -95,6 +95,7 @@ export function PersonaProfile({ persona }: { persona: Persona }) {
         appearance: { ...form.look, age },
       });
       toast.success(t("pm.saved"));
+      onSaved?.();
     } catch (e) {
       toast.error(e instanceof ApiError ? e.message : t("errors.generic"));
     }

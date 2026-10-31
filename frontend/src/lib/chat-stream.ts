@@ -9,6 +9,7 @@ export interface SendBody {
   quick_action?: "improve_prompt" | "suggest_settings" | "troubleshoot" | "compare_models";
   provider?: string | null;
   mode?: "low" | "balanced" | "high";
+  image_ids?: string[];
 }
 
 export interface StreamHandlers {

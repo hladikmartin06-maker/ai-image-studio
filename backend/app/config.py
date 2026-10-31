@@ -38,6 +38,7 @@ class Settings(BaseSettings):
     runpod_graphql_url: str = "https://api.runpod.io/graphql"
     runpod_serverless_url: str = "https://api.runpod.ai/v2"
     runpod_proxy_url: str = "https://{pod_id}-{port}.proxy.runpod.net"
+    huggingface_url: str = "https://huggingface.co"
 
     @field_validator("storage_dir", mode="before")
     @classmethod

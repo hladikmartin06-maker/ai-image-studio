@@ -4,7 +4,7 @@ import {
   Activity,
   ArrowRight,
   CalendarDays,
-  Heart,
+  SquareUserRound,
   ImageIcon,
   Images,
   Layers,
@@ -13,9 +13,7 @@ import {
   Wallet,
 } from "lucide-react";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
-import { toast } from "sonner";
 
 import { useImageActions } from "@/components/images/actions";
 import { GridSkeleton, ImageGrid } from "@/components/images/image-grid";
@@ -23,22 +21,20 @@ import { ImageViewer } from "@/components/images/image-viewer";
 import { StatusBadge } from "@/components/images/status";
 import { UserMenu } from "@/components/layout/shell";
 import { ProviderLogo } from "@/components/logos";
-import { Button, EmptyState, Notice, Segmented, Select, Skeleton, Tooltip } from "@/components/ui";
-import { ApiError } from "@/lib/api";
+import { EmptyState, Notice, Skeleton, Tooltip } from "@/components/ui";
 import { formatBytes, formatNumber, formatRelative } from "@/lib/format";
 import { useI18n } from "@/lib/i18n";
 import {
   useAuthState,
   useBalance,
-  useCatalog,
-  useCreateGeneration,
   useGenerations,
   useImages,
   useIntegrations,
+  usePersonas,
   useSettings,
   useStats,
 } from "@/lib/queries";
-import type { ModelKey, Stats } from "@/lib/types";
+import type { Stats } from "@/lib/types";
 
 function greetingKey(): "dash.morning" | "dash.afternoon" | "dash.evening" {
   const h = new Date().getHours();
@@ -90,129 +86,6 @@ function ActivityBars({ stats }: { stats: Stats }) {
       <div className="row tiny subtle" style={{ marginTop: 6 }}>
         <span className="grow">{t("dash.days14")}</span>
         <span>{t("common.today")}</span>
-      </div>
-    </div>
-  );
-}
-
-function QuickGenerate() {
-  const { t } = useI18n();
-  const router = useRouter();
-  const catalog = useCatalog();
-  const settings = useSettings();
-  const integrations = useIntegrations();
-  const create = useCreateGeneration();
-  const [model, setModel] = useState<ModelKey | null>(null);
-  const [count, setCount] = useState<number | null>(null);
-  const [prompt, setPrompt] = useState("");
-  const connected = integrations.data?.integrations.filter((i) => i.status !== "not_connected") ?? [];
-  const activeProvider = integrations.data?.active_provider ?? connected[0]?.key ?? null;
-  const currentModel = model ?? settings.data?.default_model ?? "nano-banana-pro";
-  const currentCount = count ?? settings.data?.default_image_count ?? 1;
-
-  const submit = async () => {
-    if (!prompt.trim()) {
-      toast.error(t("gen.problemPrompt"));
-      return;
-    }
-    if (!activeProvider) {
-      toast.error(t("gen.problemNoProvider"), {
-        action: { label: t("nav.integrations"), onClick: () => router.push("/integrations") },
-      });
-      return;
-    }
-    const prefs = settings.data;
-    const info = catalog.data?.models.find((m) => m.key === currentModel);
-    const variant = info?.variants.find((v) => v.provider === activeProvider && v.mode === "text-to-image");
-    if (!variant) {
-      toast.error(t("gen.problemNoText"));
-      return;
-    }
-    // Defaults from Settings, only where this endpoint supports them.
-    const s: Record<string, unknown> = {};
-    if (variant.controls.includes("aspect_ratio") && prefs && variant.aspect_ratios.includes(prefs.default_aspect_ratio))
-      s.aspect_ratio = prefs.default_aspect_ratio;
-    if (variant.controls.includes("resolution") && prefs?.default_resolution) {
-      const r = variant.resolutions.find((x) => x.toLowerCase() === prefs.default_resolution!.toLowerCase());
-      if (r) s.resolution = r;
-    }
-    if (variant.controls.includes("output_format") && prefs) s.output_format = prefs.default_output_format;
-    if (variant.controls.includes("thinking_mode") && prefs) s.thinking_mode = prefs.default_thinking_mode;
-    try {
-      await create.mutateAsync({
-        model: currentModel,
-        provider: activeProvider,
-        prompt: prompt.trim(),
-        count: currentCount,
-        settings: s,
-        reference_image_ids: [],
-        client_request_id: crypto.randomUUID(),
-      });
-      setPrompt("");
-      toast.success(t("gen.started"), {
-        action: { label: t("common.view"), onClick: () => router.push("/generate") },
-      });
-    } catch (e) {
-      toast.error((e as ApiError).message);
-    }
-  };
-
-  return (
-    <div className="card">
-      <div className="card-head">
-        <Sparkles size={16} color="var(--accent)" />
-        <div className="h3 grow">{t("dash.quickGenerate")}</div>
-        <Link href="/generate" className="btn btn-ghost btn-sm">
-          {t("dash.fullStudio")} <ArrowRight />
-        </Link>
-      </div>
-      <div className="card-body col" style={{ gap: 12 }}>
-        <Select
-          label={t("gen.model")}
-          value={currentModel}
-          onChange={setModel}
-          width={340}
-          options={(catalog.data?.models ?? []).map((m) => ({
-            value: m.key,
-            label: m.name,
-            hint: t(`content.${m.content}`),
-          }))}
-        />
-        <textarea
-          className="textarea"
-          rows={4}
-          placeholder={t("gen.promptPlaceholder")}
-          value={prompt}
-          maxLength={catalog.data?.limits.max_prompt_chars ?? 4000}
-          onChange={(e) => setPrompt(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
-              e.preventDefault();
-              void submit();
-            }
-          }}
-          aria-label={t("gen.prompt")}
-        />
-        <div className="row">
-          <Segmented
-            label={t("gen.imageCount")}
-            value={currentCount}
-            onChange={setCount}
-            options={[1, 2, 3, 4].map((n) => ({ value: n, label: String(n) }))}
-          />
-          <span className="spacer" />
-          <Button variant="primary" loading={create.isPending} icon={<Sparkles />} onClick={submit}>
-            {t("gen.generate")}
-          </Button>
-        </div>
-        {!activeProvider && integrations.data ? (
-          <Notice tone="accent" icon={<Plug />}>
-            {t("gen.connectBody")}{" "}
-            <Link href="/integrations" style={{ color: "var(--accent-text)" }}>
-              {t("gen.openIntegrations")}
-            </Link>
-          </Notice>
-        ) : null}
       </div>
     </div>
   );
@@ -341,6 +214,7 @@ export default function DashboardPage() {
   const auth = useAuthState();
   const settings = useSettings();
   const stats = useStats();
+  const personas = usePersonas();
   const recent = useImages({ limit: 12, scope: "library" });
   const actions = useImageActions();
   const [viewer, setViewer] = useState<number | null>(null);
@@ -384,7 +258,7 @@ export default function DashboardPage() {
         </div>
         <div className="row">
           <Link href="/generate" className="btn btn-primary">
-            <Sparkles /> {t("dash.quickGenerateBtn")}
+            <Sparkles /> {t("gen.generate")}
           </Link>
           {auth.data?.user ? <UserMenu user={auth.data.user} /> : null}
         </div>
@@ -408,15 +282,15 @@ export default function DashboardPage() {
           loading={stats.isLoading}
         />
         <StatCard
-          icon={<Heart />}
-          label={t("dash.favorites")}
-          value={formatNumber(s?.favorites_total ?? 0, locale)}
+          icon={<SquareUserRound />}
+          label={t("nav.aiModels")}
+          value={formatNumber(personas.data?.total ?? 0, locale)}
           foot={
-            <Link href="/favorites" style={{ color: "var(--text-2)" }}>
-              {t("dash.openFavorites")}
+            <Link href="/ai-models" style={{ color: "var(--text-2)" }}>
+              {t("dash.openAiModels")}
             </Link>
           }
-          loading={stats.isLoading}
+          loading={personas.isLoading}
         />
         <StatCard
           icon={<Layers />}
@@ -473,7 +347,6 @@ export default function DashboardPage() {
                 <ImageGrid
                   images={images}
                   onOpen={setViewer}
-                  onFavorite={actions.toggleFavorite}
                   onDownload={actions.download}
                   showPrompts={settings.data?.show_prompts_on_cards}
                   blurNsfw={settings.data?.blur_nsfw ?? true}
@@ -484,7 +357,6 @@ export default function DashboardPage() {
           <GenerationActivity />
         </div>
         <div className="col" style={{ gap: 20 }}>
-          <QuickGenerate />
           <UsageOverview stats={s} />
         </div>
       </div>

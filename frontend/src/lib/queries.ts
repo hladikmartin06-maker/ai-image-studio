@@ -41,6 +41,7 @@ import type {
   Preferences,
   ReferenceImage,
   SecretInfo,
+  HfStatus,
   SessionInfo,
   TrainingConfig,
   Stats,
@@ -247,25 +248,6 @@ export function patchImageEverywhere(
       };
     },
   );
-}
-
-export function useToggleFavorite() {
-  const qc = useQueryClient();
-  return useMutation({
-    mutationFn: ({ id, value }: { id: string; value: boolean }) =>
-      api<StudioImage>(`/api/images/${id}`, { method: "PATCH", body: { is_favorite: value } }),
-    onMutate: ({ id, value }) => {
-      patchImageEverywhere(qc, id, (img) => ({
-        ...img,
-        is_favorite: value,
-        favorited_at: value ? new Date().toISOString() : null,
-      }));
-    },
-    onSettled: () => {
-      qc.invalidateQueries({ queryKey: keys.images });
-      qc.invalidateQueries({ queryKey: keys.stats });
-    },
-  });
 }
 
 export function useSaveToLibrary() {
@@ -1064,7 +1046,26 @@ export function useSaveSecret() {
         : api(`/api/secrets/${name}`, { method: "PUT", body: { value } }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["secrets"] });
+      qc.invalidateQueries({ queryKey: ["hf-status"] });
       qc.invalidateQueries({ queryKey: loraKeys.catalog });
     },
+  });
+}
+
+/** The Hugging Face token's account and access to the gated Krea 2 repositories. */
+export function useHfStatus(enabled = true) {
+  return useQuery({
+    queryKey: ["hf-status"],
+    queryFn: () => api<HfStatus>("/api/secrets/huggingface/status"),
+    enabled,
+    staleTime: 60_000,
+  });
+}
+
+export function useRefreshHfStatus() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: () => api<HfStatus>("/api/secrets/huggingface/status?refresh=true"),
+    onSuccess: (data) => qc.setQueryData(["hf-status"], data),
   });
 }

@@ -14,7 +14,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db import get_db
 from app.deps import api_error, current_user
 from app.models import User, UserSecret
-from app.security import encrypt_secret, mask_key
+from app.security import decrypt_secret, encrypt_secret, mask_key
+from app.services import huggingface
 from app.services.serializers import iso
 
 router = APIRouter(prefix="/api/secrets", tags=["secrets"])
@@ -26,22 +27,52 @@ class SecretBody(BaseModel):
     value: str = Field(min_length=8, max_length=300)
 
 
+async def _row(db: AsyncSession, user: User, name: str) -> UserSecret | None:
+    return await db.scalar(
+        select(UserSecret).where(UserSecret.user_id == user.id, UserSecret.name == name)
+    )
+
+
+async def hf_token(db: AsyncSession, user: User) -> str | None:
+    row = await _row(db, user, "huggingface")
+    if row is None:
+        return None
+    return decrypt_secret(row.encrypted_value, associated=f"{user.id}:secret:huggingface")
+
+
 @router.get("")
 async def list_secrets(user: User = Depends(current_user), db: AsyncSession = Depends(get_db)):
-    rows = (await db.scalars(select(UserSecret).where(UserSecret.user_id == user.id))).all()
-    found = {r.name: r for r in rows}
+    row = await _row(db, user, "huggingface")
     return {
         "items": [
             {
                 "name": "huggingface",
-                "set": "huggingface" in found,
-                "masked": mask_key(found["huggingface"].last4) if "huggingface" in found else None,
-                "updated_at": iso(found["huggingface"].updated_at)
-                if "huggingface" in found
-                else None,
+                "set": row is not None,
+                "masked": mask_key(row.last4) if row else None,
+                "updated_at": iso(row.updated_at) if row else None,
             }
         ]
     }
+
+
+@router.get("/huggingface/status")
+async def huggingface_status(
+    refresh: bool = False, user: User = Depends(current_user), db: AsyncSession = Depends(get_db)
+):
+    """The token's account and whether it can download each gated Krea 2 repository."""
+    row = await _row(db, user, "huggingface")
+    if row is None:
+        return {
+            "set": False,
+            "masked": None,
+            "token": None,
+            "account": None,
+            "ready": False,
+            "repos": [{**r, "access": "unknown"} for r in huggingface.gated_repos()],
+        }
+    token = decrypt_secret(row.encrypted_value, associated=f"{user.id}:secret:huggingface")
+    result = await huggingface.status(token, refresh=refresh)
+    return {"set": True, "masked": mask_key(row.last4), **result}
 
 
 @router.put("/{name}")
@@ -52,11 +83,19 @@ async def save_secret(
     db: AsyncSession = Depends(get_db),
 ):
     value = body.value.strip()
-    if name == "huggingface" and not value.startswith("hf_"):
-        raise api_error(400, "invalid_parameter", "Hugging Face tokens start with hf_.")
-    row = await db.scalar(
-        select(UserSecret).where(UserSecret.user_id == user.id, UserSecret.name == name)
-    )
+    if name == "huggingface":
+        if not value.startswith("hf_"):
+            raise api_error(400, "invalid_parameter", "Hugging Face tokens start with hf_.")
+        # A token Hugging Face rejects is never saved; when Hugging Face cannot be reached
+        # the token is saved and checked again later.
+        state, _ = await huggingface.HubClient(value).whoami()
+        if state == "invalid":
+            raise api_error(
+                400,
+                "invalid_key",
+                "Hugging Face rejected this token. Create a new one (type Read) and paste it.",
+            )
+    row = await _row(db, user, name)
     if row is None:
         row = UserSecret(user_id=user.id, name=name, encrypted_value=b"", last4="")
         db.add(row)
