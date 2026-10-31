@@ -216,3 +216,160 @@ class Image(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
     generation: Mapped[Generation] = relationship(back_populates="images")
+
+
+# --- AI assistant ---------------------------------------------------------------------------
+
+
+class AIIntegration(Base):
+    """A user's key for one chat AI provider (separate from image and GPU providers)."""
+
+    __tablename__ = "ai_integrations"
+    __table_args__ = (UniqueConstraint("user_id", "provider", name="uq_ai_integration_provider"),)
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_id)
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), index=True
+    )
+    provider: Mapped[str] = mapped_column(String(32))
+    encrypted_key: Mapped[bytes] = mapped_column(LargeBinary)
+    key_last4: Mapped[str] = mapped_column(String(8))
+    # Only for the generic OpenAI-compatible provider.
+    base_url: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    status: Mapped[str] = mapped_column(String(16), default="connected")
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    last_checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # Model ids reported by the provider's models endpoint (cached; refreshed on test).
+    models: Mapped[list[str]] = mapped_column(JSONB, default=list)
+    # The user's choice per cost tier: {"low": id, "balanced": id, "high": id}.
+    tier_models: Mapped[dict[str, str]] = mapped_column(JSONB, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow
+    )
+
+
+class ChatConversation(Base):
+    __tablename__ = "chat_conversations"
+    __table_args__ = (Index("ix_chat_conversations_user_updated", "user_id", "updated_at"),)
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_id)
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), index=True
+    )
+    title: Mapped[str] = mapped_column(String(200), default="")
+    # Rolling summary of older turns (context management) and how far it reaches.
+    summary: Mapped[str] = mapped_column(Text, default="")
+    summary_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # The studio context text last sent in this conversation (sent again only when changed).
+    last_context: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow
+    )
+
+
+class ChatMessage(Base):
+    __tablename__ = "chat_messages"
+    __table_args__ = (
+        Index("ix_chat_messages_conversation_created", "conversation_id", "created_at"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_id)
+    conversation_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("chat_conversations.id", ondelete="CASCADE")
+    )
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), index=True
+    )
+    role: Mapped[str] = mapped_column(String(16))  # user | assistant
+    content: Mapped[str] = mapped_column(Text, default="")
+    # Exactly what was sent to the model for this turn (user text + changed context), so
+    # later turns replay an identical prefix and the provider's prompt cache keeps working.
+    api_content: Mapped[str] = mapped_column(Text, default="")
+    # complete | streaming | stopped | error
+    status: Mapped[str] = mapped_column(String(16), default="complete")
+    provider: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    model: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    tier: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    # api | local | cache — where the answer came from (local and cache cost nothing).
+    source: Mapped[str] = mapped_column(String(16), default="api")
+    input_tokens: Mapped[int] = mapped_column(Integer, default=0)
+    output_tokens: Mapped[int] = mapped_column(Integer, default=0)
+    cached_tokens: Mapped[int] = mapped_column(Integer, default=0)
+    usage_estimated: Mapped[bool] = mapped_column(Boolean, default=False)
+    error_code: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    meta: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class AIUsageEvent(Base):
+    """Every provider call, including ones without a visible message (summaries)."""
+
+    __tablename__ = "ai_usage_events"
+    __table_args__ = (Index("ix_ai_usage_user_created", "user_id", "created_at"),)
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_id)
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE")
+    )
+    provider: Mapped[str] = mapped_column(String(32))
+    model: Mapped[str] = mapped_column(String(120))
+    tier: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    purpose: Mapped[str] = mapped_column(
+        String(16), default="chat"
+    )  # chat | summary | local | cache
+    input_tokens: Mapped[int] = mapped_column(Integer, default=0)
+    output_tokens: Mapped[int] = mapped_column(Integer, default=0)
+    cached_tokens: Mapped[int] = mapped_column(Integer, default=0)
+    estimated: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+# --- GPU compute ----------------------------------------------------------------------------
+
+
+class GPUIntegration(Base):
+    """Credentials for a GPU compute provider (Modal, RunPod). Stored encrypted as JSON."""
+
+    __tablename__ = "gpu_integrations"
+    __table_args__ = (UniqueConstraint("user_id", "provider", name="uq_gpu_integration_provider"),)
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_id)
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), index=True
+    )
+    provider: Mapped[str] = mapped_column(String(32))
+    encrypted_credentials: Mapped[bytes] = mapped_column(LargeBinary)
+    key_last4: Mapped[str] = mapped_column(String(8))
+    status: Mapped[str] = mapped_column(String(16), default="connected")
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    last_checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow
+    )
+
+
+class GPUWorkload(Base):
+    """A workload started from the studio (history and usage; the provider is the truth)."""
+
+    __tablename__ = "gpu_workloads"
+    __table_args__ = (UniqueConstraint("provider", "external_id", name="uq_gpu_workload_external"),)
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_id)
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), index=True
+    )
+    provider: Mapped[str] = mapped_column(String(32))
+    external_id: Mapped[str] = mapped_column(String(120))
+    kind: Mapped[str] = mapped_column(String(16))  # pod | sandbox
+    name: Mapped[str] = mapped_column(String(120), default="")
+    gpu_type: Mapped[str] = mapped_column(String(80), default="")
+    gpu_count: Mapped[int] = mapped_column(Integer, default=1)
+    image: Mapped[str] = mapped_column(String(300), default="")
+    status: Mapped[str] = mapped_column(String(24), default="starting")
+    meta: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    stopped_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

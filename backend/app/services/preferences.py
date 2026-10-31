@@ -46,6 +46,14 @@ class Preferences(BaseModel):
     # Storage
     download_name: Literal["prompt", "id", "date"] = "prompt"
 
+    # AI assistant
+    ai_provider: str | None = None
+    ai_mode: Literal["low", "balanced", "high"] = "low"
+    # Simple questions go to a cheaper model than complex tasks.
+    ai_auto_route: bool = True
+    # Send the current generation settings and prompt along with questions.
+    ai_share_context: bool = True
+
 
 class PreferencesPatch(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -69,6 +77,10 @@ class PreferencesPatch(BaseModel):
     auto_save: bool | None = None
     keep_failed_days: Literal[0, 7, 30, 90] | None = None
     download_name: Literal["prompt", "id", "date"] | None = None
+    ai_provider: Literal["anthropic", "openai", "xai", "gemini", "openai_compatible"] | None = None
+    ai_mode: Literal["low", "balanced", "high"] | None = None
+    ai_auto_route: bool | None = None
+    ai_share_context: bool | None = None
 
 
 async def load(db: AsyncSession, user_id: uuid.UUID) -> Preferences:

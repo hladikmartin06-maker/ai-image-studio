@@ -33,8 +33,15 @@ First steps in the app:
 - **Image Library** — justified grid, search (prompt, model, provider, size, seed), filters,
   full-resolution viewer with details, bulk download (ZIP), favorite and delete;
   **History** tab with every request, its exact settings and "regenerate".
-- **Favorites**, **Integrations** (encrypted keys, test, active provider, model availability),
-  **Settings** (theme, language EN/SK, defaults, appearance, storage, account and sessions).
+- **Assistant** — chat that improves prompts, picks models and settings and explains failed
+  generations; it sees your current setup and can apply its suggestions to the studio. Works
+  with Claude, GPT, Grok, Gemini or any OpenAI-compatible API, in Low cost, Balanced or High
+  quality mode, with automatic routing to cheaper models for simple questions.
+- **GPU Compute** — start, stop and terminate GPU workloads on your own RunPod (pods,
+  serverless endpoints) or Modal (sandboxes) account, with GPU catalog and usage.
+- **Favorites**, **Integrations** (image providers, AI assistant, GPU compute — each separate,
+  keys encrypted), **Settings** (theme, language EN/SK, defaults, appearance, assistant,
+  storage, account and sessions).
 
 ## Everyday commands
 

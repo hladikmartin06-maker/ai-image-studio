@@ -16,6 +16,8 @@ dependencies = [
   "cryptography>=44.0",
   "python-multipart>=0.0.18",
   "email-validator>=2.2",
+  "anthropic>=2.3",
+  "modal>=1.6",
 ]
 
 [dependency-groups]

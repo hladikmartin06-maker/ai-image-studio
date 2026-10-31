@@ -11,10 +11,19 @@ import {
 
 import { api, query } from "@/lib/api";
 import type {
+  AIProviderList,
+  AIUsage,
   AuthState,
   Balance,
   Catalog,
+  Conversation,
+  ConversationDetail,
   Generation,
+  GPUProvider,
+  GpuEndpoint,
+  GpuType,
+  GpuUsage,
+  GpuWorkload,
   IntegrationList,
   Page,
   Preferences,
@@ -419,5 +428,104 @@ export function useUploadReference() {
       form.append("file", file);
       return api<ReferenceImage>("/api/reference-images", { body: form });
     },
+  });
+}
+
+// --- AI assistant ---------------------------------------------------------------------------
+
+export const aiKeys = {
+  providers: ["ai", "providers"] as const,
+  conversations: (q: string) => ["ai", "conversations", q] as const,
+  conversation: (id: string) => ["ai", "conversation", id] as const,
+  usage: ["ai", "usage"] as const,
+};
+
+export function useAIProviders() {
+  return useQuery({
+    queryKey: aiKeys.providers,
+    queryFn: () => api<AIProviderList>("/api/ai/providers"),
+    staleTime: 30_000,
+  });
+}
+
+export function useConversations(q: string) {
+  return useQuery({
+    queryKey: aiKeys.conversations(q),
+    queryFn: () => api<{ items: Conversation[] }>(`/api/ai/conversations${query({ q })}`),
+    staleTime: 10_000,
+  });
+}
+
+export function useConversation(id: string | null) {
+  return useQuery({
+    queryKey: aiKeys.conversation(id ?? "none"),
+    queryFn: () => api<ConversationDetail>(`/api/ai/conversations/${id}`),
+    enabled: Boolean(id),
+  });
+}
+
+export function useAIUsage() {
+  return useQuery({
+    queryKey: aiKeys.usage,
+    queryFn: () => api<AIUsage>("/api/ai/usage?days=30"),
+    staleTime: 30_000,
+  });
+}
+
+// --- GPU compute ----------------------------------------------------------------------------
+
+export const gpuKeys = {
+  providers: ["gpu", "providers"] as const,
+  types: (p: string) => ["gpu", p, "types"] as const,
+  workloads: (p: string) => ["gpu", p, "workloads"] as const,
+  endpoints: (p: string) => ["gpu", p, "endpoints"] as const,
+  usage: (p: string) => ["gpu", p, "usage"] as const,
+};
+
+export function useGPUProviders() {
+  return useQuery({
+    queryKey: gpuKeys.providers,
+    queryFn: () => api<{ providers: GPUProvider[] }>("/api/gpu/providers"),
+    staleTime: 30_000,
+  });
+}
+
+export function useGpuTypes(provider: string, enabled: boolean) {
+  return useQuery({
+    queryKey: gpuKeys.types(provider),
+    queryFn: () => api<{ items: GpuType[] }>(`/api/gpu/${provider}/gpu-types`),
+    enabled,
+    staleTime: 5 * 60_000,
+  });
+}
+
+export function useGpuWorkloads(provider: string, enabled: boolean) {
+  return useQuery({
+    queryKey: gpuKeys.workloads(provider),
+    queryFn: () =>
+      api<{ items: GpuWorkload[]; supports_stop_start: boolean }>(`/api/gpu/${provider}/workloads`),
+    enabled,
+    // Controlled polling while something is starting; otherwise refresh on demand.
+    refetchInterval: (q) =>
+      q.state.data?.items.some((w) => w.status === "starting" || w.status === "created")
+        ? 10_000
+        : false,
+  });
+}
+
+export function useGpuEndpoints(provider: string, enabled: boolean) {
+  return useQuery({
+    queryKey: gpuKeys.endpoints(provider),
+    queryFn: () => api<{ items: GpuEndpoint[]; supported: boolean }>(`/api/gpu/${provider}/endpoints`),
+    enabled,
+  });
+}
+
+export function useGpuUsage(provider: string, enabled: boolean) {
+  return useQuery({
+    queryKey: gpuKeys.usage(provider),
+    queryFn: () => api<GpuUsage>(`/api/gpu/${provider}/usage`),
+    enabled,
+    staleTime: 15_000,
   });
 }

@@ -11,7 +11,7 @@ from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app.deps import csrf_guard
-from app.routes import auth, generations, images, integrations, misc, references
+from app.routes import ai, auth, generations, gpu, images, integrations, misc, references
 from app.security import SecretKeyMissing
 from app.services.worker import worker
 
@@ -19,6 +19,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name
 # httpx logs full request URLs at INFO; keep them out of the log (they hold task ids only,
 # but the rule is simple: no provider traffic in the logs).
 logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpx2").setLevel(logging.WARNING)  # used by the anthropic SDK
 
 
 @asynccontextmanager
@@ -69,5 +70,5 @@ async def secret_missing(_: Request, exc: SecretKeyMissing):
     )
 
 
-for module in (misc, auth, integrations, references, generations, images):
+for module in (misc, auth, integrations, references, generations, images, ai, gpu):
     app.include_router(module.router)

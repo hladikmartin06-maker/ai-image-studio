@@ -49,6 +49,14 @@ same way. Never push to `biznismarko9-source` repositories.
 - No fake results or fabricated statistics; empty, loading and error states everywhere.
 - Prompts with sexual content and minor-related terms are always refused; explicit prompts
   are refused on the SFW-only models (`services/safety.py`).
+- Three separate integration families, never mixed: image providers (`providers/`,
+  `integrations`), AI chat providers (`ai/`, `ai_integrations`) and GPU compute
+  (`gpu/`, `gpu_integrations`). A new chat or GPU provider = one registry entry + adapter.
+- Assistant: chat model ids come from each provider's live models endpoint; tier defaults
+  are preferences only. Claude goes through the official `anthropic` SDK. Keep the cost
+  controls (local routing, tier caps, caching, summaries, context only when changed, local
+  and cached answers). Never show prices that no API returns; show reported tokens.
+- GPU: anything that starts billing needs `confirm_billing: true` from a UI confirmation.
 
 ## Code rules
 

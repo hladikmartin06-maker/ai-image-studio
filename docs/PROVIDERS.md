@@ -96,3 +96,64 @@ HTTP status and provider messages are normalized (`providers/base.py`): 401/403 
 402 or "insufficient/balance/credit" insufficient credits, 429 rate limit, 400/422 invalid
 parameters (or content policy), 404 unsupported model, 5xx provider error, network errors.
 Polling retries transient errors; a submit is never repeated.
+
+# AI assistant providers (chat)
+
+Separate from the image providers: own keys (`ai_integrations` table, AES-256-GCM), own code
+(`backend/app/ai/`). Model lists are never hard-coded as truth: when a key is connected or
+tested, the app calls the provider's **models endpoint** and caches the result. Each cost
+tier (low / balanced / high) picks the first *preferred* id that the key really offers, else
+a name-based match from the live list; the user can choose any listed model per tier.
+
+| Provider | API | Models endpoint | Chat (streaming) | Preferred ids (low / balanced / high) |
+|---|---|---|---|---|
+| Anthropic Claude | official `anthropic` Python SDK | `client.models.list()` | `client.messages.stream()` | `claude-haiku-5-5` / `claude-sonnet-5-5` / `claude-opus-5-5` |
+| OpenAI | `https://api.openai.com/v1` | `GET /models` | `POST /chat/completions` (`stream`, `stream_options.include_usage`, `max_completion_tokens`, `reasoning_effort`) | `gpt-5.6-luna` / `gpt-5.6-terra` / `gpt-5.6-sol` (fallbacks `gpt-5-nano`, `gpt-5-mini`, `gpt-5`) |
+| xAI Grok | `https://api.x.ai/v1` (OpenAI-compatible) | `GET /models` | `POST /chat/completions` | `grok-4.20-non-reasoning` / same / `grok-4.20-reasoning` |
+| Google Gemini | `https://generativelanguage.googleapis.com/v1beta` | `GET /models` | `POST /models/{id}:streamGenerateContent?alt=sse` | `gemini-3.5-flash-lite` / `gemini-3.8-flash` / `gemini-3.1-pro-preview` (fallbacks 3.1 / 2.5) |
+| OpenAI-compatible | user-supplied base URL (presets: OpenRouter, Groq, DeepSeek, Mistral, Together, Ollama, LM Studio) | `GET /models` | `POST /chat/completions` | from the live list by name |
+
+Status (2026-10-31): Anthropic ids and request shapes come from Anthropic's own reference
+(Claude API skill, models cached 2026-10-06). OpenAI, xAI and Gemini ids were found through
+web search of the providers' and third-party pages — **unverified**; the live models list
+decides. **Not run against any real chat API in this sandbox** (outbound access blocked);
+verified with fake servers that reproduce the documented wire formats.
+
+Cost controls in the app: local routing (no extra call), cheapest tier by default
+(`ai_mode = low`), output caps per tier (900 / 1400 / 2400 tokens), Claude `effort` low/medium
+and automatic prompt caching, OpenAI `reasoning_effort: low`, Gemini 3 `thinkingLevel: low`,
+studio context only when it changed, a token budget for replayed history, older turns
+folded into a ≤120-word summary by the low tier, free local answers for greetings/thanks,
+and a 24 h cache for identical requests. Anthropic Opus 5.5 / Sonnet 5.5 requests carry the
+server-side refusal fallback (`fallbacks: "default"`, beta `server-side-fallback-2026-07-01`).
+No prices are shown: only the providers' reported token counts (≈ when estimated).
+
+# GPU compute providers
+
+Separate again: `gpu_integrations` (encrypted JSON credentials), `gpu_workloads` (history),
+`backend/app/gpu/`. Starting anything that bills requires `confirm_billing: true`, sent only
+after the user confirmed a dialog that says so.
+
+## RunPod — API key
+
+| What | Request |
+|---|---|
+| List / create pods | `GET` / `POST https://rest.runpod.io/v1/pods` (`name, imageName, gpuTypeIds, gpuCount, cloudType, containerDiskInGb, volumeInGb, ports, env`) |
+| Start / stop / terminate | `POST /v1/pods/{id}/start`, `POST /v1/pods/{id}/stop`, `DELETE /v1/pods/{id}` |
+| Serverless endpoints | `GET /v1/endpoints`, `PATCH /v1/endpoints/{id}` (`workersMin, workersMax`), `DELETE`; health `GET https://api.runpod.ai/v2/{id}/health` |
+| GPU catalog | GraphQL `https://api.runpod.io/graphql`: `gpuTypes { id displayName memoryInGb securePrice communityPrice }` |
+| Balance | GraphQL `myself { clientBalance currentSpendPerHr }` (shown only when returned; otherwise spend = sum of running pods' `costPerHr`) |
+
+HTTP ports are reachable at `https://{podId}-{port}.proxy.runpod.net`. Field names of the REST
+responses are read defensively. Unverified against the live API (sandbox).
+
+## Modal — token id + token secret
+
+Through the official `modal` SDK (`modal.Client.from_credentials`, documented for managing
+Modal on behalf of users). Workloads are **Sandboxes** in the app `ai-image-studio-gpu`,
+tagged `created-by=ai-image-studio`: `Sandbox.create(..., gpu="H100:2", image=Image.from_registry(...),
+timeout, encrypted_ports)`, `Sandbox.list(app_id, tags)`, `Sandbox.from_id(...).terminate()`,
+`sandbox.tunnels()` for the HTTPS URLs of exposed ports. Sandboxes cannot be paused (only
+terminated) and Modal has no balance or price API, so neither is shown. GPU names from the
+Modal GPU guide: T4, L4, A10, L40S, A100-40GB, A100-80GB, H100, H200, B200. SDK signatures
+were checked against `modal` 1.6.3; not run against Modal's servers here.

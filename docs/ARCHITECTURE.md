@@ -30,7 +30,13 @@ Next.js 16 (127.0.0.1:3000) ── /api/* rewrite ──▶ FastAPI (127.0.0.1:8
 | `services/events.py` | per-user publish/subscribe for live updates |
 | `services/safety.py` | prompt checks before anything is sent |
 | `services/preferences.py` | the Settings page document |
-| `routes/` | auth/account, integrations, reference images, generations/history, images, misc |
+| `routes/` | auth/account, integrations, reference images, generations/history, images, misc, ai, gpu |
+| `ai/registry.py` | chat providers, cost tiers, model resolution from the live model lists |
+| `ai/providers/` | `anthropic_provider.py` (official SDK), `openai_compat.py` (OpenAI, xAI, any compatible API), `gemini.py` |
+| `ai/router.py` | local complexity routing → tier, output cap, effort |
+| `ai/context.py` | cacheable system prompt, studio context, history window, summaries |
+| `ai/service.py` | one assistant turn: local/cached/streamed answer, usage, background summary |
+| `gpu/` | `base.py` contract, `runpod.py` (REST + GraphQL), `modal_provider.py` (SDK), `registry.py` |
 
 ### Database
 
@@ -44,6 +50,10 @@ Next.js 16 (127.0.0.1:3000) ── /api/* rewrite ──▶ FastAPI (127.0.0.1:8
 | `generations` | the history entry: model, provider, endpoint, prompt, settings, request body, status, error, timestamps, idempotency key |
 | `provider_tasks` | one provider request each: status, provider id, outputs, error |
 | `images` | file paths, size, dimensions, favorite, in-library flag, NSFW flag |
+| `ai_integrations` | chat provider, encrypted key, base URL (compatible APIs), cached model list, tier choices |
+| `chat_conversations` / `chat_messages` | conversations (title, rolling summary) and messages with the exact text sent, model, tier, tokens |
+| `ai_usage_events` | every chat/summary call and every free (local/cached) answer |
+| `gpu_integrations` / `gpu_workloads` | encrypted GPU credentials; workloads started from the studio |
 
 Images are files on disk; the database stores only relative paths. Every query filters by
 `user_id`.
@@ -67,13 +77,31 @@ provider task:  pending ─▶ submitting ─▶ processing ─▶ completed | f
   change is pushed to the browser over server-sent events. The browser falls back to
   polling active jobs every 4 s when the stream is unavailable.
 
+### Assistant turn
+
+```
+POST /api/ai/conversations/{id}/messages  (text, studio context, quick action)
+  local answer?  ──yes──▶ stream it (0 tokens)
+  route locally: simple|complex × mode → tier → model of the connected provider
+  context: system prompt (stable, cached) + summary + recent turns within a token budget
+           + studio context only when it changed
+  identical request answered in the last 24 h? ──yes──▶ cached answer (0 tokens)
+  stream from the provider → SSE start / delta… / done (usage) — Stop keeps the partial text
+  history outgrew the window → low tier folds older turns into the summary (background)
+```
+
+The Generate page publishes its draft to `lib/studio-bridge.ts`; prompt and settings blocks
+in answers can be applied back to it ("Use in studio", "Apply settings").
+
 ## Frontend (`frontend/src`)
 
 | Path | Role |
 |---|---|
 | `proxy.ts` | refuses requests with a foreign `Host` (DNS rebinding protection) |
 | `app/welcome` | sign in / create account |
-| `app/(studio)/…` | dashboard, generate, library, library/history, favorites, integrations, settings |
+| `app/(studio)/…` | dashboard, generate, assistant, library, library/history, favorites, compute (GPU), integrations (image / AI / GPU tabs), settings |
+| `components/assistant` | chat panel, safe Markdown with prompt/settings action cards, floating drawer |
+| `components/integrations` | image, AI and GPU provider management |
 | `components/ui` | design-system components (button, select, popover, modal, confirm, switch, …) |
 | `components/layout` | shell, sidebar, user menu, page header |
 | `components/images` | justified grid, tile, viewer, browser (filters + bulk), actions |

@@ -93,6 +93,10 @@ export interface Preferences {
   auto_save: boolean;
   keep_failed_days: 0 | 7 | 30 | 90;
   download_name: "prompt" | "id" | "date";
+  ai_provider: string | null;
+  ai_mode: "low" | "balanced" | "high";
+  ai_auto_route: boolean;
+  ai_share_context: boolean;
 }
 
 export interface Integration extends ProviderInfo {
@@ -248,4 +252,163 @@ export interface SessionInfo {
   last_seen_at: string;
   expires_at: string;
   current: boolean;
+}
+
+// --- AI assistant ---------------------------------------------------------------------------
+
+export type AIProviderKey = "anthropic" | "openai" | "xai" | "gemini" | "openai_compatible";
+export type AIMode = "low" | "balanced" | "high";
+export type AITier = "low" | "balanced" | "high";
+
+export interface AIProvider {
+  key: AIProviderKey;
+  name: string;
+  description: string;
+  keys_url: string;
+  docs_url: string;
+  custom_base_url: boolean;
+  key_optional: boolean;
+  default_base_url: string | null;
+  status: "not_connected" | "connected" | "error";
+  masked_key: string | null;
+  base_url: string | null;
+  last_error: string | null;
+  last_checked_at: string | null;
+  models: string[];
+  tiers: Record<AITier, { model: string | null; source: "user" | "preferred" | "matched" | "fallback" | "none" }>;
+  active: boolean;
+}
+
+export interface AIProviderList {
+  active_provider: AIProviderKey | null;
+  mode: AIMode;
+  auto_route: boolean;
+  share_context: boolean;
+  presets: { name: string; base_url: string }[];
+  providers: AIProvider[];
+}
+
+export interface ChatMessage {
+  id: string;
+  conversation_id: string;
+  role: "user" | "assistant";
+  content: string;
+  status: "complete" | "streaming" | "stopped" | "error";
+  provider: string | null;
+  model: string | null;
+  tier: AITier | null;
+  source: "api" | "local" | "cache";
+  input_tokens: number;
+  output_tokens: number;
+  cached_tokens: number;
+  usage_estimated: boolean;
+  error_code: string | null;
+  error_message: string | null;
+  meta: { complexity?: string; route?: string; mode?: AIMode; truncated?: boolean; served_by?: string; quick_action?: string; context?: boolean };
+  created_at: string;
+}
+
+export interface Conversation {
+  id: string;
+  title: string;
+  has_summary: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ConversationDetail extends Conversation {
+  summary: string;
+  messages: ChatMessage[];
+  usage: { input_tokens: number; output_tokens: number; cached_tokens: number };
+}
+
+export interface AIUsage {
+  days: number;
+  requests: number;
+  input_tokens: number;
+  output_tokens: number;
+  cached_tokens: number;
+  free_answers: number;
+  summaries: number;
+  by_model: { provider: string; model: string; requests: number; input_tokens: number; output_tokens: number; cached_tokens: number }[];
+  by_tier: Record<string, number>;
+}
+
+export interface StudioContextPayload {
+  page?: string;
+  model?: string;
+  provider?: string | null;
+  settings?: Record<string, unknown>;
+  prompt?: string;
+  reference_count?: number;
+  count?: number;
+}
+
+// --- GPU compute ----------------------------------------------------------------------------
+
+export type GPUProviderKey = "runpod" | "modal";
+
+export interface GPUProvider {
+  key: GPUProviderKey;
+  name: string;
+  description: string;
+  credential_fields: ("api_key" | "token_id" | "token_secret")[];
+  keys_url: string;
+  docs_url: string;
+  dashboard_url: string;
+  supports_endpoints: boolean;
+  supports_stop_start: boolean;
+  default_image: string;
+  status: "not_connected" | "connected" | "error";
+  masked_key: string | null;
+  last_error: string | null;
+  last_checked_at: string | null;
+}
+
+export interface GpuType {
+  id: string;
+  name: string;
+  memory_gb: number | null;
+  price_secure: number | null;
+  price_community: number | null;
+  available: boolean | null;
+}
+
+export interface GpuWorkload {
+  id: string;
+  name: string;
+  kind: "pod" | "sandbox";
+  status: string;
+  gpu_type: string;
+  gpu_count: number;
+  image: string;
+  cost_per_hour: number | null;
+  urls: string[];
+  created_at: string | null;
+  dashboard_url: string | null;
+  can_start: boolean;
+  can_stop: boolean;
+  can_terminate: boolean;
+  from_studio: boolean;
+}
+
+export interface GpuEndpoint {
+  id: string;
+  name: string;
+  gpu_types: string[];
+  workers_min: number;
+  workers_max: number;
+  url: string | null;
+  health: { jobs?: Record<string, number>; workers?: Record<string, number> } | null;
+}
+
+export interface GpuUsage {
+  balance: number | null;
+  spend_per_hour: number | null;
+  source: string | null;
+  error?: string;
+  studio_workloads: number;
+  studio_running: number;
+  studio_gpu_hours: number;
+  recent: { id: string; name: string; gpu_type: string; gpu_count: number; status: string; created_at: string | null; stopped_at: string | null }[];
 }

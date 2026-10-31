@@ -5,6 +5,7 @@ import {
   Copy,
   HardDrive,
   LogOut,
+  MessagesSquare,
   Monitor,
   Moon,
   Palette,
@@ -15,6 +16,7 @@ import {
   Trash2,
   UserRound,
 } from "lucide-react";
+import Link from "next/link";
 import { type FormEvent, type ReactNode, useEffect, useState } from "react";
 import { toast } from "sonner";
 
@@ -37,6 +39,7 @@ import { useI18n } from "@/lib/i18n";
 import type { MessageKey } from "@/lib/i18n";
 import {
   keys,
+  useAIProviders,
   useAuthState,
   useCatalog,
   useIntegrations,
@@ -48,12 +51,13 @@ import {
 } from "@/lib/queries";
 import type { Preferences } from "@/lib/types";
 
-type Section = "general" | "appearance" | "generation" | "storage" | "account";
+type Section = "general" | "appearance" | "generation" | "assistant" | "storage" | "account";
 
 const SECTIONS: { key: Section; label: MessageKey; icon: ReactNode }[] = [
   { key: "general", label: "set.general", icon: <SlidersHorizontal /> },
   { key: "appearance", label: "set.appearance", icon: <Palette /> },
   { key: "generation", label: "set.generation", icon: <Sparkles /> },
+  { key: "assistant", label: "set.assistant", icon: <MessagesSquare /> },
   { key: "storage", label: "set.storage", icon: <HardDrive /> },
   { key: "account", label: "set.account", icon: <UserRound /> },
 ];
@@ -284,6 +288,50 @@ function GenerationSection({ prefs }: { prefs: Preferences }) {
         </Row>
       </Group>
     </>
+  );
+}
+
+function AssistantSection({ prefs }: { prefs: Preferences }) {
+  const { t } = useI18n();
+  const save = usePref();
+  const providers = useAIProviders();
+  const connected = providers.data?.providers.filter((p) => p.status !== "not_connected") ?? [];
+  return (
+    <Group title={t("set.assistant")}>
+      <Row title={t("set.aiProvider")} description={t("set.aiProviderHint")}>
+        {connected.length ? (
+          <Select
+            label={t("set.aiProvider")}
+            value={providers.data?.active_provider ?? undefined}
+            onChange={(v) => save({ ai_provider: v })}
+            width={220}
+            options={connected.map((p) => ({ value: p.key, label: p.name }))}
+          />
+        ) : (
+          <Link href="/integrations?tab=ai" className="btn btn-sm">
+            {t("chat.openIntegrations")}
+          </Link>
+        )}
+      </Row>
+      <Row title={t("ai.mode")} description={t("ai.modeHint")}>
+        <Segmented
+          label={t("ai.mode")}
+          value={prefs.ai_mode}
+          onChange={(v) => save({ ai_mode: v })}
+          options={[
+            { value: "low", label: t("ai.mode.low") },
+            { value: "balanced", label: t("ai.mode.balanced") },
+            { value: "high", label: t("ai.mode.high") },
+          ]}
+        />
+      </Row>
+      <Row title={t("ai.autoRoute")} description={t("ai.autoRouteHint")}>
+        <Switch label={t("ai.autoRoute")} checked={prefs.ai_auto_route} onChange={(v) => save({ ai_auto_route: v })} />
+      </Row>
+      <Row title={t("set.aiContext")} description={t("set.aiContextHint")}>
+        <Switch label={t("set.aiContext")} checked={prefs.ai_share_context} onChange={(v) => save({ ai_share_context: v })} />
+      </Row>
+    </Group>
   );
 }
 
@@ -599,6 +647,8 @@ export default function SettingsPage() {
             <AppearanceSection prefs={prefs} />
           ) : section === "generation" ? (
             <GenerationSection prefs={prefs} />
+          ) : section === "assistant" ? (
+            <AssistantSection prefs={prefs} />
           ) : section === "storage" ? (
             <StorageSection prefs={prefs} />
           ) : (

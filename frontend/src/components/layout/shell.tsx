@@ -2,7 +2,9 @@
 
 import { useQueryClient } from "@tanstack/react-query";
 import {
+  Cpu,
   Heart,
+  MessagesSquare,
   Images,
   LayoutDashboard,
   LogOut,
@@ -18,6 +20,7 @@ import { usePathname, useRouter } from "next/navigation";
 import { type ReactNode, useCallback, useEffect } from "react";
 import { toast } from "sonner";
 
+import { AssistantDrawer } from "@/components/assistant/drawer";
 import { BrandMark, ProviderLogo } from "@/components/logos";
 import { IconButton, MenuItem, Popover, Spinner, Tooltip } from "@/components/ui";
 import { api } from "@/lib/api";
@@ -37,8 +40,10 @@ import type { Generation, User } from "@/lib/types";
 const NAV: { href: string; label: MessageKey; icon: typeof LayoutDashboard }[] = [
   { href: "/dashboard", label: "nav.dashboard", icon: LayoutDashboard },
   { href: "/generate", label: "nav.generate", icon: Sparkles },
+  { href: "/assistant", label: "nav.assistant", icon: MessagesSquare },
   { href: "/library", label: "nav.library", icon: Images },
   { href: "/favorites", label: "nav.favorites", icon: Heart },
+  { href: "/compute", label: "nav.compute", icon: Cpu },
   { href: "/integrations", label: "nav.integrations", icon: Plug },
   { href: "/settings", label: "nav.settings", icon: Settings },
 ];
@@ -270,6 +275,7 @@ export function StudioShell({ children }: { children: ReactNode }) {
     <div className="shell" data-sidebar={settings.data?.sidebar ?? "expanded"}>
       <Sidebar activeJobs={activeJobs} />
       <main className="main">{children}</main>
+      <AssistantDrawer />
     </div>
   );
 }

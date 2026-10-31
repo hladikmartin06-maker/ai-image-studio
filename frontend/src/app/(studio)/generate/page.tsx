@@ -1,6 +1,6 @@
 "use client";
 
-import { ArrowRight, Images, Plug, Sparkles, Wand2 } from "lucide-react";
+import { ArrowRight, Images, MessagesSquare, Plug, Sparkles, Wand2 } from "lucide-react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -13,12 +13,19 @@ import {
   ReferenceImages,
   SettingsControls,
 } from "@/components/generate/controls";
+import { openAssistant } from "@/components/assistant/drawer";
 import { JobCard } from "@/components/generate/job-card";
 import { ImageViewer } from "@/components/images/image-viewer";
 import { ProviderLogo } from "@/components/logos";
-import { Button, EmptyState, Notice, Segmented, Skeleton, Spinner } from "@/components/ui";
+import { Button, EmptyState, IconButton, Notice, Segmented, Skeleton, Spinner } from "@/components/ui";
 import { api, ApiError } from "@/lib/api";
 import { useT } from "@/lib/i18n";
+import {
+  publishStudioContext,
+  registerApplyHandler,
+  type StudioPatch,
+  takePendingApply,
+} from "@/lib/studio-bridge";
 import {
   useAuthState,
   useCatalog,
@@ -206,9 +213,53 @@ export default function GeneratePage() {
 
   const fitted = variant && draft ? fitSettings(variant, draft.settings, prefs) : undefined;
 
+  // What the assistant sees when the user asks about the current setup.
+  useEffect(() => {
+    if (!draft) return;
+    publishStudioContext({
+      page: "generate",
+      model: draft.model,
+      provider: draft.provider,
+      settings: fitted ? toPayload(fitted) : {},
+      prompt: draft.prompt,
+      reference_count: draft.refs.length,
+      count: draft.count,
+    });
+  });
+  useEffect(() => () => publishStudioContext(null), []);
+
   const update = useCallback((patch: Partial<Draft>) => {
     setDraft((d) => (d ? { ...d, ...patch } : d));
   }, []);
+
+  // Prompts and settings applied from the assistant.
+  const applyPatch = useCallback(
+    (patch: StudioPatch) => {
+      setDraft((d) => {
+        if (!d) return d;
+        const next: Draft = { ...d, settings: { ...d.settings } };
+        if (typeof patch.prompt === "string") next.prompt = patch.prompt;
+        if (patch.model && catalog.data?.models.some((m) => m.key === patch.model)) {
+          next.model = patch.model as ModelKey;
+        }
+        if (typeof patch.count === "number") next.count = Math.min(4, Math.max(1, Math.round(patch.count)));
+        if (typeof patch.aspect_ratio === "string") next.settings.aspect_ratio = patch.aspect_ratio;
+        if (typeof patch.resolution === "string") next.settings.resolution = patch.resolution;
+        if (patch.seed !== undefined && patch.seed !== null) next.settings.seed = String(patch.seed);
+        if (typeof patch.thinking_mode === "boolean") next.settings.thinking_mode = patch.thinking_mode;
+        return next;
+      });
+    },
+    [catalog.data],
+  );
+  useEffect(() => registerApplyHandler(applyPatch), [applyPatch]);
+  useEffect(() => {
+    if (!draft) return;
+    const pending = takePendingApply();
+    // Applies a prompt/settings the user chose in the assistant before this page was open.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    if (pending) applyPatch(pending);
+  }, [Boolean(draft)]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const problems: string[] = [];
   if (draft) {
@@ -306,6 +357,9 @@ export default function GeneratePage() {
         <div className="studio-scroll">
           <div className="row">
             <h1 className="h2 grow">{t("gen.title")}</h1>
+            <IconButton label={t("chat.askAboutSetup")} onClick={openAssistant}>
+              <MessagesSquare />
+            </IconButton>
             {connected.length > 1 ? (
               <Segmented
                 label={t("gen.provider")}
