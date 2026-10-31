@@ -7,7 +7,9 @@ what is verified: `docs/PROVIDERS.md`. User guide: `README.md`.
 Home of the code: GitHub `hladikmartin06-maker/ai-image-studio`, branch `main` (the app is
 the whole repository). The scripts follow the pattern of `ai-model-studio/scripts/` in
 `biznismarko9-source/tiqr-manager` (branch `claude/optimistic-euler-fvf8rc`); keep them the
-same way. Never push to `biznismarko9-source` repositories.
+same way. That branch and folder no longer exist on GitHub (checked 2026-10-31), so the
+scripts in this repository are now the reference. Never push to `biznismarko9-source`
+repositories.
 
 ## How the app runs (do not change without the owner)
 
@@ -93,8 +95,8 @@ same way. Never push to `biznismarko9-source` repositories.
 
 - Answer in Slovak, short and simple.
 - No progress messages while working; deliver only the result.
-- Commit and push to `main` right away when the work is done and all checks pass (the owner
-  approved this permanently).
+- Commit and push only after the owner approves it. When the work is done and all checks
+  pass, show the result and ask for approval; never commit or push without it.
 - Say plainly what was not tested against the real WaveSpeed / Atlas API.
 - End every reply with the launch command:
 
