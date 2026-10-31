@@ -588,6 +588,18 @@ export interface ComfyDeploy {
   cost_per_hour?: number | null;
   log_tail?: string;
   stopped_by?: string;
+  installing_at?: string;
+  // Krea 2 model download on the GPU (after connecting).
+  model_job?: {
+    id: string;
+    variant: "turbo" | "raw";
+    filename: string;
+    files: string[];
+    status: "running" | "completed" | "failed";
+    progress: number;
+    error: string | null;
+    started_at: string;
+  } | null;
 }
 
 export interface ComfyConnection {

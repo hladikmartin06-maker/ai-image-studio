@@ -854,7 +854,7 @@ export const sk: Record<MessageKey, string> = {
   "cf.image": "Image kontajnera",
   "cf.imageHint": "Prázdne = predvolený image štúdia.",
   "cf.imageDefault": "predvolený",
-  "cf.deployNote": "Prvé spustenie: asi 10–20 minút (image, inštalácia ComfyUI, ~17 GB súborov Krea 2). Súbory ostávajú na disku pre ďalšie spustenie.",
+  "cf.deployNote": "Prvé spustenie: asi 5–15 minút (spustí sa GPU a nainštaluje sa ComfyUI s PyTorchom). Po pripojení si vyberieš model a stiahneš ho.",
   "cf.deploy": "Spustiť GPU",
   "cf.connect": "Pripojiť",
   "cf.connected": "ComfyUI pripojené",
@@ -1326,4 +1326,28 @@ export const sk: Record<MessageKey, string> = {
   "chat.placeholderPhoto": "Opýtaj sa čokoľvek alebo pridaj fotku…",
 
   "auth.tryAgain": "Skúsiť znova",
+
+  "cf.setupStarting": "Spúšťam GPU…",
+  "cf.setupInstalling": "Inštalujem ComfyUI…",
+  "cf.setupStep1": "Spustiť GPU",
+  "cf.setupStep2": "Nainštalovať ComfyUI a PyTorch",
+  "cf.setupStep3": "Pripojené",
+  "cf.setupHint": "Prvé spustenie trvá asi 5–15 minút. Stránku môžeš zavrieť, pokračuje to samo.",
+  "cf.tryAgain": "Skúsiť znova",
+  "cf.stoppedHint": "GPU je zastavená a neplatí sa. Súbory na nej zostávajú.",
+  "k2.stepGpu": "1 · Kde beží Krea 2",
+  "k2.stepModel": "2 · Model",
+  "k2.notDownloaded": "Nestiahnutý",
+  "k2.downloading": "Sťahujem {n} %",
+  "k2.downloadingHint": "Sťahujem model do GPU…",
+  "k2.download": "Stiahnuť {name} (≈ {size} GB)",
+  "k2.downloadHint": "Stiahne sa raz na disk GPU, trvá to pár minút.",
+  "k2.downloadStarted": "Sťahovanie začalo",
+  "k2.downloadFirst": "Najprv stiahni model.",
+  "k2.noVerifiedDownload": "Tento model zatiaľ nemá overené stiahnutie. Pridaj jeho súbor v Spravovať › Súbory modelov.",
+  "k2.localFiles": "Daj súbory modelu, text encodera a VAE do priečinka ComfyUI/models (odkazy sú v Spravovať › Súbory modelov), potom tam stlač obnoviť.",
+
+  "k2.stepPhotos": "3 · AI model a jeho vzhľad",
+
+  "cf.gpuMemoryHint": "Viac pamäte GPU je rýchlejšie; pre Krea 2 odporúčame 24 GB a viac (odhad appky, Krea to nezverejňuje).",
 };

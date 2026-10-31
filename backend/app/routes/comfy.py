@@ -68,7 +68,9 @@ def conn_json(conn: ComfyConnection) -> dict[str, Any]:
 
 
 def _fail(exc: ComfyError):
-    status = {"unauthorized": 400, "not_found": 404, "unsupported": 400}.get(exc.code, 502)
+    status = {"unauthorized": 400, "not_found": 404, "unsupported": 400, "in_progress": 409}.get(
+        exc.code, 502
+    )
     if exc.code in ("invalid_workflow", "missing_models"):
         status = 400
     return api_error(status, exc.code, exc.message)
@@ -261,7 +263,8 @@ class DeployBody(BaseModel):
     image: str | None = Field(default=None, max_length=250)
     volume_gb: int = Field(default=120, ge=40, le=2000)
     container_disk_gb: int = Field(default=50, ge=20, le=500)
-    variants: list[Literal["turbo", "raw"]] = Field(default_factory=lambda: ["turbo"])
+    # Model files to download during setup; the studio's UI downloads them after connecting.
+    variants: list[Literal["turbo", "raw"]] = Field(default_factory=list)
     auto_stop_minutes: int | None = Field(default=30, ge=0, le=1440)
     timeout_minutes: int = Field(default=720, ge=10, le=1440)
     confirm_billing: bool = False
@@ -416,6 +419,29 @@ async def download_model(
     except ComfyError as exc:
         raise _fail(exc) from exc
     return {"job": job}
+
+
+class InstallBody(BaseModel):
+    variant: Literal["turbo", "raw"]
+    # One of the variant's verified files (e.g. fp8 or int8); default the first.
+    filename: str | None = Field(default=None, max_length=200)
+
+
+@router.post("/connections/{conn_id}/models/install")
+async def install_model(
+    conn_id: uuid.UUID,
+    body: InstallBody,
+    user: User = Depends(current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Downloads a Krea 2 model with its text encoder and VAE on the rented GPU (files
+    already there are skipped); progress appears in deploy.model_job."""
+    conn = await _owned(db, user, conn_id)
+    try:
+        await deploy.install_model(db, conn, body.variant, body.filename)
+    except ComfyError as exc:
+        raise _fail(exc) from exc
+    return conn_json(conn)
 
 
 @router.get("/connections/{conn_id}/jobs/{job_id}")

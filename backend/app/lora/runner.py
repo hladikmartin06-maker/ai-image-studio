@@ -139,6 +139,8 @@ def _spec(v: LoraVersion, lora: Lora, token: str, hf: str | None) -> WorkloadSpe
         timeout_minutes=1440,
         # Modal: one volume keeps the Hugging Face cache between runs (no re-download).
         volume_name=TRAINING_VOLUME if v.gpu_provider == "modal" else None,
+        # ai-toolkit's image is built for CUDA 13: only hosts whose driver supports it.
+        allowed_cuda_versions=["13.0"] if v.gpu_provider == "runpod" else [],
     )
 
 

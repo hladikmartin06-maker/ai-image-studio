@@ -83,6 +83,13 @@ repositories.
   connected in Integrations and picked only where they are used (Krea 2 on Generate, LoRA
   training) — no separate GPU page. Advanced options stay collapsed; no fields beginners do
   not need (e.g. trainer image, run notes). Training always removes the GPU afterwards.
+- GPU lists show only GPUs with 16 GB or more (and at least what the task needs), smallest
+  first (`MIN_GPU_GB` in `components/studio/common.tsx`).
+- Krea 2 on Generate goes in steps: 1 choose and connect the GPU (setup progress, a failed
+  setup stops the GPU, "Try again"), 2 download the model once it is connected, 3 AI model,
+  LoRA, prompt and generate. Setup installs ComfyUI and a PyTorch that fits the driver
+  (`gpu/agent/studio_agent.py`, sources in `docs/PROVIDERS.md`); RunPod pods ask for a recent
+  driver with `allowedCudaVersions`.
 - Hugging Face: token in Integrations › Hugging Face, checked with `whoami-v2` and the Krea 2
   repositories' `auth-check` (`services/huggingface.py`). Accepting the license is the user's
   own click on huggingface.co (no API exists); the studio links there and checks again, and

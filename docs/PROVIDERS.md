@@ -203,6 +203,32 @@ none). Only the API format of workflows can be run; UI-format files are kept for
 **Not run against a real ComfyUI with Krea 2 weights** — verified with a fake ComfyUI that
 reproduces the API.
 
+## ComfyUI on a rented GPU (setup)
+
+- **Image (RunPod)**: `runpod/pytorch:1.5.1-cu1300-torch2130-ubuntu2404` — PyTorch 2.13.0 for
+  CUDA 13.0, Python 3.12 (`python` and `python3`); tag listed on Docker Hub
+  (`hub.docker.com/v2/repositories/runpod/pytorch/tags`), build in `runpod/containers`
+  (`official-templates/pytorch`, `official-templates/base`), checked 2026-10-31.
+- **Driver filter**: `allowedCudaVersions` on `POST /v1/pods` (RunPod's `api-reference/
+  openapi.json` in `runpod/docs`: "a list of acceptable CUDA versions", enum up to "13.0").
+  ComfyUI pods ask for 13.0, 12.9 or 12.8; training pods (ai-toolkit, CUDA 13) for 13.0.
+- **PyTorch**: ComfyUI's README (master, 2026-10-31): "torch 2.7 is minimally supported …
+  Using a cu130 or above version of pytorch is required on Nvidia 20 series and above", and
+  `pip install torch torchvision torchaudio --extra-index-url
+  https://download.pytorch.org/whl/cu130`. Its `requirements.txt` pins `comfy-kitchen`, whose
+  kernels failed to import on PyTorch 2.4 (`infer_schema … list[int]`, the owner's log with the
+  old image). The setup script reads the driver's CUDA version from `nvidia-smi` and keeps the
+  image's PyTorch when it is ≥ 2.7 and fits the driver (cu130 when the driver has CUDA 13);
+  otherwise it installs PyTorch from `download.pytorch.org/whl/cu130` (or `cu128`).
+- ComfyUI's packages live on the container disk, which RunPod resets when a pod stops, so
+  they are installed again on every new container (pip cache on the volume); ComfyUI and the
+  models stay on the volume.
+- Models are downloaded after connecting (Generate › Krea 2 › Download): text encoder, VAE
+  and the diffusion model from `huggingface.co/Comfy-Org/Krea-2`, skipped when present.
+- A failed setup stops the GPU so it is not billed; "Try again" starts it again.
+- **Not run on a real RunPod or Modal GPU** (the image, driver filter and PyTorch install are
+  verified from the sources above and with a fake RunPod running the real agent).
+
 # LoRA training (ai-toolkit)
 
 - **Trainer**: ostris/ai-toolkit, arch `krea2` (`extensions_built_in/diffusion_models/krea2`):
@@ -219,8 +245,8 @@ reproduces the API.
 - **GPU side**: the studio agent (`backend/app/gpu/agent`) in the container; RunPod pods get
   `dockerEntrypoint`/`dockerStartCmd`, port 8765/http and a volume at /workspace, reached at
   `https://{podId}-8765.proxy.runpod.net`; Modal sandboxes get `encrypted_ports`, a Secret for
-  tokens and a named Volume. ComfyUI deployments install ComfyUI from GitHub into the volume
-  and download the verified Comfy-Org files.
+  tokens and a named Volume. ComfyUI deployments install ComfyUI from GitHub into the volume;
+  the verified Comfy-Org files are downloaded when the user asks for a model.
 
 Presets are the studio's starting points, not published recommendations. Progress and loss
 come from ai-toolkit's own output. **Not run on a real RunPod or Modal GPU** — verified with a

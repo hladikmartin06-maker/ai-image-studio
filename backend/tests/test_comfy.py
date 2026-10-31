@@ -20,7 +20,7 @@ from app.services.gpu_runner import gpu_runner
 from app.services.worker import worker
 from tests.conftest import Api, make_user, wait_done
 from tests.fake_comfy_server import FakeComfy
-from tests.gpu_fakes import LocalRunPodProvider, SpawningRunPod, free_port, make_comfy_dir
+from tests.gpu_fakes import LocalRunPodProvider, SpawningRunPod, comfy_env, make_comfy_dir
 from tests.test_gpu import RUNPOD_KEY
 
 
@@ -372,14 +372,38 @@ async def test_custom_workflow_import_export_and_missing_nodes(user: Api, comfy:
     assert blocked.status_code == 409 and "UnknownCustomNode" in blocked.json()["error"]["message"]
 
 
+def test_setup_script_and_download_progress():
+    from app.comfy.deploy import _download_error, download_progress, model_downloads, setup_error
+    from app.gpu.agent.studio_agent import comfyui_script, models_script
+
+    script = comfyui_script([])
+    # PyTorch is checked against the driver and ComfyUI's packages are installed again in
+    # every new container; nothing is downloaded during setup.
+    assert "nvidia-smi" in script and "download.pytorch.org/whl/$TORCH_INDEX" in script
+    assert "pip install -r requirements.txt" in script and "curl" not in script
+    assert model_downloads([]) == []
+    files = model_downloads(["turbo"])
+    assert [f["folder"] for f in files] == ["text_encoders", "vae", "diffusion_models"]
+    # A failed download stops the job instead of going on without the file.
+    assert "download failed" in models_script(files) and "exit 1" in models_script(files)
+    assert "Hugging Face" in _download_error("curl: (22) The requested URL returned error: 403")
+    assert "too old" in setup_error("... ComfyUI needs 12.8 or newer ...")
+    sizes = [4.88, 0.242, 12.24]
+    log = (
+        "[studio] file 1/3 te\n[studio] file 2/3 vae\n[studio] file 3/3 model\n"
+        " 85 12.2G   85 10.4G    0     0  61.4M      0  0:03:23  0:02:53  0:00:30 59.9M\r"
+        " 90 12.2G   90 11.0G    0     0  61.3M      0  0:03:24  0:03:04  0:00:20 59.6M\r"
+    )
+    assert download_progress(log, sizes) == 93
+    assert download_progress("", sizes) == 0
+    assert download_progress("[studio] file 1/3 te\n", [None, None, None]) == 0
+
+
 async def test_deploy_on_runpod_through_the_agent(user: Api, tmp_path: Path):
     """The studio deploys "ComfyUI" on a (fake) RunPod pod: the real agent starts it, the
     studio reaches it only through the agent, generates, then stops the pod."""
     comfy_dir = make_comfy_dir(tmp_path / "gpu")
-    fake = SpawningRunPod(
-        tmp_path / "pods",
-        {"STUDIO_COMFY_DIR": str(comfy_dir), "STUDIO_COMFY_PORT": str(free_port())},
-    )
+    fake = SpawningRunPod(tmp_path / "pods", comfy_env(comfy_dir))
     set_gpu_adapter("runpod", LocalRunPodProvider(fake))
     comfy_runner.POLL_INITIAL = 0.05
     try:
@@ -394,6 +418,9 @@ async def test_deploy_on_runpod_through_the_agent(user: Api, tmp_path: Path):
         pod = next(iter(fake.bodies.values()))
         assert pod["dockerEntrypoint"] == ["bash"] and pod["ports"] == ["8765/http"]
         assert pod["volumeMountPath"] == "/workspace"
+        # PyTorch 2.13 / CUDA 13 image, on hosts whose driver has CUDA 12.8 or newer.
+        assert pod["imageName"] == "runpod/pytorch:1.5.1-cu1300-torch2130-ubuntu2404"
+        assert pod["allowedCudaVersions"] == ["13.0", "12.9", "12.8"]
         for _ in range(200):
             await gpu_runner.tick()
             conn = (await user.get("/api/comfy/connections")).json()["items"][0]
@@ -403,6 +430,29 @@ async def test_deploy_on_runpod_through_the_agent(user: Api, tmp_path: Path):
         assert conn["status"] == "ready", (conn["deploy"], conn["last_error"])
         assert conn["info"]["krea2"]["ready"]
         assert conn["info"]["agent"]["ok"]
+        # Model download after connecting: files already on the volume are skipped.
+        raw = await user.post(
+            f"/api/comfy/connections/{conn['id']}/models/install", json={"variant": "raw"}
+        )
+        assert raw.status_code == 400  # no verified download for RAW
+        inst = await user.post(
+            f"/api/comfy/connections/{conn['id']}/models/install", json={"variant": "turbo"}
+        )
+        assert inst.status_code == 200, inst.text
+        job = inst.json()["deploy"]["model_job"]
+        assert job["status"] == "running" and job["files"] == [
+            "qwen3vl_4b_fp8_scaled.safetensors",
+            "qwen_image_vae.safetensors",
+            "krea2_turbo_fp8_scaled.safetensors",
+        ]
+        for _ in range(100):
+            await gpu_runner.tick()
+            conn = (await user.get("/api/comfy/connections")).json()["items"][0]
+            if conn["deploy"]["model_job"]["status"] != "running":
+                break
+            await asyncio.sleep(0.1)
+        assert conn["deploy"]["model_job"]["status"] == "completed", conn["deploy"]
+        assert conn["deploy"]["model_job"]["progress"] == 100
         g = await user.post(
             "/api/comfy/generate",
             json={"connection_id": conn["id"], "variant": "turbo", "prompt": "on a GPU"},

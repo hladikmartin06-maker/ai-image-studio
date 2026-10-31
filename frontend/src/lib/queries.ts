@@ -692,9 +692,11 @@ export function useComfyConnections(enabled = true) {
     queryKey: comfyKeys.connections,
     queryFn: () => api<{ items: ComfyConnection[] }>("/api/comfy/connections"),
     enabled,
-    // Deployments advance in the background: follow them while they start.
+    // Deployments and model downloads advance in the background: follow them.
     refetchInterval: (q) =>
-      q.state.data?.items.some((c) => c.status === "deploying") ? 4000 : false,
+      q.state.data?.items.some((c) => c.status === "deploying" || c.deploy?.model_job?.status === "running")
+        ? 4000
+        : false,
   });
 }
 
@@ -751,6 +753,12 @@ export function useComfyPower() {
     api<ComfyConnection>(`/api/comfy/connections/${id}/${action}`, {
       body: action === "start" ? { confirm_billing: true } : {},
     }),
+  );
+}
+
+export function useInstallKrea2Model() {
+  return useComfyMutation(({ id, ...body }: { id: string; variant: "turbo" | "raw"; filename?: string | null }) =>
+    api<ComfyConnection>(`/api/comfy/connections/${id}/models/install`, { body }),
   );
 }
 

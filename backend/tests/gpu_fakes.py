@@ -82,11 +82,12 @@ def make_toolkit(root: Path) -> Path:
 
 def make_comfy_dir(root: Path) -> Path:
     """A ComfyUI folder that the agent's "comfyui" job accepts as installed: main.py is the
-    fake ComfyUI server; the Krea 2 files exist, so nothing is downloaded."""
+    fake ComfyUI server, the packages count as installed (STUDIO_COMFY_DEPS_MARK, see
+    comfy_env) and the Krea 2 files exist, so nothing is downloaded."""
     folder = root / "ComfyUI"
     folder.mkdir(parents=True, exist_ok=True)
     shutil.copy(TESTS / "fake_comfy_server.py", folder / "main.py")
-    (folder / ".studio-installed").write_text("ok")
+    (root / "deps-installed").write_text("ok")
     for sub, name in (
         ("text_encoders", "qwen3vl_4b_fp8_scaled.safetensors"),
         ("vae", "qwen_image_vae.safetensors"),
@@ -95,6 +96,15 @@ def make_comfy_dir(root: Path) -> Path:
         (folder / "models" / sub).mkdir(parents=True, exist_ok=True)
         (folder / "models" / sub / name).write_bytes(b"weights")
     return folder
+
+
+def comfy_env(comfy_dir: Path) -> dict[str, str]:
+    """Agent environment for a fake ComfyUI made by make_comfy_dir."""
+    return {
+        "STUDIO_COMFY_DIR": str(comfy_dir),
+        "STUDIO_COMFY_PORT": str(free_port()),
+        "STUDIO_COMFY_DEPS_MARK": str(comfy_dir.parent / "deps-installed"),
+    }
 
 
 class SpawningRunPod(FakeRunPod):

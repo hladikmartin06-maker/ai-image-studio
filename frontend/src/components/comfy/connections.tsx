@@ -244,10 +244,25 @@ export function ConnectionCard({ conn }: { conn: ComfyConnection }) {
 export type AddMode = "local" | "deploy";
 
 export function AddConnectionModal({ open, onClose, mode }: { open: boolean; onClose: () => void; mode?: AddMode }) {
-  return open ? <AddConnection onClose={onClose} initialMode={mode ?? "local"} /> : null;
+  const t = useT();
+  if (!open) return null;
+  return (
+    <Modal open wide onClose={onClose} icon={<Plug />} title={t("cf.addTitle")} description={t("cf.addBody")}>
+      <ConnectForm initialMode={mode ?? "local"} onDone={onClose} onCancel={onClose} />
+    </Modal>
+  );
 }
 
-function AddConnection({ onClose, initialMode }: { onClose: () => void; initialMode: AddMode }) {
+/** Where Krea 2 runs: ComfyUI on this Mac, or a GPU the studio rents and sets up. */
+export function ConnectForm({
+  initialMode,
+  onDone,
+  onCancel,
+}: {
+  initialMode: AddMode;
+  onDone?: () => void;
+  onCancel?: () => void;
+}) {
   const t = useT();
   const confirm = useConfirm();
   const add = useAddComfy();
@@ -274,13 +289,13 @@ function AddConnection({ onClose, initialMode }: { onClose: () => void; initialM
         });
         if (!ok) return;
         await deploy.mutateAsync({
-          name: `Krea 2 · ${gpu.provider === "modal" ? "Modal" : "RunPod"}`,
+          name: `Krea 2 · ${gpu.provider === "modal" ? "Modal" : "RunPod"} · ${gpu.gpu_type}`.slice(0, 80),
           provider: gpu.provider,
           gpu_type: gpu.gpu_type,
           gpu_count: 1,
           cloud_type: "SECURE",
           image: null,
-          variants: ["turbo"],
+          variants: [],
           auto_stop_minutes: autoStop,
           confirm_billing: true,
         });
@@ -298,80 +313,72 @@ function AddConnection({ onClose, initialMode }: { onClose: () => void; initialM
         if (c.status === "ready") toast.success(t("cf.connected"));
         else toast.error(c.last_error ?? t("cf.notReachable"));
       }
-      onClose();
+      onDone?.();
     } catch (e) {
       setError(e instanceof ApiError ? e.message : t("errors.generic"));
     }
   };
 
   return (
-    <Modal
-      open
-      wide
-      onClose={onClose}
-      icon={<Plug />}
-      title={t("cf.addTitle")}
-      description={t("cf.addBody")}
-      footer={
+    <div className="col gap-16">
+      <div className="connect-choices" role="radiogroup" aria-label={t("cf.addTitle")}>
+        {(["deploy", "local"] as const).map((m) => (
+          <button
+            key={m}
+            type="button"
+            role="radio"
+            aria-checked={mode === m}
+            className="model-card"
+            onClick={() => {
+              setMode(m);
+              setError(null);
+            }}
+          >
+            <span className="row" style={{ gap: 8 }}>
+              {m === "local" ? <Laptop size={18} /> : <CloudCog size={18} />}
+              <span className="name">{t(`cf.mode.${m}`)}</span>
+            </span>
+            <span className="desc">{m === "local" ? t("cf.choiceLocal") : t("cf.choiceDeploy")}</span>
+          </button>
+        ))}
+      </div>
+
+      {mode === "local" ? (
         <>
-          <Button variant="ghost" onClick={onClose}>
+          <Field label={t("cf.url")} hint={t("cf.urlLocalHint")}>
+            <input className="input mono" value={url} onChange={(e) => setUrl(e.target.value)} />
+          </Field>
+          <Field label={t("cf.folder")} hint={t("cf.folderHint")}>
+            <input className="input mono" value={folder} placeholder="~/ComfyUI" onChange={(e) => setFolder(e.target.value)} />
+          </Field>
+        </>
+      ) : (
+        <>
+          <GpuPicker value={gpu} onChange={setGpu} minMemoryGb={16} />
+          <div className="hint">{t("cf.gpuMemoryHint")}</div>
+          <Field label={t("cf.autoStop")} hint={t("cf.autoStopHint")}>
+            <Select
+              label={t("cf.autoStop")}
+              value={autoStop}
+              onChange={(m) => setAutoStop(Number(m))}
+              options={[15, 30, 60, 120, 0].map((m) => ({ value: m, label: m ? `${m} min` : t("common.off") }))}
+            />
+          </Field>
+          <div className="hint">{t("cf.deployNote")}</div>
+        </>
+      )}
+      {error ? <div className="error-text">{error}</div> : null}
+      <div className="row" style={{ justifyContent: "flex-end", gap: 8 }}>
+        {onCancel ? (
+          <Button variant="ghost" onClick={onCancel}>
             {t("common.cancel")}
           </Button>
-          <Button variant="primary" onClick={submit} loading={add.isPending || deploy.isPending}>
-            {mode === "deploy" ? t("cf.deploy") : t("cf.connect")}
-          </Button>
-        </>
-      }
-    >
-      <div className="col gap-16">
-        <div className="connect-choices" role="radiogroup" aria-label={t("cf.addTitle")}>
-          {(["local", "deploy"] as const).map((m) => (
-            <button
-              key={m}
-              type="button"
-              role="radio"
-              aria-checked={mode === m}
-              className="model-card"
-              onClick={() => {
-                setMode(m);
-                setError(null);
-              }}
-            >
-              <span className="row" style={{ gap: 8 }}>
-                {m === "local" ? <Laptop size={18} /> : <CloudCog size={18} />}
-                <span className="name">{t(`cf.mode.${m}`)}</span>
-              </span>
-              <span className="desc">{t(`cf.modeHint.${m}`)}</span>
-            </button>
-          ))}
-        </div>
-
-        {mode === "local" ? (
-          <>
-            <Field label={t("cf.url")} hint={t("cf.urlLocalHint")}>
-              <input className="input mono" value={url} onChange={(e) => setUrl(e.target.value)} />
-            </Field>
-            <Field label={t("cf.folder")} hint={t("cf.folderHint")}>
-              <input className="input mono" value={folder} placeholder="~/ComfyUI" onChange={(e) => setFolder(e.target.value)} />
-            </Field>
-          </>
-        ) : (
-          <>
-            <GpuPicker value={gpu} onChange={setGpu} minMemoryGb={24} />
-            <Field label={t("cf.autoStop")} hint={t("cf.autoStopHint")}>
-              <Select
-                label={t("cf.autoStop")}
-                value={autoStop}
-                onChange={(m) => setAutoStop(Number(m))}
-                options={[15, 30, 60, 120, 0].map((m) => ({ value: m, label: m ? `${m} min` : t("common.off") }))}
-              />
-            </Field>
-            <Notice>{t("cf.deployNote")}</Notice>
-          </>
-        )}
-        {error ? <div className="error-text">{error}</div> : null}
+        ) : null}
+        <Button variant="primary" onClick={submit} loading={add.isPending || deploy.isPending}>
+          {mode === "deploy" ? t("cf.deploy") : t("cf.connect")}
+        </Button>
       </div>
-    </Modal>
+    </div>
   );
 }
 

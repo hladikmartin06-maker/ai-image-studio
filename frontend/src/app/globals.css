@@ -3517,3 +3517,55 @@ a.job-row:hover {
   color: #fff;
   cursor: pointer;
 }
+
+/* --- Krea 2 setup steps ------------------------------------------------------------------- */
+
+.setup-box {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px;
+  border-radius: var(--r-md);
+  border: 1px solid var(--border-strong);
+  background: var(--surface);
+}
+.setup-steps {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.setup-steps li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-3);
+}
+.setup-steps li::before {
+  content: "";
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  border: 1.5px solid currentColor;
+}
+.setup-steps li[data-state="active"] {
+  color: var(--accent-text);
+  font-weight: 600;
+}
+.setup-steps li[data-state="active"]::before {
+  background: currentColor;
+}
+.setup-steps li[data-state="done"] {
+  color: var(--success);
+}
+.setup-steps li[data-state="done"]::before {
+  background: currentColor;
+}
+.model-download {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 10px;
+}

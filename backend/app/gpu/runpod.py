@@ -3,7 +3,8 @@
 REST API (https://docs.runpod.io/api-reference), "Authorization: Bearer <key>":
   GET    /v1/pods                       list pods
   POST   /v1/pods                       create a pod {name, imageName, gpuTypeIds, gpuCount,
-                                        cloudType, containerDiskInGb, volumeInGb, ports, env}
+                                        cloudType, containerDiskInGb, volumeInGb, ports, env,
+                                        allowedCudaVersions (driver's CUDA, e.g. "13.0")}
   POST   /v1/pods/{id}/start | /stop    start / stop
   DELETE /v1/pods/{id}                  terminate
   GET    /v1/endpoints                  serverless endpoints
@@ -197,6 +198,8 @@ class RunPodProvider:
             body["dockerStartCmd"] = spec.command[1:]
         if spec.volume_gb:
             body["volumeMountPath"] = "/workspace"
+        if spec.allowed_cuda_versions:
+            body["allowedCudaVersions"] = list(spec.allowed_cuda_versions)
         data = await self._call(creds, "POST", f"{_rest()}/pods", json=body)
         if not isinstance(data, dict) or not data.get("id"):
             raise GPUError("provider_error", "No pod id in the response")

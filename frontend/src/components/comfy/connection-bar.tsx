@@ -1,19 +1,24 @@
 "use client";
 
-import { CloudCog, Laptop, Play, Plus, Settings2, Square } from "lucide-react";
+import { Play, Plus, RotateCcw, ScrollText, Settings2, Square, Trash2 } from "lucide-react";
 import { useState } from "react";
 import { toast } from "sonner";
 
-import { type AddMode, AddConnectionModal, ConnectionCard } from "@/components/comfy/connections";
+import { type AddMode, AddConnectionModal, ConnectForm, ConnectionCard } from "@/components/comfy/connections";
 import { WorkflowsCard } from "@/components/comfy/workflows";
-import { StatusPill } from "@/components/studio/common";
-import { Button, IconButton, Modal, Select, useConfirm } from "@/components/ui";
+import { formatElapsed, formatMoney, StatusPill } from "@/components/studio/common";
+import { Button, IconButton, Modal, Notice, Select, useConfirm } from "@/components/ui";
 import { ApiError } from "@/lib/api";
-import { useT } from "@/lib/i18n";
-import { useComfyConnections, useComfyPower } from "@/lib/queries";
+import { useI18n } from "@/lib/i18n";
+import { useComfyConnections, useComfyPower, useRemoveComfy } from "@/lib/queries";
 import type { ComfyConnection } from "@/lib/types";
 
-/** Where Krea 2 runs, chosen right on the Generate page: this Mac or a rented GPU. */
+function secondsSince(iso: string | undefined) {
+  return iso ? Math.max(0, (Date.now() - new Date(iso).getTime()) / 1000) : null;
+}
+
+/** Step 1 on Generate › Krea 2: where it runs. Pick a GPU (or this Mac), connect, and see
+ * the setup progress until ComfyUI is ready. */
 export function ComfyConnectionBar({
   selected,
   onSelect,
@@ -21,40 +26,47 @@ export function ComfyConnectionBar({
   selected: ComfyConnection | undefined;
   onSelect: (id: string) => void;
 }) {
-  const t = useT();
+  const { t, locale } = useI18n();
   const confirm = useConfirm();
   const conns = useComfyConnections();
   const power = useComfyPower();
+  const remove = useRemoveComfy();
   const [adding, setAdding] = useState<AddMode | null>(null);
   const [managing, setManaging] = useState(false);
+  const [log, setLog] = useState(false);
   const items = conns.data?.items ?? [];
   const deployed = selected?.auth_type === "agent";
 
+  const run = async (fn: () => Promise<unknown>, done?: string) => {
+    try {
+      await fn();
+      if (done) toast.success(done);
+    } catch (e) {
+      toast.error(e instanceof ApiError ? e.message : t("errors.generic"));
+    }
+  };
   const start = async (c: ComfyConnection) => {
     const ok = await confirm({
       title: t("gpu.billingTitle"),
       description: t("gpu.billingBody", { provider: c.gpu_provider === "modal" ? "Modal" : "RunPod" }),
-      confirmLabel: t("cf.start"),
+      confirmLabel: t("cf.startGpu"),
     });
-    if (!ok) return;
-    try {
-      await power.mutateAsync({ id: c.id, action: "start" });
-    } catch (e) {
-      toast.error(e instanceof ApiError ? e.message : t("errors.generic"));
-    }
+    if (ok) await run(() => power.mutateAsync({ id: c.id, action: "start" }));
   };
-  const stop = async (c: ComfyConnection) => {
-    try {
-      await power.mutateAsync({ id: c.id, action: "stop" });
-      toast.success(t("cf.stopped"));
-    } catch (e) {
-      toast.error(e instanceof ApiError ? e.message : t("errors.generic"));
-    }
+  const onRemove = async (c: ComfyConnection) => {
+    const agent = c.auth_type === "agent";
+    const ok = await confirm({
+      title: t("cf.removeTitle", { name: c.name }),
+      description: agent ? t("cf.removeDeployedBody") : t("cf.removeBody"),
+      confirmLabel: agent ? t("cf.removeAndTerminate") : t("common.delete"),
+      danger: true,
+    });
+    if (ok) await run(() => remove.mutateAsync({ id: c.id, terminate: agent }), t("cf.removed"));
   };
 
   const modals = (
     <>
-      <AddConnectionModal open={adding !== null} mode={adding ?? "local"} onClose={() => setAdding(null)} />
+      <AddConnectionModal open={adding !== null} mode={adding ?? "deploy"} onClose={() => setAdding(null)} />
       {managing ? (
         <Modal open wide onClose={() => setManaging(false)} title={t("cf.manageTitle")} description={t("cf.manageBody")}>
           <div className="col gap-16">
@@ -65,6 +77,11 @@ export function ComfyConnectionBar({
           </div>
         </Modal>
       ) : null}
+      {log && selected ? (
+        <Modal open wide onClose={() => setLog(false)} title={t("cf.logs")} description={selected.name}>
+          <pre className="log-box">{selected.deploy.log_tail || t("cf.noLogs")}</pre>
+        </Modal>
+      ) : null}
     </>
   );
 
@@ -73,29 +90,18 @@ export function ComfyConnectionBar({
       <div className="connect-box">
         <div className="h3">{t("k2.connectTitle")}</div>
         <div className="small subtle">{t("k2.connectBody")}</div>
-        <div className="connect-choices">
-          <button type="button" className="model-card" onClick={() => setAdding("local")}>
-            <span className="row" style={{ gap: 8 }}>
-              <Laptop size={18} />
-              <span className="name">{t("cf.mode.local")}</span>
-            </span>
-            <span className="desc">{t("cf.choiceLocal")}</span>
-          </button>
-          <button type="button" className="model-card" onClick={() => setAdding("deploy")}>
-            <span className="row" style={{ gap: 8 }}>
-              <CloudCog size={18} />
-              <span className="name">{t("cf.mode.deploy")}</span>
-            </span>
-            <span className="desc">{t("cf.choiceDeploy")}</span>
-          </button>
-        </div>
+        <ConnectForm initialMode="deploy" />
         {modals}
       </div>
     );
   }
 
+  const d = selected?.deploy ?? {};
+  const stage = d.stage === "installing" ? "installing" : "starting";
+  const since = secondsSince(stage === "installing" ? d.installing_at : d.started_at);
+
   return (
-    <div className="col" style={{ gap: 8 }}>
+    <div className="col" style={{ gap: 10 }}>
       <div className="row" style={{ gap: 8 }}>
         <div className="grow" style={{ minWidth: 0 }}>
           <Select
@@ -109,27 +115,99 @@ export function ComfyConnectionBar({
         <IconButton label={t("cf.manageTitle")} onClick={() => setManaging(true)}>
           <Settings2 />
         </IconButton>
-        <IconButton label={t("cf.add")} onClick={() => setAdding("local")}>
+        <IconButton label={t("cf.add")} onClick={() => setAdding("deploy")}>
           <Plus />
         </IconButton>
       </div>
-      {selected && deployed ? (
-        <div className="row" style={{ gap: 8 }}>
-          {selected.status === "stopped" || selected.status === "error" ? (
-            <Button size="sm" icon={<Play />} loading={power.isPending} onClick={() => start(selected)}>
-              {t("cf.startGpu")}
+
+      {selected?.status === "deploying" ? (
+        <div className="setup-box">
+          <div className="row" style={{ gap: 8 }}>
+            <span className="dot pulse" style={{ color: "var(--accent)" }} />
+            <span className="small grow" style={{ fontWeight: 600 }}>
+              {t(stage === "installing" ? "cf.setupInstalling" : "cf.setupStarting")}
+            </span>
+            {since !== null ? <span className="tiny subtle">{formatElapsed(since)}</span> : null}
+          </div>
+          <ol className="setup-steps tiny">
+            <li data-state={stage === "starting" ? "active" : "done"}>{t("cf.setupStep1")}</li>
+            <li data-state={stage === "installing" ? "active" : "todo"}>{t("cf.setupStep2")}</li>
+            <li data-state="todo">{t("cf.setupStep3")}</li>
+          </ol>
+          <div className="tiny subtle">{t("cf.setupHint")}</div>
+          <div className="row wrap" style={{ gap: 8 }}>
+            <Button size="sm" icon={<ScrollText />} onClick={() => setLog(true)}>
+              {t("cf.logs")}
             </Button>
-          ) : (
-            <Button size="sm" icon={<Square />} loading={power.isPending} onClick={() => stop(selected)}>
-              {t("cf.stopGpu")}
-            </Button>
-          )}
-          <span className="tiny subtle">
-            {selected.status === "deploying" ? t(`cf.stage.${selected.deploy.stage ?? "starting"}`) : t("cf.gpuBills")}
-          </span>
+            {deployed ? (
+              <Button
+                size="sm"
+                variant="ghost"
+                icon={<Square />}
+                loading={power.isPending}
+                onClick={() => run(() => power.mutateAsync({ id: selected.id, action: "stop" }), t("cf.stopped"))}
+              >
+                {t("cf.stopGpu")}
+              </Button>
+            ) : null}
+          </div>
         </div>
       ) : null}
-      {selected?.last_error && selected.status !== "ready" ? <div className="error-text tiny">{selected.last_error}</div> : null}
+
+      {selected?.status === "error" ? (
+        <Notice tone="danger">
+          <div>{selected.last_error ?? t("errors.generic")}</div>
+          <div className="row wrap" style={{ gap: 8, marginTop: 10 }}>
+            {deployed ? (
+              <Button size="sm" variant="primary" icon={<RotateCcw />} loading={power.isPending} onClick={() => start(selected)}>
+                {t("cf.tryAgain")}
+              </Button>
+            ) : null}
+            {deployed ? (
+              <Button size="sm" icon={<ScrollText />} onClick={() => setLog(true)}>
+                {t("cf.logs")}
+              </Button>
+            ) : null}
+            <Button size="sm" variant="ghost" icon={<Trash2 />} onClick={() => onRemove(selected)}>
+              {t("common.delete")}
+            </Button>
+          </div>
+        </Notice>
+      ) : null}
+
+      {selected?.status === "stopped" && deployed ? (
+        <div className="row" style={{ gap: 8 }}>
+          <Button size="sm" variant="primary" icon={<Play />} loading={power.isPending} onClick={() => start(selected)}>
+            {t("cf.startGpu")}
+          </Button>
+          <span className="tiny subtle">{t("cf.stoppedHint")}</span>
+        </div>
+      ) : null}
+
+      {selected?.status === "ready" ? (
+        <div className="row wrap" style={{ gap: 8 }}>
+          <span className="tiny subtle grow">
+            {[
+              selected.info.devices?.[0]?.name?.replace(/^cuda:\d+\s*/, "").split(":")[0],
+              deployed && d.cost_per_hour ? `${formatMoney(d.cost_per_hour, locale)}/h` : null,
+              deployed ? t("cf.gpuBills") : null,
+            ]
+              .filter(Boolean)
+              .join(" · ")}
+          </span>
+          {deployed ? (
+            <Button
+              size="sm"
+              variant="ghost"
+              icon={<Square />}
+              loading={power.isPending}
+              onClick={() => run(() => power.mutateAsync({ id: selected.id, action: "stop" }), t("cf.stopped"))}
+            >
+              {t("cf.stopGpu")}
+            </Button>
+          ) : null}
+        </div>
+      ) : null}
       {modals}
     </div>
   );

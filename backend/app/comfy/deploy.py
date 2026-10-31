@@ -2,16 +2,20 @@
 
 The workload runs the studio agent (gpu/agent). Stages, advanced by the GPU runner:
   starting   -> the container is booting; wait until the agent answers on its port
-  installing -> agent job "comfyui": installs ComfyUI once (kept on the volume), downloads
-                the verified Krea 2 files that are missing, runs ComfyUI on 127.0.0.1
-  ready      -> ComfyUI answers through the agent (/comfy/*); optional auto-stop when idle
-  stopped / error
+  installing -> agent job "comfyui": installs ComfyUI once (kept on the volume), PyTorch for
+                the GPU's driver and ComfyUI's packages (every new container), runs ComfyUI
+                on 127.0.0.1
+  ready      -> ComfyUI answers through the agent (/comfy/*); the user then downloads a
+                Krea 2 model (agent job "models", progress in deploy["model_job"]);
+                optional auto-stop when idle
+  stopped / error (a failed setup stops the GPU, so it is not billed)
 ComfyUI itself is never exposed: only the token-protected agent port is.
 """
 
 from __future__ import annotations
 
 import logging
+import re
 import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -32,10 +36,15 @@ from app.security import decrypt_secret, encrypt_secret
 
 log = logging.getLogger("studio.deploy")
 
+# RunPod's PyTorch image with PyTorch 2.13 for CUDA 13.0 and Python 3.12 (runpod/containers,
+# official-templates/pytorch). ComfyUI needs PyTorch 2.7+, cu130 recommended (its README).
+# The setup script installs a matching PyTorch when the image's does not fit the driver.
 DEFAULT_IMAGES = {
-    "runpod": "runpod/pytorch:2.4.0-py3.11-cuda12.4.1-devel-ubuntu22.04",
+    "runpod": "runpod/pytorch:1.5.1-cu1300-torch2130-ubuntu2404",
     "modal": "nvidia/cuda:12.4.1-devel-ubuntu22.04",
 }
+# RunPod hosts whose driver supports CUDA 12.8 or newer (allowedCudaVersions).
+RUNPOD_CUDA = ["13.0", "12.9", "12.8"]
 BOOT_TIMEOUT = timedelta(minutes=30)
 INSTALL_TIMEOUT = timedelta(minutes=120)
 
@@ -44,8 +53,11 @@ def now() -> datetime:
     return datetime.now(UTC)
 
 
-def model_downloads(variants: list[str]) -> list[dict[str, str]]:
-    """Only files whose download URL is verified; others are added by URL by the user."""
+def model_downloads(variants: list[str], filename: str | None = None) -> list[dict[str, str]]:
+    """Text encoder, VAE and the diffusion model of each variant (the chosen file, else the
+    first): only files whose download URL is verified; others are added by URL by the user."""
+    if not variants:
+        return []
     out = [
         {
             "url": krea2.TEXT_ENCODER.url,
@@ -57,7 +69,7 @@ def model_downloads(variants: list[str]) -> list[dict[str, str]]:
     for key in variants:
         known = krea2.VARIANTS[key].known_files
         if known:
-            f = known[0]
+            f = next((k for k in known if k.filename == filename), known[0])
             out.append({"url": f.url, "folder": f.folder, "filename": f.filename})
     return out
 
@@ -95,6 +107,7 @@ def spec_for(conn: ComfyConnection, token: str, hf: str | None) -> WorkloadSpec:
         volume_name=f"ais-comfyui-{str(conn.id)[:12]}" if provider == "modal" else None,
         image_python="3.12" if provider == "modal" and not d.get("image") else None,
         image_apt=["git", "curl"] if provider == "modal" and not d.get("image") else [],
+        allowed_cuda_versions=RUNPOD_CUDA if provider == "runpod" else [],
     )
 
 
@@ -128,7 +141,25 @@ def _since(value: str | None) -> timedelta:
     return now() - datetime.fromisoformat(value)
 
 
-async def _fail(db, conn: ComfyConnection, message: str) -> None:
+async def _fail(db, conn: ComfyConnection, message: str, stop_gpu: bool = False) -> None:
+    """A failed setup: with stop_gpu the GPU is stopped (RunPod; Modal: ended) so it is not
+    billed while nothing runs on it. "Try again" starts it again."""
+    if stop_gpu and conn.workload_id and conn.gpu_provider:
+        try:
+            creds = await gpu_service.load_creds(db, conn.user_id, conn.gpu_provider)
+            adapter = get_gpu_adapter(conn.gpu_provider)
+            if conn.gpu_provider == "runpod":
+                await adapter.stop(creds, conn.workload_id)
+                status = "stopped"
+            else:
+                await adapter.terminate(creds, conn.workload_id)
+                status = "terminated"
+            await gpu_service.mark_workload(
+                db, conn.user_id, conn.gpu_provider, conn.workload_id, status, now()
+            )
+            message += " The GPU was stopped, so it is not billed."
+        except GPUError as exc:
+            log.warning("could not stop GPU after a failed setup: %s", exc.message)
     conn.status = "error"
     conn.last_error = message[:1000]
     conn.deploy = {**(conn.deploy or {}), "stage": "error"}
@@ -176,14 +207,18 @@ async def advance(conn_id: uuid.UUID) -> None:
                             job_id, "comfyui", {"models": model_downloads(d.get("variants") or [])}
                         )
                     except AgentError as exc:
-                        await _fail(db, conn, f"Could not start ComfyUI: {exc.message}")
+                        await _fail(
+                            db, conn, f"Could not start ComfyUI: {exc.message}", stop_gpu=True
+                        )
                         return
                     d.update(stage="installing", job_id=job_id, installing_at=now().isoformat())
                     conn.deploy = dict(d)
                     await db.commit()
                     return
             if _since(d.get("started_at")) > BOOT_TIMEOUT:
-                await _fail(db, conn, "The GPU container did not start within 30 minutes.")
+                await _fail(
+                    db, conn, "The GPU container did not start within 30 minutes.", stop_gpu=True
+                )
             else:
                 conn.deploy = dict(d)
                 await db.commit()
@@ -207,14 +242,14 @@ async def advance(conn_id: uuid.UUID) -> None:
                 return
             if job.get("status") in ("failed", "cancelled"):
                 conn.deploy = dict(d)
-                await _fail(db, conn, "ComfyUI setup failed. See the log below.")
+                await _fail(db, conn, setup_error(d.get("log_tail") or ""), stop_gpu=True)
                 return
             try:
                 await client_for(conn).system_stats()
             except ComfyError:
                 if _since(d.get("installing_at")) > INSTALL_TIMEOUT:
                     conn.deploy = dict(d)
-                    await _fail(db, conn, "ComfyUI did not start within 2 hours.")
+                    await _fail(db, conn, "ComfyUI did not start within 2 hours.", stop_gpu=True)
                     return
                 conn.deploy = dict(d)
                 await db.commit()
@@ -231,6 +266,9 @@ async def advance(conn_id: uuid.UUID) -> None:
             conn.last_error = None
             conn.last_checked_at = now()
             await db.commit()
+            return
+        if stage == "ready" and (d.get("model_job") or {}).get("status") == "running":
+            await _advance_model_job(db, conn, d)
             return
         if stage == "ready" and d.get("auto_stop_minutes"):
             await _auto_stop(db, conn, d)
@@ -264,6 +302,134 @@ async def _auto_stop(db, conn: ComfyConnection, d: dict[str, Any]) -> None:
     await stop(db, conn, reason="idle")
 
 
+def setup_error(log_tail: str) -> str:
+    """A short reason for a failed setup, from the end of its log."""
+    if "needs 12.8 or newer" in log_tail:
+        return (
+            "This GPU's NVIDIA driver is too old for ComfyUI. Remove this ComfyUI and rent "
+            "the GPU again."
+        )
+    if "No space left on device" in log_tail:
+        return "The GPU's disk is full. Remove this ComfyUI and rent the GPU again."
+    return "ComfyUI setup failed. See the log."
+
+
+# --- Krea 2 model files on a deployed ComfyUI -------------------------------------------------
+
+_CURL = re.compile(r"^\s*(\d{1,3})\s+[\d.]+[kMGT]?\s+(\d{1,3})\s+[\d.]+[kMGT]?\s")
+_FILE = re.compile(r"\[studio\] file (\d+)/(\d+)")
+
+
+def download_progress(log: str, sizes: list[float | None]) -> int:
+    """Overall percent of a "models" job from its "[studio] file i/n" markers and curl's
+    progress meter (files already on the volume are skipped and count as done)."""
+    marks = list(_FILE.finditer(log))
+    if not marks:
+        return 0
+    last = marks[-1]
+    index, total = int(last.group(1)), int(last.group(2))
+    percent = 0
+    for line in re.split(r"[\r\n]+", log[last.end() :]):
+        m = _CURL.match(line)
+        if m:
+            percent = int(m.group(2))
+    weights = [float(x) for x in sizes] if sizes and all(sizes) else [1.0] * total
+    if len(weights) != total:
+        weights = [1.0] * total
+    done = sum(weights[: index - 1]) + weights[index - 1] * min(percent, 100) / 100
+    return max(0, min(99, round(100 * done / sum(weights))))
+
+
+def _download_error(log_tail: str) -> str:
+    if re.search(r"error: \(?(401|403)\)?|returned error: 40[13]", log_tail):
+        return (
+            "Hugging Face refused the download. Check your token and the license in "
+            "Integrations › Hugging Face."
+        )
+    if "No space left on device" in log_tail:
+        return "The GPU's disk is full."
+    return "The download failed. Try again."
+
+
+async def install_model(db, conn: ComfyConnection, variant: str, filename: str | None) -> None:
+    """Starts downloading a Krea 2 model (and its text encoder and VAE) on the GPU."""
+    if conn.auth_type != "agent" or conn.status != "ready":
+        raise ComfyError("unsupported", "Connect the GPU first.")
+    d = dict(conn.deploy or {})
+    if (d.get("model_job") or {}).get("status") == "running":
+        raise ComfyError("in_progress", "A download is already running.")
+    spec = krea2.VARIANTS.get(variant)
+    if spec is None or not spec.known_files:
+        raise ComfyError(
+            "unsupported",
+            "There is no verified download for this model yet. Add its file under Manage.",
+        )
+    files = model_downloads([variant], filename)
+    sizes = {k.filename: k.size_gb for k in spec.known_files}
+    sizes[krea2.TEXT_ENCODER.filename] = krea2.TEXT_ENCODER.size_gb
+    sizes[krea2.VAE.filename] = krea2.VAE.size_gb
+    agent = agent_for(conn)
+    if agent is None:
+        raise ComfyError("unreachable", "The agent address is missing.")
+    job_id = f"models-{uuid.uuid4().hex[:10]}"
+    try:
+        await agent.start_job(job_id, "models", {"models": files})
+    except AgentError as exc:
+        raise ComfyError("unreachable", exc.message) from exc
+    d["model_job"] = {
+        "id": job_id,
+        "variant": variant,
+        "filename": files[-1]["filename"],
+        "files": [f["filename"] for f in files],
+        "sizes": [sizes.get(f["filename"]) for f in files],
+        "status": "running",
+        "progress": 0,
+        "error": None,
+        "started_at": now().isoformat(),
+    }
+    d["last_activity"] = now().isoformat()
+    conn.deploy = d
+    await db.commit()
+
+
+async def _advance_model_job(db, conn: ComfyConnection, d: dict[str, Any]) -> None:
+    job_info = dict(d["model_job"])
+    agent = agent_for(conn)
+    d["last_activity"] = now().isoformat()  # a download keeps the GPU from auto-stopping
+    try:
+        if agent is None:
+            raise AgentError("not_found", "The agent address is missing.")
+        job = await agent.job(job_info["id"])
+        text, _ = await agent.logs(job_info["id"], max(0, int(job.get("log_size") or 0) - 4000))
+    except AgentError as exc:
+        if exc.code == "not_found":
+            job_info.update(status="failed", error="The GPU restarted. Download again.")
+            d["model_job"] = job_info
+            conn.deploy = dict(d)
+            await db.commit()
+        return
+    job_info["progress"] = download_progress(text, job_info.get("sizes") or [])
+    if job.get("status") == "completed":
+        job_info.update(status="completed", progress=100)
+        try:
+            conn.info = await inspect(conn)
+            conn.last_checked_at = now()
+        except ComfyError as exc:
+            job_info["error"] = exc.message
+        seen = ((conn.info or {}).get("krea2") or {}).get("variants", {}).get(job_info["variant"])
+        if not (seen or {}).get("installed"):
+            job_info.update(
+                status="failed",
+                progress=0,
+                error="The download finished but ComfyUI does not see the model. Try again.",
+            )
+    elif job.get("status") in ("failed", "cancelled"):
+        job_info.update(status="failed", error=_download_error(text[-1500:]))
+    d["model_job"] = job_info
+    conn.deploy = dict(d)
+    await db.commit()
+
+
 async def stop(db, conn: ComfyConnection, reason: str = "user") -> None:
     """RunPod: stop the pod (its volume keeps ComfyUI and models). Modal: terminate the
     sandbox (its Volume keeps them)."""
@@ -291,15 +457,24 @@ async def start(db, conn: ComfyConnection) -> None:
     provider = conn.gpu_provider
     if provider == "runpod" and conn.workload_id:
         creds = await gpu_service.load_creds(db, conn.user_id, provider)
-        await get_gpu_adapter(provider).start(creds, conn.workload_id)
+        adapter = get_gpu_adapter(provider)
+        try:
+            await adapter.start(creds, conn.workload_id)
+        except GPUError:
+            # "Try again" after a failure whose GPU could not be stopped: it still runs.
+            workload = await adapter.workload(creds, conn.workload_id)
+            if workload is None or workload.status != "running":
+                raise
         await gpu_service.mark_workload(
             db, conn.user_id, provider, conn.workload_id, "running", now()
         )
         conn.status = "deploying"
+        conn.last_error = None
         conn.deploy = {
             **(conn.deploy or {}),
             "stage": "starting",
             "job_id": None,
+            "model_job": None,
             "started_at": now().isoformat(),
             "log_tail": "",
         }

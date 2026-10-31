@@ -117,6 +117,8 @@ class WorkloadSpec:
     # Modal: add Python / apt packages to a registry image (modal.Image methods).
     image_python: str | None = None
     image_apt: list[str] = field(default_factory=list)
+    # RunPod: only hosts whose NVIDIA driver supports one of these CUDA versions.
+    allowed_cuda_versions: list[str] = field(default_factory=list)
 
 
 class GPUProvider(Protocol):

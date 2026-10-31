@@ -852,7 +852,7 @@ export const en = {
   "cf.image": "Container image",
   "cf.imageHint": "Leave empty for the studio default.",
   "cf.imageDefault": "studio default",
-  "cf.deployNote": "First start: about 10–20 minutes (image, ComfyUI install, ~17 GB of Krea 2 files). Files stay on the volume for the next start.",
+  "cf.deployNote": "First start: about 5–15 minutes (the GPU starts and ComfyUI with PyTorch is installed). After it connects you choose the model and download it.",
   "cf.deploy": "Start GPU",
   "cf.connect": "Connect",
   "cf.connected": "ComfyUI connected",
@@ -1324,6 +1324,30 @@ export const en = {
   "chat.placeholderPhoto": "Ask anything or add a photo…",
 
   "auth.tryAgain": "Try again",
+
+  "cf.setupStarting": "Starting the GPU…",
+  "cf.setupInstalling": "Installing ComfyUI…",
+  "cf.setupStep1": "Start the GPU",
+  "cf.setupStep2": "Install ComfyUI and PyTorch",
+  "cf.setupStep3": "Connected",
+  "cf.setupHint": "The first start takes about 5–15 minutes. You can leave this page; it continues by itself.",
+  "cf.tryAgain": "Try again",
+  "cf.stoppedHint": "The GPU is stopped and not billed. Your files stay on it.",
+  "k2.stepGpu": "1 · Where Krea 2 runs",
+  "k2.stepModel": "2 · Model",
+  "k2.notDownloaded": "Not downloaded",
+  "k2.downloading": "Downloading {n}%",
+  "k2.downloadingHint": "Downloading the model to the GPU…",
+  "k2.download": "Download {name} (≈ {size} GB)",
+  "k2.downloadHint": "Downloaded once to the GPU's disk, a few minutes.",
+  "k2.downloadStarted": "Download started",
+  "k2.downloadFirst": "Download the model first.",
+  "k2.noVerifiedDownload": "This model has no verified download yet. Add its file under Manage › Model files.",
+  "k2.localFiles": "Put the model, text encoder and VAE files into your ComfyUI/models folder (links under Manage › Model files), then press refresh there.",
+
+  "k2.stepPhotos": "3 · AI model and its look",
+
+  "cf.gpuMemoryHint": "More GPU memory is faster; 24 GB or more is recommended for Krea 2 (studio estimate, Krea publishes none).",
 } as const;
 
 export type MessageKey = keyof typeof en;

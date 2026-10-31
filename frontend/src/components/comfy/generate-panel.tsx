@@ -1,6 +1,6 @@
 "use client";
 
-import { ChevronDown, Dices, Sparkles, TriangleAlert } from "lucide-react";
+import { ChevronDown, Dices, Download, Sparkles, TriangleAlert } from "lucide-react";
 import Link from "next/link";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
@@ -8,7 +8,7 @@ import { toast } from "sonner";
 import { ComfyConnectionBar } from "@/components/comfy/connection-bar";
 import { PromptEditor } from "@/components/generate/controls";
 import { newPersonaDraft, type PersonaDraft, PersonaSection } from "@/components/personas/persona-picker";
-import { newRequestId } from "@/components/studio/common";
+import { newRequestId, Progress } from "@/components/studio/common";
 import { Badge, Button, Field, IconButton, Notice, Segmented, Select, Skeleton, Switch } from "@/components/ui";
 import { ApiError } from "@/lib/api";
 import { useT } from "@/lib/i18n";
@@ -17,6 +17,7 @@ import {
   useComfyConnections,
   useComfyGenerate,
   useComfyWorkflows,
+  useInstallKrea2Model,
   useLoras,
   usePersonas,
 } from "@/lib/queries";
@@ -138,6 +139,8 @@ export function ComfyPanel({
   const all = conns.data?.items ?? [];
   const conn = all.find((c) => c.id === draft.connectionId) ?? all.find((c) => c.status === "ready") ?? all[0];
   const connReady = conn?.status === "ready";
+  const install = useInstallKrea2Model();
+  const job = conn?.deploy?.model_job ?? null;
   const detection = conn?.info.krea2;
   const variantSpec = catalog.data?.krea2.variants.find((v) => v.key === draft.variant);
   const files = detection?.variants[draft.variant]?.files ?? [];
@@ -146,6 +149,23 @@ export function ComfyPanel({
   const resolution = tiers.includes(draft.resolution) ? draft.resolution : tiers[0];
   const size = catalog.data?.krea2.sizes[resolution]?.[draft.aspect];
   const runnable = (workflows.data?.items ?? []).filter((w) => w.runnable && (!w.family || w.family === "krea2"));
+  // A model is usable when its file, the text encoder and the VAE are all on the ComfyUI.
+  const variantReady = (key: "turbo" | "raw") =>
+    Boolean(detection?.variants[key]?.installed && detection.text_encoders.length && detection.vaes.length);
+  const modelReady = connReady && variantReady(draft.variant);
+  const downloadSize = (v: { known_files: { size_gb: number | null }[] }) =>
+    (v.known_files[0]?.size_gb ?? 0) +
+    (catalog.data?.krea2.text_encoder.size_gb ?? 0) +
+    (catalog.data?.krea2.vae.size_gb ?? 0);
+  const downloadModel = async () => {
+    if (!conn || !variantSpec) return;
+    try {
+      await install.mutateAsync({ id: conn.id, variant: variantSpec.key, filename: variantSpec.known_files[0]?.filename ?? null });
+      toast.success(t("k2.downloadStarted"));
+    } catch (e) {
+      toast.error(e instanceof ApiError ? e.message : t("errors.generic"));
+    }
+  };
 
   const loraOptions = useMemo(() => {
     const out: { value: string; label: string; disabled?: boolean; lora: LoraSummary; number: number }[] = [];
@@ -181,6 +201,7 @@ export function ComfyPanel({
   const problems: string[] = [];
   if (!conn) problems.push(t("k2.noConnection"));
   else if (!connReady) problems.push(conn.status === "deploying" ? t("k2.starting") : t("k2.notReady"));
+  else if (!modelReady) problems.push(t("k2.downloadFirst"));
   else if (!detection?.supported) problems.push(t("k2.notSupported"));
   else if (!files.length) problems.push(t("k2.variantMissing", { name: variantSpec?.name ?? "" }));
   else if (!detection.text_encoders.length || !detection.vaes.length) problems.push(detection.missing.join(" · "));
@@ -240,11 +261,86 @@ export function ComfyPanel({
         {header}
         <div>
           <div className="section-title">
-            <span className="eyebrow grow">{t("cf.runsOn")}</span>
+            <span className="eyebrow grow">{t("k2.stepGpu")}</span>
           </div>
           <ComfyConnectionBar selected={conn} onSelect={(id) => set({ connectionId: id })} />
         </div>
-        {!all.length ? null : (
+        {!connReady ? null : (
+          <>
+            <div>
+              <div className="section-title">
+                <span className="eyebrow grow">{t("k2.stepModel")}</span>
+              </div>
+              <div className="models" role="radiogroup" aria-label={t("k2.variant")}>
+                {(catalog.data?.krea2.variants ?? []).map((v) => {
+                  const ready = variantReady(v.key);
+                  const busy = job?.status === "running" && job.variant === v.key;
+                  return (
+                    <button
+                      key={v.key}
+                      type="button"
+                      role="radio"
+                      aria-checked={draft.variant === v.key}
+                      className="model-card"
+                      onClick={() => set({ variant: v.key, modelFile: "" })}
+                    >
+                      <span className="name">{v.name}</span>
+                      <div>
+                        {ready ? (
+                          <Badge tone="success">{t("k2.installed")}</Badge>
+                        ) : busy ? (
+                          <Badge tone="accent">{t("k2.downloading", { n: job.progress })}</Badge>
+                        ) : (
+                          <Badge>{t("k2.notDownloaded")}</Badge>
+                        )}
+                      </div>
+                      <div className="desc clamp-2">{v.description}</div>
+                      <div className="avail tiny subtle">
+                        {v.steps} steps · CFG {v.cfg}
+                        {v.known_files[0]?.size_gb ? ` · ≈ ${Math.round(downloadSize(v))} GB` : ""}
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+              {modelReady ? null : (
+                <div className="model-download">
+                  {job?.status === "running" && job.variant === draft.variant ? (
+                    <>
+                      <div className="row tiny" style={{ gap: 8 }}>
+                        <span className="grow">{t("k2.downloadingHint")}</span>
+                        <span>{job.progress}%</span>
+                      </div>
+                      <Progress value={job.progress} />
+                    </>
+                  ) : conn?.auth_type === "agent" && variantSpec?.known_files.length ? (
+                    <>
+                      {job?.status === "failed" && job.variant === draft.variant ? (
+                        <div className="error-text small">{job.error}</div>
+                      ) : null}
+                      <div className="row wrap" style={{ gap: 10 }}>
+                        <Button
+                          variant="primary"
+                          icon={<Download />}
+                          loading={install.isPending}
+                          disabled={job?.status === "running"}
+                          onClick={downloadModel}
+                        >
+                          {t("k2.download", { name: variantSpec.name, size: Math.round(downloadSize(variantSpec)) })}
+                        </Button>
+                        <span className="tiny subtle">{t("k2.downloadHint")}</span>
+                      </div>
+                    </>
+                  ) : conn?.auth_type === "agent" ? (
+                    <div className="hint">{t("k2.noVerifiedDownload")}</div>
+                  ) : (
+                    <div className="hint">{t("k2.localFiles")}</div>
+                  )}
+                </div>
+              )}
+            </div>
+
+            {!modelReady ? null : (
           <>
             {runnable.length ? (
               <Field label={t("k2.workflow")}>
@@ -256,50 +352,20 @@ export function ComfyPanel({
                 />
               </Field>
             ) : null}
-            <div>
-              <div className="section-title">
-                <span className="eyebrow grow">{t("k2.variant")}</span>
-                {variantSpec ? <span className="tiny subtle">{variantSpec.settings_source}</span> : null}
-              </div>
-              <div className="models" role="radiogroup" aria-label={t("k2.variant")}>
-                {(catalog.data?.krea2.variants ?? []).map((v) => {
-                  const state = detection?.variants[v.key];
-                  return (
-                    <button
-                      key={v.key}
-                      type="button"
-                      role="radio"
-                      aria-checked={draft.variant === v.key}
-                      className="model-card"
-                      onClick={() => set({ variant: v.key, modelFile: "" })}
-                    >
-                      <div className="row" style={{ gap: 6 }}>
-                        <span className="name grow">{v.name}</span>
-                        {state?.installed ? <Badge tone="success">{t("k2.installed")}</Badge> : <Badge tone="warning">{t("k2.notInstalled")}</Badge>}
-                      </div>
-                      <div className="desc clamp-2">{v.description}</div>
-                      <div className="avail tiny subtle">
-                        {v.steps} steps · CFG {v.cfg} · {state?.files.map((f) => f.precision).join(", ") || "—"}
-                      </div>
-                    </button>
-                  );
-                })}
-              </div>
-              {files.length > 1 ? (
-                <Field label={t("k2.precision")}>
-                  <Select
-                    label={t("k2.precision")}
-                    value={modelFile}
-                    onChange={(f) => set({ modelFile: f })}
-                    options={files.map((f) => ({ value: f.filename, label: `${f.precision} · ${f.filename}` }))}
-                  />
-                </Field>
-              ) : null}
-            </div>
+            {files.length > 1 ? (
+              <Field label={t("k2.precision")}>
+                <Select
+                  label={t("k2.precision")}
+                  value={modelFile}
+                  onChange={(f) => set({ modelFile: f })}
+                  options={files.map((f) => ({ value: f.filename, label: `${f.precision} · ${f.filename}` }))}
+                />
+              </Field>
+            ) : null}
 
             <div>
               <div className="section-title">
-                <span className="eyebrow grow">{t("pm.section")}</span>
+                <span className="eyebrow grow">{t("k2.stepPhotos")}</span>
               </div>
               <PersonaSection
                 value={persona ? draft.persona : draft.persona}
@@ -411,6 +477,8 @@ export function ComfyPanel({
                 ))}
               </Notice>
             ) : null}
+          </>
+            )}
           </>
         )}
       </div>

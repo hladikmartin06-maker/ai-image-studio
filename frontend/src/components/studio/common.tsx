@@ -153,6 +153,9 @@ export interface GpuChoice {
   cloud_type: "SECURE" | "COMMUNITY";
 }
 
+/** GPUs with less memory are never offered (the owner's rule). */
+export const MIN_GPU_GB = 16;
+
 export function GpuPicker({
   value,
   onChange,
@@ -166,8 +169,14 @@ export function GpuPicker({
   const providers = useGPUProviders();
   const connected = (providers.data?.providers ?? []).filter((p) => p.status !== "not_connected");
   const types = useGpuTypes(value.provider || "runpod", Boolean(value.provider));
-  const selected = types.data?.items.find((g) => g.id === value.gpu_type);
   const price = (g: GpuType) => (value.cloud_type === "COMMUNITY" ? g.price_community : g.price_secure);
+  // Only GPUs that can do the job: 16 GB or more (and at least what this task needs),
+  // smallest and cheapest first. GPUs whose memory the provider does not report stay listed.
+  const floor = Math.max(MIN_GPU_GB, minMemoryGb ?? 0);
+  const usable = (types.data?.items ?? [])
+    .filter((g) => !g.memory_gb || g.memory_gb >= floor)
+    .sort((a, b) => (a.memory_gb ?? 999) - (b.memory_gb ?? 999) || (price(a) ?? 999) - (price(b) ?? 999));
+  const selected = types.data?.items.find((g) => g.id === value.gpu_type);
 
   if (providers.isLoading) return <Spinner />;
   if (!connected.length) {
@@ -201,12 +210,11 @@ export function GpuPicker({
               value={value.gpu_type || null}
               placeholder={t("gpu.chooseGpu")}
               onChange={(g) => onChange({ ...value, gpu_type: String(g) })}
-              options={(types.data?.items ?? []).map((g) => ({
+              options={usable.map((g) => ({
                 value: g.id,
                 label: `${g.name}${g.memory_gb ? ` · ${g.memory_gb} GB` : ""}${
                   price(g) !== null && price(g) !== undefined ? ` · ${formatMoney(price(g), locale)}/h` : ""
                 }`,
-                disabled: Boolean(minMemoryGb && g.memory_gb && g.memory_gb < minMemoryGb),
               }))}
             />
           )}

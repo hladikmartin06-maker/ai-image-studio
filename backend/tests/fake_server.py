@@ -301,6 +301,20 @@ async def runpod_graphql(request: Request):
             "data": {
                 "gpuTypes": [
                     {
+                        "id": "NVIDIA GeForce RTX 3070",
+                        "displayName": "RTX 3070",
+                        "memoryInGb": 8,
+                        "securePrice": 0.13,
+                        "communityPrice": 0.07,
+                    },
+                    {
+                        "id": "NVIDIA RTX A4000",
+                        "displayName": "RTX A4000",
+                        "memoryInGb": 16,
+                        "securePrice": 0.25,
+                        "communityPrice": 0.17,
+                    },
+                    {
                         "id": "NVIDIA L4",
                         "displayName": "L4",
                         "memoryInGb": 24,
@@ -381,7 +395,7 @@ def _free_port() -> int:
 
 
 def _spawn(pod_id: str) -> None:
-    from tests.gpu_fakes import make_comfy_dir, make_toolkit
+    from tests.gpu_fakes import comfy_env, make_comfy_dir, make_toolkit
 
     body = _bodies[pod_id]
     env_in = body.get("env") or {}
@@ -397,8 +411,7 @@ def _spawn(pod_id: str) -> None:
         "STUDIO_WORKSPACE": str(base / "workspace"),
         "STUDIO_AITK_DIR": str(make_toolkit(_root / "image")),
         "STUDIO_PYTHON": sys.executable,
-        "STUDIO_COMFY_DIR": str(make_comfy_dir(base / "gpu")),
-        "STUDIO_COMFY_PORT": str(_free_port()),
+        **comfy_env(make_comfy_dir(base / "gpu")),
         "FAKE_TRAIN_SLEEP": "0.4",
     }
     (base / "workspace").mkdir(parents=True, exist_ok=True)

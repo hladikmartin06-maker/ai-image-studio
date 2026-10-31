@@ -11,6 +11,8 @@ Environment:
   STUDIO_WORKSPACE    default /workspace (all files live below it)
   STUDIO_AITK_DIR     ai-toolkit folder for training (default /app/ai-toolkit)
   STUDIO_COMFY_DIR    ComfyUI folder (default $STUDIO_WORKSPACE/ComfyUI)
+  STUDIO_COMFY_DEPS_MARK  file that marks ComfyUI's packages as installed in this container
+                      (default /tmp/studio-comfy-deps; the container disk is reset on stop)
   HF_TOKEN            optional, for gated Hugging Face downloads
 
 API (JSON unless noted):
@@ -19,7 +21,7 @@ API (JSON unless noted):
   PUT    /files/<rel>?offset=<n>     write a chunk (offset 0 starts the file)
   GET    /files/<rel>                download; honours "Range: bytes=a-b"
   DELETE /files/<rel>
-  POST   /jobs                       {id, kind: train|comfyui|download, args}
+  POST   /jobs                       {id, kind: train|comfyui|models|download, args}
   GET    /jobs/<id>                  status, exit code, progress (step/total), loss points
   GET    /jobs/<id>/logs?offset=<n>  plain text from that byte offset
   POST   /jobs/<id>/cancel
@@ -212,53 +214,115 @@ def _shell_quote(value):
     return "'" + str(value).replace("'", "'\"'\"'") + "'"
 
 
-def comfyui_script(models):
-    """Installs ComfyUI once (into the workspace, so a persistent volume keeps it), fetches
-    the requested model files that are missing, then runs it on 127.0.0.1 only."""
-    lines = [
-        "set -e",
-        "cd " + _shell_quote(WORKSPACE),
-        "if [ ! -f " + _shell_quote(os.path.join(COMFY_DIR, "main.py")) + " ]; then",
-        "  echo '[studio] installing ComfyUI'",
-        "  git clone --depth 1 " + COMFY_REPO + " " + _shell_quote(COMFY_DIR),
-        "fi",
-        "cd " + _shell_quote(COMFY_DIR),
-        "export PIP_BREAK_SYSTEM_PACKAGES=1",
-        "if [ ! -f .studio-installed ]; then",
-        "  python3 -m pip install -r requirements.txt && touch .studio-installed",
-        "fi",
-    ]
+# ComfyUI's README: PyTorch 2.7 is the minimum, and Nvidia users install the wheel for the
+# newest CUDA (cu130). The wheel must not be newer than what the GPU driver supports.
+TORCH_CHECK = (
+    "import sys\n"
+    "try:\n"
+    "    import torch\n"
+    "except Exception:\n"
+    "    print('install'); sys.exit()\n"
+    "driver = int(sys.argv[1] or 0)\n"
+    "major, minor = (int(x) for x in torch.__version__.split('+')[0].split('.')[:2])\n"
+    "cuda = torch.version.cuda or ''\n"
+    "built = int(''.join(cuda.split('.')[:2])) if cuda else 0\n"
+    "fits = built and built <= driver and (driver < 130 or built >= 130)\n"
+    "ok = (major, minor) >= (2, 7) and fits\n"
+    "print('ok' if ok else 'install')\n"
+)
+
+
+def _download_lines(models):
+    """curl lines for the files that are not there yet, with "[studio] file i/n" markers
+    for progress."""
+    files = []
     for m in models:
         folder = re.sub(r"[^a-z_]", "", str(m.get("folder", "")))
         name = os.path.basename(str(m.get("filename", "")))
         url = str(m.get("url", ""))
-        if not folder or not name or not url.startswith("https://"):
-            continue
+        if folder and name and url.startswith("https://"):
+            files.append((folder, name, url))
+    lines = []
+    for i, (folder, name, url) in enumerate(files, 1):
         dest = os.path.join(COMFY_DIR, "models", folder, name)
         auth = ""
         if "huggingface.co" in url:
             auth = '${HF_TOKEN:+-H "Authorization: Bearer $HF_TOKEN"} '
         lines += [
+            "echo '[studio] file " + str(i) + "/" + str(len(files)) + " " + name + "'",
             "if [ ! -s " + _shell_quote(dest) + " ]; then",
-            "  echo '[studio] downloading " + name + "'",
             "  mkdir -p " + _shell_quote(os.path.dirname(dest)),
-            "  curl -fL --retry 5 "
+            # A failed download stops the job (set -e does not apply inside "if").
+            "  if ! curl -fL --retry 5 "
             + auth
             + "-o "
             + _shell_quote(dest + ".part")
             + " "
             + _shell_quote(url)
-            + " && mv "
-            + _shell_quote(dest + ".part")
-            + " "
-            + _shell_quote(dest),
+            + "; then",
+            "    echo '[studio] download failed: " + name + "' >&2",
+            "    exit 1",
+            "  fi",
+            "  mv " + _shell_quote(dest + ".part") + " " + _shell_quote(dest),
             "fi",
         ]
+    return lines
+
+
+def comfyui_script(models):
+    """Installs ComfyUI once into the workspace (a persistent volume keeps it and the
+    models), installs its Python packages on every new container (the container disk is
+    reset when a pod stops), fetches requested model files that are missing, then runs it
+    on 127.0.0.1 only."""
+    deps_mark = os.environ.get("STUDIO_COMFY_DEPS_MARK", "/tmp/studio-comfy-deps")
+    lines = [
+        "set -e",
+        "cd " + _shell_quote(WORKSPACE),
+        "PY=python3",
+        'if command -v python >/dev/null 2>&1 && python -c "import torch" >/dev/null 2>&1; then',
+        "  PY=python",
+        "fi",
+        "export PIP_BREAK_SYSTEM_PACKAGES=1",
+        "export PIP_CACHE_DIR=" + _shell_quote(os.path.join(WORKSPACE, ".cache", "pip")),
+        "if [ ! -f " + _shell_quote(os.path.join(COMFY_DIR, "main.py")) + " ]; then",
+        "  echo '[studio] installing ComfyUI'",
+        "  git clone --depth 1 " + COMFY_REPO + " " + _shell_quote(COMFY_DIR),
+        "fi",
+        "cd " + _shell_quote(COMFY_DIR),
+        "if [ ! -f " + _shell_quote(deps_mark) + " ]; then",
+        "  DRIVER_CUDA=$(nvidia-smi 2>/dev/null"
+        " | sed -n 's/.*CUDA Version: *\\([0-9]*\\)\\.\\([0-9]*\\).*/\\1\\2/p' | head -n 1)",
+        '  echo "[studio] GPU driver supports CUDA ${DRIVER_CUDA:-unknown}"',
+        '  TORCH_STATE=$("$PY" -c ' + _shell_quote(TORCH_CHECK) + ' "${DRIVER_CUDA:-0}" 2>/dev/null'
+        " || echo install)",
+        '  if [ "$TORCH_STATE" != ok ]; then',
+        '    if [ "${DRIVER_CUDA:-0}" -ge 130 ]; then TORCH_INDEX=cu130',
+        '    elif [ "${DRIVER_CUDA:-0}" -ge 128 ]; then TORCH_INDEX=cu128',
+        "    else",
+        "      echo \"[studio] This GPU's driver supports CUDA ${DRIVER_CUDA:-unknown}; ComfyUI"
+        ' needs 12.8 or newer. Remove this ComfyUI and rent the GPU again." >&2',
+        "      exit 1",
+        "    fi",
+        '    echo "[studio] installing PyTorch ($TORCH_INDEX)"',
+        '    "$PY" -m pip install --upgrade torch torchvision'
+        ' --index-url "https://download.pytorch.org/whl/$TORCH_INDEX"',
+        "  fi",
+        "  echo '[studio] installing ComfyUI packages'",
+        '  "$PY" -m pip install -r requirements.txt',
+        "  touch " + _shell_quote(deps_mark),
+        "fi",
+    ]
+    lines += _download_lines(models)
     lines += [
         "echo '[studio] starting ComfyUI'",
-        "exec python3 main.py --listen 127.0.0.1 --port " + str(COMFY_PORT),
+        'exec "$PY" main.py --listen 127.0.0.1 --port ' + str(COMFY_PORT),
     ]
     return "\n".join(lines)
+
+
+def models_script(models):
+    """Downloads model files into ComfyUI/models (the ones that are missing)."""
+    return "\n".join(["set -e", *_download_lines(models), "echo '[studio] models ready'"])
 
 
 def start_job(body):
@@ -281,6 +345,9 @@ def start_job(body):
             raise ValueError("ai-toolkit was not found in " + AITK_DIR)
     elif kind == "comfyui":
         command = ["bash", "-c", comfyui_script(args.get("models") or [])]
+        cwd = WORKSPACE
+    elif kind == "models":
+        command = ["bash", "-c", models_script(args.get("models") or [])]
         cwd = WORKSPACE
     elif kind == "download":
         dest = safe_path(args.get("dest", ""))

@@ -39,11 +39,13 @@ Integrations and Settings.
   - **Online models** (Nano Banana Pro, Seedream, Wan 2.7, Wan 2.7 Pro through WaveSpeed or
     Atlas Cloud): model cards, prompt editor with history, reference images (drag & drop), only
     the settings the selected model and provider support, live progress.
-  - **Krea 2** (open weights, RAW and Turbo) through ComfyUI, chosen right there: **This Mac**
-    (your own ComfyUI on port 8188) or **Rent a GPU** (the studio starts ComfyUI with the Krea 2
-    files on your RunPod or Modal account through a token-protected agent and stops it when
-    idle). Trained LoRAs with strict compatibility checks; seed, steps and CFG under "More
-    settings"; model files, logs and custom workflows under "Manage".
+  - **Krea 2** (open weights, RAW and Turbo) through ComfyUI, in three steps: **1** choose
+    where it runs — **Rent a GPU** (pick a GPU with 16 GB or more; the studio starts it on your
+    RunPod or Modal account, installs ComfyUI and PyTorch through a token-protected agent,
+    shows the progress and stops it when idle) or **This Mac** (your own ComfyUI on port 8188);
+    **2** when it is connected, download the model (Krea 2 Turbo, ≈ 17 GB, with progress);
+    **3** pick an AI model and LoRA, write the prompt and generate. Seed, steps and CFG under
+    "More settings"; model files, logs and custom workflows under "Manage".
 - **AI Models** — your own fictional adult characters with up to 200 photos (shown across the
   whole page, primary photo first). The profile (description, age, hair, face, body, style, …)
   is optional and opens in a window. Select one on Generate: its description is added to the

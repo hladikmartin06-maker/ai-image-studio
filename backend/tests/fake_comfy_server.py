@@ -68,11 +68,17 @@ def png(width: int, height: int, color: tuple[int, int, int]) -> bytes:
 
 class FakeComfy:
     def __init__(
-        self, files: dict[str, list[str]] | None = None, polls: int = 2, models_dir: str = ""
+        self,
+        files: dict[str, list[str]] | None = None,
+        polls: int = 2,
+        models_dir: str = "",
+        scan: bool = False,
     ):
         self.files = {k: list(v) for k, v in (files or KREA_FILES).items()}
         # Like ComfyUI, also list the files in <models_dir>/models/loras (sub folders too).
         self.models_dir = models_dir
+        # Started by the agent: every model folder is read from disk (downloads show up).
+        self.scan = scan
         self.polls_until_done = polls
         self.prompts: dict[str, dict] = {}
         self.order: list[str] = []
@@ -80,6 +86,14 @@ class FakeComfy:
         self.fail_with: str | None = None
         self.require_token: str | None = None
         self.lock = threading.Lock()
+
+    def listed(self, folder: str) -> list[str]:
+        root = os.path.join(self.models_dir, "models", folder)
+        if self.scan and folder != "loras":
+            if not os.path.isdir(root):
+                return []
+            return sorted(n for n in os.listdir(root) if n.endswith(".safetensors"))
+        return self.files[folder]
 
     def loras(self) -> list[str]:
         names = list(self.files["loras"])
@@ -98,14 +112,14 @@ class FakeComfy:
 
         info = {name: {"input": {"required": {}}, "python_module": "nodes"} for name in NODES}
         info["UNETLoader"]["input"]["required"] = {
-            "unet_name": combo(self.files["diffusion_models"]),
+            "unet_name": combo(self.listed("diffusion_models")),
             "weight_dtype": combo(["default", "fp8_e4m3fn"]),
         }
         info["CLIPLoader"]["input"]["required"] = {
-            "clip_name": combo(self.files["text_encoders"]),
+            "clip_name": combo(self.listed("text_encoders")),
             "type": combo(CLIP_TYPES),
         }
-        info["VAELoader"]["input"]["required"] = {"vae_name": combo(self.files["vae"])}
+        info["VAELoader"]["input"]["required"] = {"vae_name": combo(self.listed("vae"))}
         info["LoraLoaderModelOnly"]["input"]["required"] = {
             "lora_name": combo(self.loras()),
             "strength_model": ["FLOAT", {"default": 1.0}],
@@ -153,7 +167,7 @@ class FakeComfy:
             folder = path.split("/", 2)[2]
             if folder not in self.files:
                 return 404, "text/plain", b""
-            return self._json(self.files[folder])
+            return self._json(self.listed(folder))
         if method == "POST" and path == "/prompt":
             data = json.loads(body or b"{}")
             prompt = data.get("prompt") or {}
@@ -350,4 +364,4 @@ if __name__ == "__main__":
     sys.stdout.write(f"fake ComfyUI on {port}\n")
     sys.stdout.flush()
     # Started by the agent as ComfyUI/main.py: also list LoRAs copied into ./models/loras.
-    serve(port, FakeComfy(models_dir=here)).serve_forever()
+    serve(port, FakeComfy(models_dir=here, scan=True)).serve_forever()
