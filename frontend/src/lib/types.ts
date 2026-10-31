@@ -29,6 +29,8 @@ export interface User {
 export interface AuthState {
   has_users: boolean;
   user: User | null;
+  // No sign-in screen: the studio opens the first account on this Mac by itself.
+  auto_login?: boolean;
 }
 
 export interface ProviderInfo {

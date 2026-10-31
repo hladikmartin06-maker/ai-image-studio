@@ -3,7 +3,7 @@
 import { useQueryClient } from "@tanstack/react-query";
 import { ArrowRight, Lock, Mail, UserRound } from "lucide-react";
 import { useRouter } from "next/navigation";
-import { type FormEvent, useEffect, useState } from "react";
+import { type FormEvent, useCallback, useEffect, useRef, useState } from "react";
 
 import { BrandMark } from "@/components/logos";
 import { Button, Field, Notice, Segmented, Spinner } from "@/components/ui";
@@ -23,10 +23,31 @@ export default function WelcomePage() {
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [autoError, setAutoError] = useState<string | null>(null);
+  const autoStarted = useRef(false);
 
   useEffect(() => {
     if (auth.data?.user) router.replace("/dashboard");
   }, [auth.data, router]);
+
+  // No sign-in screen: open the account on this Mac right away.
+  const autoLogin = useCallback(async () => {
+    setAutoError(null);
+    try {
+      const res = await api<{ user: User }>("/api/auth/auto", { body: { language: lang } });
+      qc.setQueryData(keys.auth, { has_users: true, user: res.user, auto_login: true });
+      qc.removeQueries({ queryKey: keys.settings });
+      router.replace("/dashboard");
+    } catch (err) {
+      setAutoError(err instanceof ApiError ? err.message : t("errors.generic"));
+    }
+  }, [lang, qc, router, t]);
+
+  useEffect(() => {
+    if (!auth.data?.auto_login || auth.data.user || autoStarted.current) return;
+    autoStarted.current = true;
+    void autoLogin();
+  }, [auth.data, autoLogin]);
 
   const effectiveMode = mode ?? (auth.data?.has_users ? "signin" : "signup");
 
@@ -53,10 +74,22 @@ export default function WelcomePage() {
     }
   };
 
-  if (auth.isLoading) {
+  if (auth.isLoading || (auth.data?.auto_login && !autoError)) {
     return (
       <div style={{ minHeight: "100vh", display: "grid", placeItems: "center" }}>
         <Spinner size={22} />
+      </div>
+    );
+  }
+  if (auth.data?.auto_login && autoError) {
+    return (
+      <div style={{ minHeight: "100vh", display: "grid", placeItems: "center", padding: 24 }}>
+        <div className="col gap-12" style={{ maxWidth: 420 }}>
+          <Notice tone="danger">{autoError}</Notice>
+          <Button variant="primary" onClick={() => void autoLogin()}>
+            {t("auth.tryAgain")}
+          </Button>
+        </div>
       </div>
     );
   }

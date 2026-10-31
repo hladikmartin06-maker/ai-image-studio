@@ -1322,6 +1322,8 @@ export const en = {
   "chat.photoLimit": "Up to {n} photos per message (PNG, JPEG or WebP).",
   "chat.photoDefault": "Describe this photo and write a prompt that recreates a similar image.",
   "chat.placeholderPhoto": "Ask anything or add a photo…",
+
+  "auth.tryAgain": "Try again",
 } as const;
 
 export type MessageKey = keyof typeof en;

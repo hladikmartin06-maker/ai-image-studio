@@ -47,6 +47,10 @@ repositories.
 - API keys only in the backend: encrypted with AES-256-GCM (key derived from
   `APP_SECRET_KEY` in `backend/.env`), never returned to the browser, never in code, logs,
   docs or generation history. The browser shows only the masked last four characters.
+- No sign-in screen for now (the owner's choice): `AUTO_LOGIN` (default true) opens the
+  first account on this Mac through `POST /api/auth/auto`, or creates one; password, sessions
+  and sign out are hidden. `AUTO_LOGIN=false` in `backend/.env` brings sign-in back. Keep the
+  localhost-only servers, the Host check (`proxy.ts`) and the client header, which protect it.
 - Every query on user data filters by `user_id`. State-changing requests need the
   `x-studio-client: web` header (CSRF guard).
 - No fake results or fabricated statistics; empty, loading and error states everywhere.

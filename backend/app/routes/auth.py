@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import secrets
 import time
 import uuid
 from collections import defaultdict
@@ -94,7 +95,36 @@ async def auth_state(request: Request, db: AsyncSession = Depends(get_db)):
         if session and session.expires_at > datetime.now(UTC):
             row = await db.get(User, session.user_id)
             user = user_json(row) if row else None
-    return {"has_users": has_users, "user": user}
+    return {"has_users": has_users, "user": user, "auto_login": get_settings().auto_login}
+
+
+class AutoBody(BaseModel):
+    language: str | None = Field(default=None, pattern="^(en|sk)$")
+
+
+@router.post("/auth/auto")
+async def auto_login(
+    body: AutoBody, request: Request, response: Response, db: AsyncSession = Depends(get_db)
+):
+    """No sign-in screen: opens the first account on this Mac, or creates one. The servers
+    listen only on 127.0.0.1, foreign Host headers are refused and this POST needs the client
+    header, so other websites cannot use it."""
+    if not get_settings().auto_login:
+        raise api_error(403, "auto_login_off", "Sign in with your email and password.")
+    user = await db.scalar(select(User).order_by(User.created_at, User.id).limit(1))
+    if user is None:
+        user = User(
+            email="studio@localhost",
+            name="Studio",
+            # A random password nobody knows: with auto sign-in none is needed.
+            password_hash=hash_password(secrets.token_urlsafe(32)),
+        )
+        db.add(user)
+        await db.flush()
+        db.add(UserSettings(user_id=user.id, data={"language": body.language or "en"}))
+        await db.commit()
+    await _start_session(db, user, request, response)
+    return {"user": user_json(user)}
 
 
 @router.post("/auth/register", status_code=status.HTTP_201_CREATED)

@@ -541,65 +541,70 @@ function AccountSection() {
           </div>
         </form>
       </Group>
-      <Group title={t("set.security")}>
-        <form className="card-body col" style={{ gap: 14, paddingTop: 18 }} onSubmit={changePassword}>
-          <div className="row wrap" style={{ gap: 14, alignItems: "flex-start" }}>
-            <div className="grow" style={{ minWidth: 220 }}>
-              <Field label={t("set.currentPassword")} htmlFor="pw-current">
-                <input id="pw-current" type="password" className="input" autoComplete="current-password" value={current} onChange={(e) => setCurrent(e.target.value)} />
-              </Field>
-            </div>
-            <div className="grow" style={{ minWidth: 220 }}>
-              <Field label={t("set.newPassword")} htmlFor="pw-new" hint={t("auth.passwordHint")}>
-                <input id="pw-new" type="password" className="input" autoComplete="new-password" value={next} onChange={(e) => setNext(e.target.value)} />
-              </Field>
-            </div>
-          </div>
-          {pwError ? <Notice tone="danger">{pwError}</Notice> : null}
-          <div className="row">
-            <span className="tiny subtle grow">{t("set.passwordNote")}</span>
-            <Button type="submit" loading={pwBusy} disabled={!current || !next} icon={<Shield />}>
-              {t("set.changePassword")}
-            </Button>
-          </div>
-        </form>
-        <div className="setting-row" style={{ alignItems: "flex-start" }}>
-          <div className="grow">
-            <div>{t("set.sessions")}</div>
-            <div>{t("set.sessionsHint")}</div>
-            <div className="col" style={{ gap: 8, marginTop: 12 }}>
-              {(sessions.data?.sessions ?? []).map((s) => (
-                <div key={s.id} className="row small">
-                  <Monitor size={14} className="subtle" />
-                  <span className="truncate grow" title={s.user_agent}>
-                    {s.user_agent.split(") ")[0].replace("Mozilla/5.0 (", "") || t("set.unknownDevice")}
-                  </span>
-                  <span className="tiny subtle">{formatRelative(s.last_seen_at, locale)}</span>
-                  {s.current ? (
-                    <span className="badge accent">{t("set.thisSession")}</span>
-                  ) : (
-                    <Button size="sm" variant="ghost" onClick={() => revoke(s.id)}>
-                      {t("set.revoke")}
-                    </Button>
-                  )}
+      {/* No sign-in screen (auto sign-in): password, sessions and sign out are not needed. */}
+      {auth.data?.auto_login ? null : (
+        <>
+          <Group title={t("set.security")}>
+            <form className="card-body col" style={{ gap: 14, paddingTop: 18 }} onSubmit={changePassword}>
+              <div className="row wrap" style={{ gap: 14, alignItems: "flex-start" }}>
+                <div className="grow" style={{ minWidth: 220 }}>
+                  <Field label={t("set.currentPassword")} htmlFor="pw-current">
+                    <input id="pw-current" type="password" className="input" autoComplete="current-password" value={current} onChange={(e) => setCurrent(e.target.value)} />
+                  </Field>
                 </div>
-              ))}
+                <div className="grow" style={{ minWidth: 220 }}>
+                  <Field label={t("set.newPassword")} htmlFor="pw-new" hint={t("auth.passwordHint")}>
+                    <input id="pw-new" type="password" className="input" autoComplete="new-password" value={next} onChange={(e) => setNext(e.target.value)} />
+                  </Field>
+                </div>
+              </div>
+              {pwError ? <Notice tone="danger">{pwError}</Notice> : null}
+              <div className="row">
+                <span className="tiny subtle grow">{t("set.passwordNote")}</span>
+                <Button type="submit" loading={pwBusy} disabled={!current || !next} icon={<Shield />}>
+                  {t("set.changePassword")}
+                </Button>
+              </div>
+            </form>
+            <div className="setting-row" style={{ alignItems: "flex-start" }}>
+              <div className="grow">
+                <div>{t("set.sessions")}</div>
+                <div>{t("set.sessionsHint")}</div>
+                <div className="col" style={{ gap: 8, marginTop: 12 }}>
+                  {(sessions.data?.sessions ?? []).map((s) => (
+                    <div key={s.id} className="row small">
+                      <Monitor size={14} className="subtle" />
+                      <span className="truncate grow" title={s.user_agent}>
+                        {s.user_agent.split(") ")[0].replace("Mozilla/5.0 (", "") || t("set.unknownDevice")}
+                      </span>
+                      <span className="tiny subtle">{formatRelative(s.last_seen_at, locale)}</span>
+                      {s.current ? (
+                        <span className="badge accent">{t("set.thisSession")}</span>
+                      ) : (
+                        <Button size="sm" variant="ghost" onClick={() => revoke(s.id)}>
+                          {t("set.revoke")}
+                        </Button>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </div>
+              <div className="setting-control">
+                <Button size="sm" disabled={!others.length} onClick={() => revoke()}>
+                  {t("set.revokeOthers")}
+                </Button>
+              </div>
             </div>
-          </div>
-          <div className="setting-control">
-            <Button size="sm" disabled={!others.length} onClick={() => revoke()}>
-              {t("set.revokeOthers")}
-            </Button>
-          </div>
-        </div>
-      </Group>
-      <Group title={t("set.signOutTitle")}>
-        <Row title={t("account.signOut")} description={t("set.signOutHint")}>
-          <Button variant="danger" icon={<LogOut />} onClick={signOut}>
-            {t("account.signOut")}
-          </Button>
-        </Row>
-      </Group>
+          </Group>
+          <Group title={t("set.signOutTitle")}>
+            <Row title={t("account.signOut")} description={t("set.signOutHint")}>
+              <Button variant="danger" icon={<LogOut />} onClick={signOut}>
+                {t("account.signOut")}
+              </Button>
+            </Row>
+          </Group>
+        </>
+      )}
     </>
   );
 }

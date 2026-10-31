@@ -17,7 +17,7 @@ import {
 } from "lucide-react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { type ReactNode, useCallback, useEffect } from "react";
+import { type ReactNode, useCallback, useEffect, useRef } from "react";
 import { toast } from "sonner";
 
 import { AssistantDrawer } from "@/components/assistant/drawer";
@@ -35,7 +35,7 @@ import {
   useSettings,
   useUpdateSettings,
 } from "@/lib/queries";
-import type { Generation, User } from "@/lib/types";
+import type { AuthState, Generation, User } from "@/lib/types";
 
 type NavItem = { href: string; label: MessageKey; icon: typeof LayoutDashboard };
 
@@ -74,6 +74,7 @@ export function UserMenu({ user, align = "end" }: { user: User; align?: "start" 
   const t = useT();
   const router = useRouter();
   const signOut = useSignOut();
+  const autoLogin = Boolean(useAuthState().data?.auto_login);
   const initials = user.name
     .split(/\s+/)
     .map((p) => p[0])
@@ -139,10 +140,14 @@ export function UserMenu({ user, align = "end" }: { user: User; align?: "start" 
           >
             {t("nav.settings")}
           </MenuItem>
-          <div className="menu-sep" />
-          <MenuItem icon={<LogOut />} onClick={signOut}>
-            {t("account.signOut")}
-          </MenuItem>
+          {autoLogin ? null : (
+            <>
+              <div className="menu-sep" />
+              <MenuItem icon={<LogOut />} onClick={signOut}>
+                {t("account.signOut")}
+              </MenuItem>
+            </>
+          )}
         </>
       )}
     </Popover>
@@ -251,14 +256,32 @@ export function StudioShell({ children }: { children: ReactNode }) {
   const user = auth.data?.user;
   const settings = useSettings(Boolean(user));
 
+  const autoStarted = useRef(false);
   useEffect(() => {
-    if (auth.data && !auth.data.user) router.replace("/welcome");
-  }, [auth.data, router]);
+    if (!auth.data || auth.data.user) return;
+    if (!auth.data.auto_login) {
+      router.replace("/welcome");
+      return;
+    }
+    // No sign-in screen: open the account on this Mac and stay on the same page.
+    if (autoStarted.current) return;
+    autoStarted.current = true;
+    api<{ user: User }>("/api/auth/auto", { body: { language: navigator.language.startsWith("sk") ? "sk" : "en" } })
+      .then((res) => {
+        qc.setQueryData(keys.auth, { has_users: true, user: res.user, auto_login: true });
+        qc.removeQueries({ queryKey: keys.settings });
+      })
+      .catch(() => router.replace("/welcome"))
+      .finally(() => {
+        autoStarted.current = false;
+      });
+  }, [auth.data, router, qc]);
 
   useEffect(() => {
     const onUnauth = () => {
-      qc.setQueryData(keys.auth, (prev: { has_users: boolean } | undefined) => ({
+      qc.setQueryData(keys.auth, (prev: AuthState | undefined) => ({
         has_users: prev?.has_users ?? true,
+        auto_login: prev?.auto_login,
         user: null,
       }));
     };

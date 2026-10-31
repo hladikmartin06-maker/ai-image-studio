@@ -149,7 +149,7 @@ in answers can be applied back to it ("Use in studio", "Apply settings").
 | Path | Role |
 |---|---|
 | `proxy.ts` | refuses requests with a foreign `Host` (DNS rebinding protection) |
-| `app/welcome` | sign in / create account |
+| `app/welcome` | sign in / create account (only with `AUTO_LOGIN=false`; by default the shell signs in automatically through `POST /api/auth/auto`) |
 | `app/(studio)/…` | dashboard, generate (online models or Krea 2 with the ComfyUI choice inside), ai-models, loras (list + training history; `[id]` photos, captions, training, runs/versions, tests, details), library (generated images or AI model photos), library/history, assistant, integrations (images, AI, GPU, Hugging Face), settings |
 | `components/comfy`, `components/lora`, `components/studio` | ComfyUI connection bar (This Mac / Rent a GPU), manage window, workflows, Krea 2 panel on Generate; dataset, captions, simplified training form, runs, comparison; shared status, GPU picker, loss chart |
 | `components/personas` | AI model picker and Generate section, profile form, reference collection, "Add to AI model" |

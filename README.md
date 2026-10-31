@@ -20,9 +20,13 @@ time. Running the same command again updates the studio.
 
 First steps in the app:
 
-1. Create your account (it stays on this Mac).
+1. The studio opens right away — there is no sign-in for now. It uses the first account on
+   this Mac (with all its images) or creates one by itself.
 2. **Integrations** → Connect WaveSpeed and/or Atlas Cloud with your API key.
 3. **Generate** → choose a model, write a prompt, press Generate (⌘↵).
+
+To bring the sign-in screen back, add `AUTO_LOGIN=false` to `~/ai-image-studio/backend/.env`
+and run the update command again.
 
 ## What is inside
 
@@ -62,7 +66,7 @@ Integrations and Settings.
 - **Integrations** — image providers, AI assistant, GPU compute (RunPod, Modal) and
   **Hugging Face** (token plus a check of the Krea 2 license, needed for LoRA training); keys
   encrypted. **Settings** — theme, language EN/SK, defaults, appearance, assistant, storage,
-  account and sessions.
+  account.
 
 ## Everyday commands
 

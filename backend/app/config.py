@@ -23,6 +23,10 @@ class Settings(BaseSettings):
     storage_dir: Path = BACKEND_DIR / "storage"
 
     session_days: int = 30
+    # The owner's choice for now: the studio opens without a sign-in screen and uses the first
+    # account on this Mac (created automatically when there is none). AUTO_LOGIN=false brings
+    # the sign-in screen back.
+    auto_login: bool = True
     max_upload_mb: int = 10
     # How many generation jobs run at the same time (each may hold several requests).
     worker_concurrency: int = 4

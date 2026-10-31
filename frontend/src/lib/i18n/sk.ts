@@ -1324,4 +1324,6 @@ export const sk: Record<MessageKey, string> = {
   "chat.photoLimit": "Najviac {n} fotky na správu (PNG, JPEG alebo WebP).",
   "chat.photoDefault": "Opíš túto fotku a napíš prompt, ktorý vytvorí podobný obrázok.",
   "chat.placeholderPhoto": "Opýtaj sa čokoľvek alebo pridaj fotku…",
+
+  "auth.tryAgain": "Skúsiť znova",
 };

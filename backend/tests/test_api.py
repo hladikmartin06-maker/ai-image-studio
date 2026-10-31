@@ -6,8 +6,9 @@ import uuid
 
 from sqlalchemy import select
 
+from app.config import get_settings
 from app.db import SessionLocal
-from app.models import Generation, Integration, ProviderTask
+from app.models import Generation, Integration, ProviderTask, User
 from app.services.worker import worker
 from tests.conftest import Api, make_user, wait_done
 from tests.fakes import VALID_KEY, png_bytes
@@ -39,6 +40,33 @@ async def test_login_logout(fake):
     assert ok.status_code == 200
     assert (await api.get("/api/auth/me")).status_code == 200
     await api.client.aclose()
+
+
+async def test_auto_sign_in_opens_the_first_account(user: Api):
+    anon = Api(user.client.__class__(transport=user.client._transport, base_url="http://test"))
+    state = (await anon.get("/api/auth/state")).json()
+    assert state["auto_login"] is True and state["user"] is None
+    # Needs the client header like every state-changing request (other sites cannot use it).
+    assert (await anon.client.post("/api/auth/auto", json={})).status_code == 403
+    r = await anon.post("/api/auth/auto", json={"language": "sk"})
+    assert r.status_code == 200
+    async with SessionLocal() as db:
+        first = await db.scalar(select(User).order_by(User.created_at, User.id).limit(1))
+    assert r.json()["user"]["id"] == str(first.id)
+    assert (await anon.get("/api/auth/me")).json()["user"]["id"] == str(first.id)
+
+    # AUTO_LOGIN=false brings the sign-in screen back.
+    settings = get_settings()
+    settings.auto_login = False
+    try:
+        other = Api(user.client.__class__(transport=user.client._transport, base_url="http://test"))
+        off = await other.post("/api/auth/auto", json={})
+        assert off.status_code == 403 and off.json()["error"]["code"] == "auto_login_off"
+        assert (await other.get("/api/auth/state")).json()["auto_login"] is False
+        await other.client.aclose()
+    finally:
+        settings.auto_login = True
+    await anon.client.aclose()
 
 
 async def test_integration_key_is_encrypted_and_masked(user: Api, fake):
