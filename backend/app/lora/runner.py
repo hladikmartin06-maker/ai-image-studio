@@ -31,6 +31,7 @@ from app.gpu.agent import AGENT_PORT, BOOT, agent_env, new_token
 from app.gpu.agent_client import AgentClient, AgentError
 from app.gpu.base import GPUError, WorkloadSpec
 from app.gpu.registry import get_gpu_adapter
+from app.gpu.runpod import CUDA13, CUDA13_DOCUMENTED, refused_cuda
 from app.lora.aitoolkit import run_name, run_paths
 from app.lora.presets import ARCHITECTURES
 from app.lora.serial import ACTIVE, version_json
@@ -140,7 +141,7 @@ def _spec(v: LoraVersion, lora: Lora, token: str, hf: str | None) -> WorkloadSpe
         # Modal: one volume keeps the Hugging Face cache between runs (no re-download).
         volume_name=TRAINING_VOLUME if v.gpu_provider == "modal" else None,
         # ai-toolkit's image is built for CUDA 13: only hosts whose driver supports it.
-        allowed_cuda_versions=["13.0"] if v.gpu_provider == "runpod" else [],
+        allowed_cuda_versions=list(CUDA13) if v.gpu_provider == "runpod" else [],
     )
 
 
@@ -150,10 +151,20 @@ async def _launch(db, v: LoraVersion, lora: Lora) -> None:
     v.stage_detail = "Starting the GPU"
     await db.commit()
     hf = await _hf_token(db, v.user_id)
+    spec = _spec(v, lora, token, hf)
     try:
-        workload = await gpu_service.launch(
-            db, v.user_id, v.gpu_provider or "", _spec(v, lora, token, hf), "lora-training"
-        )
+        try:
+            workload = await gpu_service.launch(
+                db, v.user_id, v.gpu_provider or "", spec, "lora-training"
+            )
+        except GPUError as exc:
+            # Only a request RunPod refused is sent again (no pod was created).
+            if not (refused_cuda(exc) and spec.allowed_cuda_versions):
+                raise
+            spec.allowed_cuda_versions = list(CUDA13_DOCUMENTED)
+            workload = await gpu_service.launch(
+                db, v.user_id, v.gpu_provider or "", spec, "lora-training"
+            )
     except GPUError as exc:
         await _fail(db, v, exc.code, exc.message)
         return

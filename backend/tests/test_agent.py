@@ -52,6 +52,15 @@ async def test_auth_and_health(agent):
     health = await client.health()
     assert health["ok"] and health["aitoolkit"] is True
     assert "gpus" in health and "ram_total" in health
+    assert health["agent_version"] == "2"
+    # Model downloads only from huggingface.co.
+    with pytest.raises(AgentError) as bad:
+        await client.start_job(
+            "dl", "download", {"url": "https://evil.com/a", "folder": "vae", "filename": "a"}
+        )
+    assert bad.value.code == "rejected" and "huggingface.co" in bad.value.message
+    # No container start log in this test (the ComfyUI image writes one).
+    assert await client.boot_log() == ("", 0)
     wrong = AgentClient(client.base_url, "nope")
     with pytest.raises(AgentError) as err:
         await wrong.health()

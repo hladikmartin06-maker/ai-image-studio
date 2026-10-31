@@ -205,29 +205,71 @@ reproduces the API.
 
 ## ComfyUI on a rented GPU (setup)
 
-- **Image (RunPod)**: `runpod/pytorch:1.5.1-cu1300-torch2130-ubuntu2404` — PyTorch 2.13.0 for
-  CUDA 13.0, Python 3.12 (`python` and `python3`); tag listed on Docker Hub
-  (`hub.docker.com/v2/repositories/runpod/pytorch/tags`), build in `runpod/containers`
-  (`official-templates/pytorch`, `official-templates/base`), checked 2026-10-31.
-- **Driver filter**: `allowedCudaVersions` on `POST /v1/pods` (RunPod's `api-reference/
-  openapi.json` in `runpod/docs`: "a list of acceptable CUDA versions", enum up to "13.0").
-  ComfyUI pods ask for 13.0, 12.9 or 12.8; training pods (ai-toolkit, CUDA 13) for 13.0.
-- **PyTorch**: ComfyUI's README (master, 2026-10-31): "torch 2.7 is minimally supported …
-  Using a cu130 or above version of pytorch is required on Nvidia 20 series and above", and
-  `pip install torch torchvision torchaudio --extra-index-url
-  https://download.pytorch.org/whl/cu130`. Its `requirements.txt` pins `comfy-kitchen`, whose
-  kernels failed to import on PyTorch 2.4 (`infer_schema … list[int]`, the owner's log with the
-  old image). The setup script reads the driver's CUDA version from `nvidia-smi` and keeps the
-  image's PyTorch when it is ≥ 2.7 and fits the driver (cu130 when the driver has CUDA 13);
-  otherwise it installs PyTorch from `download.pytorch.org/whl/cu130` (or `cu128`).
-- ComfyUI's packages live on the container disk, which RunPod resets when a pod stops, so
-  they are installed again on every new container (pip cache on the volume); ComfyUI and the
-  models stay on the volume.
-- Models are downloaded after connecting (Generate › Krea 2 › Download): text encoder, VAE
-  and the diffusion model from `huggingface.co/Comfy-Org/Krea-2`, skipped when present.
-- A failed setup stops the GPU so it is not billed; "Try again" starts it again.
-- **Not run on a real RunPod or Modal GPU** (the image, driver filter and PyTorch install are
-  verified from the sources above and with a fake RunPod running the real agent).
+Goal: ComfyUI ready in about 1–2 minutes; nothing is installed when the GPU starts; models
+are installed afterwards with one click. Code: `backend/app/comfy/deploy.py`,
+`backend/app/gpu/agent/` (`COMFY_BOOT`, `studio_agent.py`).
+
+- **Image**: RunPod's official ComfyUI image, which already holds ComfyUI and PyTorch —
+  source `github.com/runpod-workers/comfyui-base` (main, commit 33dfcd6 of 2026-08-27:
+  `Dockerfile`, `start.sh`, `docker-bake.hcl`, `README.md`, `README_CUDA13.md`), tags on
+  Docker Hub (`hub.docker.com/v2/repositories/runpod/comfyui/tags`, checked 2026-10-31):
+  - `runpod/comfyui:cuda12.8` (= `latest`; ComfyUI v0.30.0, PyTorch 2.10.0+cu128, Ubuntu
+    24.04, Python 3.12) with `allowedCudaVersions` `["12.8", "12.9"]`;
+  - `runpod/comfyui:cuda13.0` (PyTorch 2.10.0+cu130; "Blackwell / RTX 5090+") with
+    `["13.0", "13.1", "13.2", "13.3"]` — used for Blackwell GPUs (the CUDA 12.8 template "does
+    not support CUDA 13 (Blackwell / RTX 5090)", its README) and when RunPod has no free host
+    with a 12.8/12.9 driver for the chosen GPU.
+  - ComfyUI v0.30.0 ≥ 0.24.1, the minimum of Comfy-Org's Krea 2 template.
+- **What the image's `/start.sh` does** (read from its source): SSH (random root password in
+  the log unless `PUBLIC_KEY`), FileBrowser on 8080 (`FILEBROWSER_PASSWORD`), JupyterLab on
+  8888 (`JUPYTER_PASSWORD`), on the first start copies `/opt/comfyui-baked` to
+  `/workspace/runpod-slim/ComfyUI` and creates a venv with the image's packages (no network),
+  then runs `python main.py --listen 0.0.0.0 --port 8188 --enable-cors-header` plus the lines
+  of `/workspace/runpod-slim/comfyui_args.txt`. ENTRYPOINT `["/start.sh"]`; `python3` is 3.12.
+- **Start command** (`CreatePodRequest`): `dockerEntrypoint ["/bin/bash", "-c"]`,
+  `dockerStartCmd [COMFY_BOOT]`: writes the agent (gzip + base64 in `STUDIO_AGENT_CODE`) to a
+  temp file, starts it in the background (restarted if it stops), adds `--listen 127.0.0.1`
+  to `comfyui_args.txt` (argparse: the last `--listen` wins), sets random Jupyter and
+  FileBrowser passwords, removes the agent's secrets from the environment and ends with
+  `exec /start.sh`; its output also goes to a start log the agent serves on `/boot-log`
+  (password lines hidden).
+- **Disk**: pod volume (`volumeInGb`, `volumeMountPath /workspace`) — ComfyUI and the models
+  stay when the pod is stopped. Network volumes are not used.
+- **Network**: only the agent's port `8189/http`, reached at
+  `https://{podId}-8189.proxy.runpod.net`, every request with the per-deployment Bearer
+  token; ComfyUI (8188), FileBrowser, Jupyter and SSH ports are not exposed.
+- **Ready check**: every ~10 s the studio asks the agent (`/health`), then ComfyUI through the
+  agent (`/comfy/system_stats`, `/object_info`). "Ready" only when ComfyUI itself answers. No
+  answer within 30 minutes (Modal: 45) stops the GPU.
+- **Models**: "Download" asks the agent to fetch the text encoder, VAE and diffusion model from
+  `huggingface.co/Comfy-Org/Krea-2` directly on the GPU, never through the Mac. Only
+  `https://huggingface.co/…` is accepted (redirects only to Hugging Face's CDN hosts
+  `*.huggingface.co` / `*.hf.co`; the token is sent to huggingface.co only); each file is
+  written as `.part` (resumed after a dropped connection) and renamed when complete; free disk
+  space is checked; files already there are skipped; progress per file. Saved into
+  `/workspace/runpod-slim/ComfyUI/models/<folder>`; started only once ComfyUI answers. ComfyUI
+  lists new files without a restart (its `folder_paths` file list is refreshed when a folder
+  changes); the studio checks `/object_info` again after the download.
+- **CUDA list**: RunPod's published API (`runpod/docs`, `api-reference/openapi.json`, checked
+  2026-10-31) lists `allowedCudaVersions` values up to "13.0" only. "13.1"–"13.3" are sent as
+  the owner asked; if RunPod refuses them (HTTP 400 naming the CUDA field), the request is sent
+  again with `["13.0"]` (a refused request creates no pod). Training pods do the same.
+- **No free GPU**: RunPod's wording "There are no longer any instances available …" /
+  "does not have the resources" (from RunPod's own pod tests in comfyui-base,
+  `tests/runpod_smoke/pod.py`) is shown as "No GPU of this type is free right now"; then the
+  next image is tried. GPU lists offer NVIDIA GPUs with 24 GB or more, and only those RunPod
+  prices in the chosen cloud.
+- **Modal**: `modal.Image.from_registry("runpod/comfyui:cuda12.8").entrypoint([])`
+  (`Image.entrypoint`, modal 1.6.3), the same command and agent, a named Volume at
+  `/workspace` (sandbox mounts use background commits, `allow_background_commits=True` in the
+  SDK). The first start pulls the image and copies ComfyUI onto the Volume; later starts reuse
+  it.
+- Connections set up by older studio versions (which installed ComfyUI themselves) are not
+  started again: the studio asks to delete them and rent a new GPU.
+- **Not run on a real RunPod or Modal GPU** and not against huggingface.co: verified from the
+  sources above and with a fake RunPod that runs the real start command and agent with a fake
+  `start.sh` (first-start copy, args file) and a fake ComfyUI, and a local file server for the
+  downloader (resume, rename, skip, token only to huggingface.co).
 
 # LoRA training (ai-toolkit)
 
@@ -242,11 +284,11 @@ reproduces the API.
 - **Image**: `ostris/aitoolkit:latest` (docker-compose of the repo; needs an NVIDIA driver for
   CUDA 13). Not available in ai-toolkit for Krea 2: text encoder training, validation loss,
   a training seed. Regularization images are not offered by the studio.
-- **GPU side**: the studio agent (`backend/app/gpu/agent`) in the container; RunPod pods get
-  `dockerEntrypoint`/`dockerStartCmd`, port 8765/http and a volume at /workspace, reached at
-  `https://{podId}-8765.proxy.runpod.net`; Modal sandboxes get `encrypted_ports`, a Secret for
-  tokens and a named Volume. ComfyUI deployments install ComfyUI from GitHub into the volume;
-  the verified Comfy-Org files are downloaded when the user asks for a model.
+- **GPU side**: the studio agent (`backend/app/gpu/agent`) in the container; training pods get
+  `dockerEntrypoint`/`dockerStartCmd` (`BOOT`), port 8765/http and a volume at /workspace,
+  reached at `https://{podId}-8765.proxy.runpod.net`, with `allowedCudaVersions` 13.0–13.3
+  (13.0 alone if RunPod refuses the others); Modal sandboxes get `encrypted_ports`, a Secret for
+  tokens and a named Volume. ComfyUI deployments: see "ComfyUI on a rented GPU" above.
 
 Presets are the studio's starting points, not published recommendations. Progress and loss
 come from ai-toolkit's own output. **Not run on a real RunPod or Modal GPU** — verified with a

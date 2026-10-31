@@ -83,13 +83,22 @@ repositories.
   connected in Integrations and picked only where they are used (Krea 2 on Generate, LoRA
   training) — no separate GPU page. Advanced options stay collapsed; no fields beginners do
   not need (e.g. trainer image, run notes). Training always removes the GPU afterwards.
-- GPU lists show only GPUs with 16 GB or more (and at least what the task needs), smallest
-  first (`MIN_GPU_GB` in `components/studio/common.tsx`).
-- Krea 2 on Generate goes in steps: 1 choose and connect the GPU (setup progress, a failed
-  setup stops the GPU, "Try again"), 2 download the model once it is connected, 3 AI model,
-  LoRA, prompt and generate. Setup installs ComfyUI and a PyTorch that fits the driver
-  (`gpu/agent/studio_agent.py`, sources in `docs/PROVIDERS.md`); RunPod pods ask for a recent
-  driver with `allowedCudaVersions`.
+- GPU lists show only NVIDIA GPUs with 24 GB or more (and at least what the task needs),
+  smallest first (`MIN_GPU_GB` in `components/studio/common.tsx`).
+- Krea 2 on Generate goes in steps: 1 choose and connect the GPU (progress, "Try again"),
+  2 install the model with one click once ComfyUI answers, 3 AI model, LoRA, prompt and
+  generate.
+- Rented ComfyUI GPUs (the owner's design, `comfy/deploy.py`, sources in `docs/PROVIDERS.md`):
+  ready in about 1–2 minutes, nothing installed at start. RunPod's image `runpod/comfyui:cuda12.8`
+  (`allowedCudaVersions` 12.8, 12.9), `runpod/comfyui:cuda13.0` (13.0–13.3) only for GPUs
+  that offer CUDA 13 only. Start command `/bin/bash -c`: write the agent file (base64 env),
+  start it in the background, `exec /start.sh`. Volume at /workspace. Only the agent's port
+  8189/http is exposed (Bearer token per deployment); ComfyUI's 8188 stays private and listens
+  on 127.0.0.1. Poll ~10 s; "Ready" only when ComfyUI answers through the agent; no answer in
+  30 minutes (Modal 45) stops the GPU. Models: the agent downloads them on the GPU from
+  huggingface.co only, as .part then renamed, into `/workspace/runpod-slim/ComfyUI/models/…`,
+  only after ComfyUI answers. Modal: the same image with `.entrypoint([])`, command, agent
+  and a Volume at /workspace.
 - Hugging Face: token in Integrations › Hugging Face, checked with `whoami-v2` and the Krea 2
   repositories' `auth-check` (`services/huggingface.py`). Accepting the license is the user's
   own click on huggingface.co (no API exists); the studio links there and checks again, and

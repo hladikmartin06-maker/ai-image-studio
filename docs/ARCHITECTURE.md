@@ -39,7 +39,7 @@ Next.js 16 (127.0.0.1:3000) ── /api/* rewrite ──▶ FastAPI (127.0.0.1:8
 | `ai/context.py` | cacheable system prompt, studio context, history window, summaries |
 | `ai/service.py` | one assistant turn: local/cached/streamed answer, attached photos (downscaled, sent only with their message), usage, background summary |
 | `gpu/` | `base.py` contract, `runpod.py` (REST + GraphQL), `modal_provider.py` (SDK), `registry.py`, `service.py` (credentials, launch + record, cost) |
-| `gpu/agent/` | `studio_agent.py`: stdlib HTTP agent that runs inside a GPU container (files with offsets/ranges, jobs: train / comfyui / download, logs, ComfyUI proxy), sent compressed in the environment |
+| `gpu/agent/` | `studio_agent.py`: stdlib HTTP agent that runs inside a GPU container (files with offsets/ranges, jobs: train / models / download — downloads from huggingface.co only, logs, the container's start log, ComfyUI proxy), sent compressed in the environment; `COMFY_BOOT` starts it in RunPod's ComfyUI image before the image's own `/start.sh` |
 | `gpu/agent_client.py` | client for the agent (chunked resumable upload, ranged resumable download with SHA-256) |
 | `comfy/` | `client.py` (ComfyUI HTTP API), `krea2.py` (verified facts, file detection, sizes, workflow, LoRA compatibility), `workflows.py` (import, secret scrubbing, bindings, LoRA insertion), `service.py` (connections, inspection, LoRA placement), `generation.py`, `runner.py` (in the job worker), `deploy.py` (ComfyUI on RunPod/Modal) |
 | `lora/` | `presets.py` (per-architecture options and presets), `aitoolkit.py` (job file), `dataset.py` (analysis, dHash, packing with crop), `captions.py` (vision captions via the assistant provider), `safetensors_meta.py`, `runner.py` (training state machine), `serial.py` |
@@ -123,6 +123,12 @@ LoRA run: queued ─▶ create pod/sandbox (ai-toolkit image + agent, confirm_bi
           running (agent job "train": python run.py; step/loss parsed, logs, samples)
           downloading (final + checkpoints, ranged, SHA-256) ─▶ completed ─▶ GPU removed
 ```
+
+ComfyUI on a GPU: POST /api/comfy/deployments (confirm_billing) ─▶ pod / sandbox with
+          runpod/comfyui (cuda12.8, else cuda13.0) and COMFY_BOOT (agent, then /start.sh)
+          starting (agent /health) ─▶ booting (ComfyUI through the agent) ─▶ ready
+          ─▶ POST …/models/install: agent job "models" downloads from huggingface.co
+          (no answer within 30 min, Modal 45: the GPU is stopped)
 
 ComfyUI deployed by the studio is never exposed: only the agent port is, and every request
 needs the agent token. Files in a container are copied to this Mac before the workload is

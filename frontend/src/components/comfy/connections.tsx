@@ -20,7 +20,7 @@ import {
 import { useRef, useState } from "react";
 import { toast } from "sonner";
 
-import { formatMoney, GpuMeter, type GpuChoice, GpuPicker, StatusPill } from "@/components/studio/common";
+import { formatMoney, GpuMeter, type GpuChoice, GpuPicker, MIN_GPU_GB, StatusPill } from "@/components/studio/common";
 import { Badge, Button, Field, IconButton, Modal, Notice, Select, Switch, useConfirm } from "@/components/ui";
 import { ApiError, uploadInChunks } from "@/lib/api";
 import { formatBytes, formatRelative } from "@/lib/format";
@@ -294,8 +294,6 @@ export function ConnectForm({
           gpu_type: gpu.gpu_type,
           gpu_count: 1,
           cloud_type: "SECURE",
-          image: null,
-          variants: [],
           auto_stop_minutes: autoStop,
           confirm_billing: true,
         });
@@ -354,7 +352,7 @@ export function ConnectForm({
         </>
       ) : (
         <>
-          <GpuPicker value={gpu} onChange={setGpu} minMemoryGb={16} />
+          <GpuPicker value={gpu} onChange={setGpu} minMemoryGb={MIN_GPU_GB} />
           <div className="hint">{t("cf.gpuMemoryHint")}</div>
           <Field label={t("cf.autoStop")} hint={t("cf.autoStopHint")}>
             <Select

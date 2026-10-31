@@ -7,6 +7,7 @@ from typing import Any, Literal, Protocol
 
 GPUErrorCode = Literal[
     "invalid_credentials",
+    "unavailable",
     "insufficient_credits",
     "rate_limited",
     "not_found",
@@ -20,6 +21,8 @@ MESSAGES = {
     "invalid_credentials": "The credentials were rejected. Update them in Integrations › GPU "
     "compute.",
     "insufficient_credits": "The account has no credit left for this.",
+    "unavailable": "No GPU of this type is free right now. Pick another GPU or try again in a "
+    "few minutes.",
     "rate_limited": "The provider is limiting requests. Try again in a moment.",
     "not_found": "The resource no longer exists at the provider.",
     "invalid_request": "The provider rejected the request.",
@@ -108,6 +111,11 @@ class WorkloadSpec:
     volume_gb: int = 0
     # The container's start command (RunPod: entrypoint + args; Modal: sandbox command).
     command: list[str] = field(default_factory=list)
+    # When set, RunPod's dockerEntrypoint (command is then dockerStartCmd); Modal runs
+    # entrypoint + command.
+    entrypoint: list[str] = field(default_factory=list)
+    # Modal: clear the registry image's ENTRYPOINT (modal.Image.entrypoint([])).
+    clear_entrypoint: bool = False
     # Modal: sandbox time limit; RunPod pods have none.
     timeout_minutes: int = 60
     # Sensitive environment (tokens): RunPod env, a Modal Secret on Modal.

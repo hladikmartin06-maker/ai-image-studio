@@ -14,6 +14,7 @@ from app.comfy import krea2, workflows
 from app.comfy import runner as comfy_runner
 from app.comfy.client import ComfyClient
 from app.db import SessionLocal
+from app.gpu.agent import COMFY_BOOT
 from app.gpu.registry import set_gpu_adapter
 from app.models import ComfyConnection, Generation, ProviderTask
 from app.services.gpu_runner import gpu_runner
@@ -372,36 +373,230 @@ async def test_custom_workflow_import_export_and_missing_nodes(user: Api, comfy:
     assert blocked.status_code == 409 and "UnknownCustomNode" in blocked.json()["error"]["message"]
 
 
-def test_setup_script_and_download_progress():
-    from app.comfy.deploy import _download_error, download_progress, model_downloads, setup_error
-    from app.gpu.agent.studio_agent import comfyui_script, models_script
+def test_boot_script_images_and_download_progress():
+    from app.comfy import deploy
+    from app.gpu.agent import COMFY_BOOT
 
-    script = comfyui_script([])
-    # PyTorch is checked against the driver and ComfyUI's packages are installed again in
-    # every new container; nothing is downloaded during setup.
-    assert "nvidia-smi" in script and "download.pytorch.org/whl/$TORCH_INDEX" in script
-    assert "pip install -r requirements.txt" in script and "curl" not in script
-    assert model_downloads([]) == []
-    files = model_downloads(["turbo"])
-    assert [f["folder"] for f in files] == ["text_encoders", "vae", "diffusion_models"]
-    # A failed download stops the job instead of going on without the file.
-    assert "download failed" in models_script(files) and "exit 1" in models_script(files)
-    assert "Hugging Face" in _download_error("curl: (22) The requested URL returned error: 403")
-    assert "too old" in setup_error("... ComfyUI needs 12.8 or newer ...")
-    sizes = [4.88, 0.242, 12.24]
-    log = (
-        "[studio] file 1/3 te\n[studio] file 2/3 vae\n[studio] file 3/3 model\n"
-        " 85 12.2G   85 10.4G    0     0  61.4M      0  0:03:23  0:02:53  0:00:30 59.9M\r"
-        " 90 12.2G   90 11.0G    0     0  61.3M      0  0:03:24  0:03:04  0:00:20 59.6M\r"
+    # Nothing is installed when the GPU starts: the image's own start script runs ComfyUI.
+    for word in ("pip ", "git clone", "torch"):
+        assert word not in COMFY_BOOT
+    assert 'exec "${STUDIO_START_SCRIPT:-/start.sh}"' in COMFY_BOOT
+    assert "--listen 127.0.0.1" in COMFY_BOOT and "base64 -d" in COMFY_BOOT
+    assert deploy.image_plan("runpod", "NVIDIA L4") == [
+        ("runpod/comfyui:cuda12.8", ["12.8", "12.9"]),
+        ("runpod/comfyui:cuda13.0", ["13.0", "13.1", "13.2", "13.3"]),
+    ]
+    # The CUDA 12 image does not support Blackwell GPUs (its README).
+    assert deploy.image_plan("runpod", "NVIDIA GeForce RTX 5090")[0][0] == (
+        "runpod/comfyui:cuda13.0"
     )
-    assert download_progress(log, sizes) == 93
-    assert download_progress("", sizes) == 0
-    assert download_progress("[studio] file 1/3 te\n", [None, None, None]) == 0
+    assert deploy.image_plan("modal", "L40S") == [("runpod/comfyui:cuda12.8", [])]
+    assert deploy.model_downloads([]) == []
+    files = deploy.model_downloads(["turbo"])
+    assert [f["folder"] for f in files] == ["text_encoders", "vae", "diffusion_models"]
+    assert all(f["url"].startswith("https://huggingface.co/") for f in files)
+    sizes = [4.88, 0.242, 12.24]
+    job = {
+        "files": [
+            {"size": 4_880_000_000, "done": 4_880_000_000},
+            {"size": 242_000_000, "done": 242_000_000},
+            {"size": None, "done": 0},
+        ]
+    }
+    assert deploy.model_progress(job, sizes) == 30
+    job["files"][2].update(size=12_240_000_000, done=11_000_000_000)
+    assert deploy.model_progress(job, sizes) == 93
+    assert deploy.model_progress({"files": []}, sizes) == 0
 
 
-async def test_deploy_on_runpod_through_the_agent(user: Api, tmp_path: Path):
-    """The studio deploys "ComfyUI" on a (fake) RunPod pod: the real agent starts it, the
-    studio reaches it only through the agent, generates, then stops the pod."""
+async def _wait_conn(user: Api, done) -> dict:
+    for _ in range(200):
+        await gpu_runner.tick()
+        conn = (await user.get("/api/comfy/connections")).json()["items"][0]
+        if done(conn):
+            return conn
+        await asyncio.sleep(0.1)
+    return conn
+
+
+@pytest.fixture
+def no_poll_wait(monkeypatch):
+    from app.comfy import deploy
+
+    monkeypatch.setattr(deploy, "POLL_EVERY", deploy.timedelta(0))
+
+
+async def test_runpod_falls_back_to_cuda13_and_stops_when_comfyui_never_answers(
+    user: Api, monkeypatch, no_poll_wait
+):
+    """No free host with a CUDA 12.8/12.9 driver: the CUDA 13 image is tried (and the
+    documented CUDA list when RunPod refuses newer ones). A ComfyUI that never answers stops
+    the GPU after the time limit."""
+    import httpx
+
+    from app.comfy import deploy
+    from app.gpu.agent_client import AgentClient
+    from app.gpu.runpod import RunPodProvider
+    from tests.test_gpu import FakeRunPod
+
+    fake = FakeRunPod(no_capacity={"12.8", "12.9"}, strict_cuda=True)
+    set_gpu_adapter("runpod", RunPodProvider(transport=fake.transport()))
+    AgentClient.transport = httpx.MockTransport(lambda r: httpx.Response(502, text="booting"))
+    try:
+        await user.put("/api/gpu/providers/runpod", json={"api_key": RUNPOD_KEY})
+        body = {"name": "GPU", "provider": "runpod", "gpu_type": "NVIDIA L4"}
+        r = await user.post("/api/comfy/deployments", json={**body, "confirm_billing": True})
+        assert r.status_code == 201, r.text
+        sent = [b for m, path, b in fake.calls if m == "POST" and path == "/v1/pods"]
+        assert [(b["imageName"], b["allowedCudaVersions"]) for b in sent] == [
+            ("runpod/comfyui:cuda12.8", ["12.8", "12.9"]),
+            ("runpod/comfyui:cuda13.0", ["13.0", "13.1", "13.2", "13.3"]),
+            ("runpod/comfyui:cuda13.0", ["13.0"]),
+        ]
+        assert len(fake.pods) == 1  # only the last request created a pod
+        conn = r.json()
+        assert conn["deploy"]["image"] == "runpod/comfyui:cuda13.0"
+        assert conn["deploy"]["cuda"] == ["13.0"]
+        await gpu_runner.tick()
+        conn = (await user.get("/api/comfy/connections")).json()["items"][0]
+        assert conn["status"] == "deploying", conn["last_error"]
+        assert conn["deploy"]["stage"] == "starting"
+        monkeypatch.setattr(deploy, "BOOT_LIMIT", {"runpod": deploy.timedelta(0)})
+        await gpu_runner.tick()
+        conn = (await user.get("/api/comfy/connections")).json()["items"][0]
+        assert conn["status"] == "error", conn
+        assert "within 0 minutes" in conn["last_error"] and "not billed" in conn["last_error"]
+        assert next(iter(fake.pods.values()))["desiredStatus"] == "EXITED"
+
+        # Every host busy: a clear message, nothing created.
+        fake.no_capacity = {"12.8", "12.9", "13.0", "13.1", "13.2", "13.3"}
+        busy = await user.post("/api/comfy/deployments", json={**body, "confirm_billing": True})
+        assert busy.status_code == 409 and busy.json()["error"]["code"] == "unavailable"
+        assert "No GPU of this type is free" in busy.json()["error"]["message"]
+        assert len(fake.pods) == 1
+    finally:
+        AgentClient.transport = None
+        set_gpu_adapter("runpod", None)
+        async with SessionLocal() as db:
+            await db.execute(ComfyConnection.__table__.delete())
+            await db.commit()
+
+
+def test_agent_downloads_only_from_hugging_face(tmp_path: Path, monkeypatch):
+    """The agent's model download: huggingface.co only (redirects to Hugging Face's CDN
+    only, the token never leaves huggingface.co), .part file resumed after a dropped
+    connection and renamed when complete, files already there skipped, progress per file."""
+    import threading
+    import time
+    import urllib.request
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    from app.gpu.agent import studio_agent as agent
+
+    assert agent.hf_url("https://huggingface.co/Comfy-Org/Krea-2/resolve/main/a.safetensors")
+    for bad in (
+        "http://huggingface.co/x",
+        "https://huggingface.co.evil.com/x",
+        "https://evil.com/huggingface.co/x",
+        "https://user@huggingface.co/x",
+        "https://cdn-lfs.hf.co/x",
+    ):
+        with pytest.raises(ValueError):
+            agent.hf_url(bad)
+    with pytest.raises(ValueError):
+        agent.model_targets([{"url": "https://evil.com/x", "folder": "vae", "filename": "a"}])
+    with pytest.raises(ValueError):
+        agent.model_targets(
+            [{"url": "https://huggingface.co/x", "folder": "../etc", "filename": "a"}]
+        )
+
+    # Redirects: Hugging Face's CDN yes (without the token), anything else no.
+    monkeypatch.setattr(agent, "HF_TOKEN", "hf_secret")
+    handler = agent._HFRedirect()
+    req = urllib.request.Request("https://huggingface.co/a/resolve/main/f")
+    req.add_unredirected_header("Authorization", "Bearer hf_secret")
+    cdn = handler.redirect_request(req, None, 302, "Found", {}, "https://cas-bridge.xethub.hf.co/f")
+    assert cdn is not None and not cdn.has_header("Authorization")
+    same = handler.redirect_request(req, None, 307, "", {}, "https://huggingface.co/api/r/f")
+    assert same.unredirected_hdrs.get("Authorization") == "Bearer hf_secret"
+    with pytest.raises(agent.DownloadError):
+        handler.redirect_request(req, None, 302, "Found", {}, "https://evil.com/f")
+
+    payload = bytes(range(256)) * 4000  # ~1 MB
+    state = {"dropped": False, "auth": []}
+
+    class Files(BaseHTTPRequestHandler):
+        def log_message(self, *args):
+            pass
+
+        def do_GET(self):  # noqa: N802
+            state["auth"].append(self.headers.get("Authorization"))
+            start = 0
+            rng = self.headers.get("Range")
+            if rng:
+                start = int(rng.split("=")[1].split("-")[0])
+                self.send_response(206)
+                self.send_header(
+                    "Content-Range", f"bytes {start}-{len(payload) - 1}/{len(payload)}"
+                )
+            else:
+                self.send_response(200)
+            body = payload[start:]
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            if not state["dropped"]:
+                state["dropped"] = True  # the first answer stops halfway
+                self.wfile.write(body[: len(body) // 2])
+                self.close_connection = True
+                return
+            self.wfile.write(body)
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Files)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    comfy = tmp_path / "ws" / "runpod-slim" / "ComfyUI"
+    (comfy / "models" / "vae").mkdir(parents=True)
+    (comfy / "models" / "vae" / "have.safetensors").write_bytes(b"x" * 10)
+    monkeypatch.setattr(agent, "WORKSPACE", str(tmp_path / "ws"))
+    monkeypatch.setattr(agent, "COMFY_DIR", str(comfy))
+    monkeypatch.setattr(agent.DownloadJob, "RETRIES", 3)
+    monkeypatch.setattr(agent.DownloadJob, "RETRY_PAUSE", 0)
+    url = f"http://127.0.0.1:{server.server_address[1]}/file"
+    dest = comfy / "models" / "diffusion_models" / "model.safetensors"
+    try:
+        job = agent.DownloadJob(
+            "models-t",
+            "models",
+            [
+                (url, str(comfy / "models" / "vae" / "have.safetensors"), "have.safetensors"),
+                (url, str(dest), "model.safetensors"),
+            ],
+        )
+        for _ in range(200):
+            if job.status != "running":
+                break
+            time.sleep(0.02)
+    finally:
+        server.shutdown()
+    info = job.json()
+    assert info["status"] == "completed", (info, Path(job.log_path).read_text())
+    assert dest.read_bytes() == payload and not Path(str(dest) + ".part").exists()
+    assert info["files"][0]["status"] == "skipped"
+    assert info["files"][1] == {
+        "name": "model.safetensors",
+        "size": len(payload),
+        "done": len(payload),
+        "status": "done",
+    }
+    assert info["bytes_done"] == info["bytes_total"] == len(payload) + 10
+    # The plain-HTTP test server is not huggingface.co: the token was never sent to it.
+    assert state["auth"] == [None, None]
+    assert "retrying" in Path(job.log_path).read_text()
+
+
+async def test_deploy_on_runpod_through_the_agent(user: Api, tmp_path: Path, no_poll_wait):
+    """The studio rents a (fake) RunPod pod with RunPod's ComfyUI image: the start command
+    starts the real agent and hands over to the image's start script; the studio reaches
+    ComfyUI only through the agent, installs the model, generates, then stops the pod."""
     comfy_dir = make_comfy_dir(tmp_path / "gpu")
     fake = SpawningRunPod(tmp_path / "pods", comfy_env(comfy_dir))
     set_gpu_adapter("runpod", LocalRunPodProvider(fake))
@@ -414,22 +609,27 @@ async def test_deploy_on_runpod_through_the_agent(user: Api, tmp_path: Path):
         r = await user.post("/api/comfy/deployments", json={**body, "confirm_billing": True})
         assert r.status_code == 201, r.text
         conn = r.json()
-        assert conn["status"] == "deploying" and conn["deploy"]["stage"] == "starting"
+        assert conn["status"] == "deploying", conn["last_error"]
+        assert conn["deploy"]["stage"] == "starting"
         pod = next(iter(fake.bodies.values()))
-        assert pod["dockerEntrypoint"] == ["bash"] and pod["ports"] == ["8765/http"]
+        assert pod["dockerEntrypoint"] == ["/bin/bash", "-c"] and pod["ports"] == ["8189/http"]
+        assert pod["dockerStartCmd"] == [COMFY_BOOT]
         assert pod["volumeMountPath"] == "/workspace"
-        # PyTorch 2.13 / CUDA 13 image, on hosts whose driver has CUDA 12.8 or newer.
-        assert pod["imageName"] == "runpod/pytorch:1.5.1-cu1300-torch2130-ubuntu2404"
-        assert pod["allowedCudaVersions"] == ["13.0", "12.9", "12.8"]
-        for _ in range(200):
-            await gpu_runner.tick()
-            conn = (await user.get("/api/comfy/connections")).json()["items"][0]
-            if conn["status"] in ("ready", "error"):
-                break
-            await asyncio.sleep(0.1)
+        # RunPod's ComfyUI image (ComfyUI and PyTorch inside), on CUDA 12.8 / 12.9 hosts.
+        assert pod["imageName"] == "runpod/comfyui:cuda12.8"
+        assert pod["allowedCudaVersions"] == ["12.8", "12.9"]
+        conn = await _wait_conn(user, lambda c: c["status"] in ("ready", "error"))
         assert conn["status"] == "ready", (conn["deploy"], conn["last_error"])
         assert conn["info"]["krea2"]["ready"]
-        assert conn["info"]["agent"]["ok"]
+        assert conn["info"]["agent"]["ok"] and conn["info"]["agent"]["comfyui_dir"]
+        # The image's first start copied ComfyUI into the volume; it listens on 127.0.0.1.
+        workspace = tmp_path / "pods" / conn["workload_id"] / "workspace"
+        assert (workspace / "runpod-slim" / "ComfyUI" / "main.py").is_file()
+        args = (workspace / "runpod-slim" / "comfyui_args.txt").read_text()
+        assert "--listen 127.0.0.1" in args
+        log_tail = conn["deploy"]["log_tail"]
+        assert "First time setup" in log_tail and "--listen 127.0.0.1" in log_tail
+        assert "fake-ssh-secret" not in log_tail  # passwords in the start log are hidden
         # Model download after connecting: files already on the volume are skipped.
         raw = await user.post(
             f"/api/comfy/connections/{conn['id']}/models/install", json={"variant": "raw"}
@@ -445,14 +645,19 @@ async def test_deploy_on_runpod_through_the_agent(user: Api, tmp_path: Path):
             "qwen_image_vae.safetensors",
             "krea2_turbo_fp8_scaled.safetensors",
         ]
-        for _ in range(100):
-            await gpu_runner.tick()
-            conn = (await user.get("/api/comfy/connections")).json()["items"][0]
-            if conn["deploy"]["model_job"]["status"] != "running":
-                break
-            await asyncio.sleep(0.1)
+        conn = await _wait_conn(user, lambda c: c["deploy"]["model_job"]["status"] != "running")
         assert conn["deploy"]["model_job"]["status"] == "completed", conn["deploy"]
         assert conn["deploy"]["model_job"]["progress"] == 100
+        # Manage › download by link: Hugging Face links only.
+        bad = await user.post(
+            f"/api/comfy/connections/{conn['id']}/models/download",
+            json={
+                "url": "https://example.com/x.safetensors",
+                "folder": "loras",
+                "filename": "x.safetensors",
+            },
+        )
+        assert bad.status_code == 400 and bad.json()["error"]["code"] == "invalid_url"
         g = await user.post(
             "/api/comfy/generate",
             json={"connection_id": conn["id"], "variant": "turbo", "prompt": "on a GPU"},
@@ -465,6 +670,15 @@ async def test_deploy_on_runpod_through_the_agent(user: Api, tmp_path: Path):
         stop = await user.post(f"/api/comfy/connections/{conn['id']}/stop")
         assert stop.json()["status"] == "stopped"
         assert next(iter(fake.pods.values()))["desiredStatus"] == "EXITED"
+        # Started again: the volume keeps ComfyUI and the models, nothing is copied again.
+        started = await user.post(
+            f"/api/comfy/connections/{conn['id']}/start", json={"confirm_billing": True}
+        )
+        assert started.status_code == 200, started.text
+        conn = await _wait_conn(user, lambda c: c["status"] in ("ready", "error"))
+        assert conn["status"] == "ready", (conn["deploy"], conn["last_error"])
+        assert "First time setup" not in conn["deploy"]["log_tail"]
+        assert conn["info"]["krea2"]["variants"]["turbo"]["installed"]
         removed = await user.delete(f"/api/comfy/connections/{conn['id']}?terminate=true")
         assert removed.status_code == 200 and fake.pods == {}
     finally:
@@ -474,3 +688,42 @@ async def test_deploy_on_runpod_through_the_agent(user: Api, tmp_path: Path):
             await db.execute(ComfyConnection.__table__.delete())
             await db.execute(Generation.__table__.delete().where(Generation.provider == "comfyui"))
             await db.commit()
+
+
+async def test_deploy_on_modal_uses_the_same_image_and_start(user: Api, no_poll_wait):
+    """Modal: RunPod's ComfyUI image with its ENTRYPOINT cleared, the same start command and
+    agent, a Volume at /workspace, and a 45-minute limit for the first start."""
+    from app.comfy import deploy
+    from app.gpu.modal_provider import ModalProvider
+    from tests.test_gpu import FakeModalSDK
+
+    sdk = FakeModalSDK()
+    set_gpu_adapter("modal", ModalProvider(sdk=sdk))
+    try:
+        r = await user.put(
+            "/api/gpu/providers/modal",
+            json={"token_id": "ak-123456", "token_secret": "as-secret-123456"},
+        )
+        assert r.status_code == 200, r.text
+        body = {"name": "Modal", "provider": "modal", "gpu_type": "L40S", "confirm_billing": True}
+        r = await user.post("/api/comfy/deployments", json=body)
+        assert r.status_code == 201, r.text
+        spec = sdk.created[-1]
+        assert spec.image == "runpod/comfyui:cuda12.8" and spec.clear_entrypoint
+        assert [*spec.entrypoint, *spec.command] == ["/bin/bash", "-c", COMFY_BOOT]
+        assert spec.ports == [8189] and spec.volume_name and spec.volume_gb == 0
+        assert "STUDIO_AGENT_TOKEN" in spec.secret_env and "STUDIO_AGENT_TOKEN" not in spec.env
+        assert deploy.BOOT_LIMIT["modal"] == deploy.timedelta(minutes=45)
+    finally:
+        set_gpu_adapter("modal", None)
+        async with SessionLocal() as db:
+            await db.execute(ComfyConnection.__table__.delete())
+            await db.commit()
+
+
+def test_modal_image_clears_the_entrypoint():
+    """The real SDK call path builds modal.Image.from_registry(...).entrypoint([])."""
+    import modal
+
+    image = modal.Image.from_registry("runpod/comfyui:cuda12.8").entrypoint([])
+    assert isinstance(image, modal.Image)

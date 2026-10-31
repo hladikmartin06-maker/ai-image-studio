@@ -80,30 +80,52 @@ def make_toolkit(root: Path) -> Path:
     return folder
 
 
-def make_comfy_dir(root: Path) -> Path:
-    """A ComfyUI folder that the agent's "comfyui" job accepts as installed: main.py is the
-    fake ComfyUI server, the packages count as installed (STUDIO_COMFY_DEPS_MARK, see
-    comfy_env) and the Krea 2 files exist, so nothing is downloaded."""
-    folder = root / "ComfyUI"
+# Like runpod/comfyui's /start.sh: on the first start copy the baked ComfyUI into the
+# workspace, then run it with the arguments from comfyui_args.txt (here: the fake server).
+FAKE_START_SH = r"""#!/bin/bash
+set -e
+W="${STUDIO_WORKSPACE:-/workspace}"
+C="$W/runpod-slim/ComfyUI"
+echo "Generated random SSH password for root: fake-ssh-secret"
+if [ ! -d "$C" ]; then
+  echo "First time setup: Copying baked ComfyUI to workspace..."
+  sleep "${FAKE_COPY_SLEEP:-0}"
+  cp -r "$FAKE_COMFY_BAKED" "$C"
+fi
+ARGS=$(grep -v '^#' "$W/runpod-slim/comfyui_args.txt" | tr '\n' ' ')
+echo "Starting ComfyUI with args: --listen 0.0.0.0 --port 8188 $ARGS"
+cd "$C"
+# shellcheck disable=SC2086
+exec python3 main.py --port "$STUDIO_COMFY_PORT" $ARGS
+"""
+
+
+def make_comfy_dir(root: Path, models: bool = True) -> Path:
+    """A fake runpod/comfyui image: the baked ComfyUI (main.py is the fake ComfyUI server,
+    with the Krea 2 files unless models=False) and its start.sh."""
+    folder = root / "comfyui-baked"
     folder.mkdir(parents=True, exist_ok=True)
     shutil.copy(TESTS / "fake_comfy_server.py", folder / "main.py")
-    (root / "deps-installed").write_text("ok")
-    for sub, name in (
-        ("text_encoders", "qwen3vl_4b_fp8_scaled.safetensors"),
-        ("vae", "qwen_image_vae.safetensors"),
-        ("diffusion_models", "krea2_turbo_fp8_scaled.safetensors"),
-    ):
-        (folder / "models" / sub).mkdir(parents=True, exist_ok=True)
-        (folder / "models" / sub / name).write_bytes(b"weights")
+    if models:
+        for sub, name in (
+            ("text_encoders", "qwen3vl_4b_fp8_scaled.safetensors"),
+            ("vae", "qwen_image_vae.safetensors"),
+            ("diffusion_models", "krea2_turbo_fp8_scaled.safetensors"),
+        ):
+            (folder / "models" / sub).mkdir(parents=True, exist_ok=True)
+            (folder / "models" / sub / name).write_bytes(b"weights")
+    start = root / "start.sh"
+    start.write_text(FAKE_START_SH)
+    start.chmod(0o755)
     return folder
 
 
-def comfy_env(comfy_dir: Path) -> dict[str, str]:
-    """Agent environment for a fake ComfyUI made by make_comfy_dir."""
+def comfy_env(baked: Path) -> dict[str, str]:
+    """Container environment for the fake image made by make_comfy_dir."""
     return {
-        "STUDIO_COMFY_DIR": str(comfy_dir),
+        "STUDIO_START_SCRIPT": str(baked.parent / "start.sh"),
+        "FAKE_COMFY_BAKED": str(baked),
         "STUDIO_COMFY_PORT": str(free_port()),
-        "STUDIO_COMFY_DEPS_MARK": str(comfy_dir.parent / "deps-installed"),
     }
 
 
@@ -122,7 +144,8 @@ class SpawningRunPod(FakeRunPod):
         env_in = body.get("env") or {}
         if "STUDIO_AGENT_CODE" not in env_in:
             return
-        port = free_port()
+        # Like RunPod's proxy address, the agent's address stays the same across restarts.
+        port = self.pods[pod_id].get("agent_port") or free_port()
         workspace = self.root / pod_id / "workspace"
         workspace.mkdir(parents=True, exist_ok=True)
         env = {
@@ -132,6 +155,7 @@ class SpawningRunPod(FakeRunPod):
             "STUDIO_AGENT_PORT": str(port),
             "STUDIO_WORKSPACE": str(workspace),
             "STUDIO_PYTHON": sys.executable,
+            "TMPDIR": str(self.root / pod_id),
             **self.extra_env,
         }
         command = [*body["dockerEntrypoint"], *body["dockerStartCmd"]]

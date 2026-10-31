@@ -154,7 +154,7 @@ export interface GpuChoice {
 }
 
 /** GPUs with less memory are never offered (the owner's rule). */
-export const MIN_GPU_GB = 16;
+export const MIN_GPU_GB = 24;
 
 export function GpuPicker({
   value,
@@ -170,11 +170,17 @@ export function GpuPicker({
   const connected = (providers.data?.providers ?? []).filter((p) => p.status !== "not_connected");
   const types = useGpuTypes(value.provider || "runpod", Boolean(value.provider));
   const price = (g: GpuType) => (value.cloud_type === "COMMUNITY" ? g.price_community : g.price_secure);
-  // Only GPUs that can do the job: 16 GB or more (and at least what this task needs),
+  // Only GPUs that can do the job: 24 GB or more (and at least what this task needs),
   // smallest and cheapest first. GPUs whose memory the provider does not report stay listed.
+  // NVIDIA only (the studio's images are CUDA images); when the provider reports prices, only
+  // GPUs it offers in the chosen cloud (no price there = cannot be rented there).
   const floor = Math.max(MIN_GPU_GB, minMemoryGb ?? 0);
-  const usable = (types.data?.items ?? [])
+  const all = types.data?.items ?? [];
+  const priced = all.some((g) => g.price_secure != null || g.price_community != null);
+  const usable = all
     .filter((g) => !g.memory_gb || g.memory_gb >= floor)
+    .filter((g) => !/^amd\b/i.test(g.id) && !/^amd\b/i.test(g.name))
+    .filter((g) => !priced || price(g) != null)
     .sort((a, b) => (a.memory_gb ?? 999) - (b.memory_gb ?? 999) || (price(a) ?? 999) - (price(b) ?? 999));
   const selected = types.data?.items.find((g) => g.id === value.gpu_type);
 

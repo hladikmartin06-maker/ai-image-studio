@@ -148,6 +148,12 @@ class AgentClient:
         next_offset = int(response.headers.get("X-Next-Offset", offset + len(response.content)))
         return response.content.decode("utf-8", "replace"), next_offset
 
+    async def boot_log(self, offset: int = 0) -> tuple[str, int]:
+        """The container's start log (ComfyUI's output) from a byte offset."""
+        response = await self._request("GET", "/boot-log", params={"offset": offset}, wait=20)
+        next_offset = int(response.headers.get("X-Next-Offset", offset + len(response.content)))
+        return response.content.decode("utf-8", "replace"), next_offset
+
     async def cancel(self, job_id: str) -> None:
         await self._request("POST", f"/jobs/{job_id}/cancel")
 

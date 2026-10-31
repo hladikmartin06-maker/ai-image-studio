@@ -573,14 +573,16 @@ export interface ComfyInfo {
 }
 
 export interface ComfyDeploy {
-  stage?: "starting" | "installing" | "ready" | "stopped" | "error";
+  stage?: "starting" | "booting" | "installing" | "ready" | "stopped" | "error";
   provider?: "runpod" | "modal";
   gpu_type?: string;
   gpu_count?: number;
   cloud_type?: string;
   image?: string | null;
   volume_gb?: number;
-  variants?: string[];
+  // The RunPod ComfyUI image and driver CUDA versions the GPU was rented with.
+  cuda?: string[];
+  setup?: number;
   auto_stop_minutes?: number | null;
   agent_url?: string | null;
   started_at?: string;
@@ -589,6 +591,7 @@ export interface ComfyDeploy {
   log_tail?: string;
   stopped_by?: string;
   installing_at?: string;
+  agent_at?: string;
   // Krea 2 model download on the GPU (after connecting).
   model_job?: {
     id: string;
@@ -597,6 +600,8 @@ export interface ComfyDeploy {
     files: string[];
     status: "running" | "completed" | "failed";
     progress: number;
+    // The file being downloaded right now.
+    current?: string | null;
     error: string | null;
     started_at: string;
   } | null;

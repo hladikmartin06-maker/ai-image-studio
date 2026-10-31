@@ -37,6 +37,10 @@ class FakeRunPod:
         }
     )
     calls: list[tuple[str, str, Any]] = field(default_factory=list)
+    # Driver CUDA versions with no free host right now (pod creation answers "no instances").
+    no_capacity: set[str] = field(default_factory=set)
+    # Refuse allowedCudaVersions outside the enum of RunPod's published API (up to "13.0").
+    strict_cuda: bool = False
     _ids: itertools.count = field(default_factory=lambda: itertools.count(1))
 
     def transport(self) -> httpx.MockTransport:
@@ -84,6 +88,20 @@ class FakeRunPod:
         if path == "/v1/pods" and request.method == "GET":
             return httpx.Response(200, json=list(self.pods.values()))
         if path == "/v1/pods" and request.method == "POST":
+            allowed = body.get("allowedCudaVersions") or []
+            documented = {"13.0", "12.9", "12.8", "12.7", "12.6", "12.5", "12.4"}
+            if self.strict_cuda and any(v not in documented for v in allowed):
+                return httpx.Response(
+                    400, json={"error": "allowedCudaVersions: value is not one of the enum"}
+                )
+            if allowed and all(v in self.no_capacity for v in allowed):
+                return httpx.Response(
+                    500,
+                    json={
+                        "error": "There are no longer any instances available with the "
+                        "requested specifications. Please refresh and try again."
+                    },
+                )
             pod_id = f"pod{next(self._ids)}"
             self.pods[pod_id] = {
                 "id": pod_id,
@@ -101,6 +119,8 @@ class FakeRunPod:
             pod_id = parts[3]
             if pod_id not in self.pods:
                 return httpx.Response(404, json={"error": "pod not found"})
+            if request.method == "GET" and len(parts) == 4:
+                return httpx.Response(200, json=self.pods[pod_id])
             if request.method == "DELETE":
                 self.pods.pop(pod_id)
             elif parts[-1] == "stop":

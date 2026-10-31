@@ -20,6 +20,7 @@ Pods are reached at https://{podId}-{port}.proxy.runpod.net for HTTP ports.
 from __future__ import annotations
 
 import json
+import re
 from typing import Any
 
 import httpx
@@ -54,10 +55,39 @@ def _message(response: httpx.Response) -> str:
     return ""
 
 
+# How RunPod says that no machine is free for the request (phrases from RunPod's own pod
+# tests in runpod-workers/comfyui-base, tests/runpod_smoke/pod.py).
+UNAVAILABLE_RE = re.compile(
+    r"no\s+longer\s+any\s+instances\s+available|does\s+not\s+have\s+the\s+resources"
+    r"|no\s+(?:machines|capacity|hosts|gpus|instances)\s+(?:currently\s+)?available"
+    r"|insufficient\s+capacity|out\s+of\s+stock|sold\s+out"
+    # A stopped pod whose machine has no free GPU left to start it again (wording as
+    # RunPod's console shows it; not checked against the API).
+    r"|not\s+enough\s+free\s+gpus",
+    re.IGNORECASE,
+)
+
+
+# Driver CUDA versions for allowedCudaVersions. RunPod's published API (runpod/docs,
+# api-reference/openapi.json) lists versions up to "13.0"; newer drivers are asked for too,
+# and if RunPod refuses them the request is sent again with CUDA13_DOCUMENTED (a refused
+# request created no pod, so nothing can be billed twice).
+CUDA12 = ["12.8", "12.9"]
+CUDA13 = ["13.0", "13.1", "13.2", "13.3"]
+CUDA13_DOCUMENTED = ["13.0"]
+
+
+def refused_cuda(exc: GPUError) -> bool:
+    """RunPod rejected the allowedCudaVersions values themselves."""
+    return exc.code == "invalid_request" and "cuda" in exc.detail.lower()
+
+
 def _error(response: httpx.Response) -> GPUError:
     status = response.status_code
     message = _message(response)
     lowered = message.lower()
+    if UNAVAILABLE_RE.search(message):
+        return GPUError("unavailable", message)
     if status in (401, 403):
         return GPUError("invalid_credentials", message)
     if status == 402 or "balance" in lowered or "insufficient" in lowered:
@@ -192,7 +222,10 @@ class RunPodProvider:
         env = {**spec.env, **spec.secret_env}
         if env:
             body["env"] = env
-        if spec.command:
+        if spec.entrypoint:
+            body["dockerEntrypoint"] = list(spec.entrypoint)
+            body["dockerStartCmd"] = list(spec.command)
+        elif spec.command:
             # Entrypoint + arguments, so the image's own entrypoint does not wrap them.
             body["dockerEntrypoint"] = spec.command[:1]
             body["dockerStartCmd"] = spec.command[1:]

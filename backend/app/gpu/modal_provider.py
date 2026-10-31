@@ -4,7 +4,8 @@ Credentials are a token id + token secret (modal.com › Settings › API tokens
 `modal.Client.from_credentials` — the documented way to manage Modal on behalf of a user.
 Workloads are Modal Sandboxes created in one app ("ai-image-studio-gpu") and tagged
 `created-by=ai-image-studio`:
-  modal.Sandbox.create(*command, app=…, image=modal.Image.from_registry(…), gpu="H100:2",
+  modal.Sandbox.create(*command, app=…, image=modal.Image.from_registry(…).entrypoint([]),
+                       gpu="H100:2",
                        timeout=…, encrypted_ports=[…], tags=…, client=…)
   modal.Sandbox.list(app_id=…, tags=…, client=…), Sandbox.from_id(…).poll()/.terminate()
   sandbox.tunnels() -> {port: Tunnel(url)} for exposed ports (the workload's endpoints)
@@ -77,7 +78,7 @@ class ModalSDK:
         import modal
 
         gpu = spec.gpu_type if spec.gpu_count <= 1 else f"{spec.gpu_type}:{spec.gpu_count}"
-        command = spec.command or ["sleep", "infinity"]
+        command = [*spec.entrypoint, *spec.command] or ["sleep", "infinity"]
         volumes: dict[str, Any] = {}
         if spec.volume_name:
             volumes["/workspace"] = modal.Volume.from_name(
@@ -91,6 +92,8 @@ class ModalSDK:
         )
         if spec.image_apt:
             image = image.apt_install(*spec.image_apt)
+        if spec.clear_entrypoint:
+            image = image.entrypoint([])
         return await modal.Sandbox.create.aio(
             *command,
             app=app,

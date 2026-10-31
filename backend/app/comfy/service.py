@@ -23,7 +23,11 @@ from app.models import ComfyConnection, Lora, LoraVersion
 from app.security import decrypt_secret
 from app.services import storage
 
-COMFY_SUBDIR = "ComfyUI"  # inside the agent workspace
+
+def comfy_subdir(conn: ComfyConnection) -> str:
+    """ComfyUI's folder inside the agent's workspace: runpod-slim/ComfyUI in RunPod's
+    ComfyUI image (older studio deployments used ComfyUI)."""
+    return str((conn.deploy or {}).get("comfy_dir") or "ComfyUI")
 
 
 def assoc(conn: ComfyConnection) -> str:
@@ -194,7 +198,7 @@ async def place_lora(
         agent = agent_for(conn)
         assert agent is not None
         try:
-            await agent.upload_file(f"{COMFY_SUBDIR}/models/loras/{name}", source)
+            await agent.upload_file(f"{comfy_subdir(conn)}/models/loras/{name}", source)
         except AgentError as exc:
             raise ComfyError("unreachable", f"Upload to the GPU failed: {exc.message}") from exc
     else:

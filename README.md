@@ -40,10 +40,12 @@ Integrations and Settings.
     Atlas Cloud): model cards, prompt editor with history, reference images (drag & drop), only
     the settings the selected model and provider support, live progress.
   - **Krea 2** (open weights, RAW and Turbo) through ComfyUI, in three steps: **1** choose
-    where it runs — **Rent a GPU** (pick a GPU with 16 GB or more; the studio starts it on your
-    RunPod or Modal account, installs ComfyUI and PyTorch through a token-protected agent,
-    shows the progress and stops it when idle) or **This Mac** (your own ComfyUI on port 8188);
-    **2** when it is connected, download the model (Krea 2 Turbo, ≈ 17 GB, with progress);
+    where it runs — **Rent a GPU** (pick an NVIDIA GPU with 24 GB or more; the studio starts it
+    on your RunPod or Modal account with RunPod's ready-made ComfyUI image, so it is ready in
+    about 1–2 minutes; it is reached only through a token-protected agent, shows the progress
+    and stops when idle) or **This Mac** (your own ComfyUI on port 8188);
+    **2** when it is connected, install the model with one click (Krea 2 Turbo, ≈ 17 GB,
+    downloaded from Hugging Face straight to the GPU, with progress);
     **3** pick an AI model and LoRA, write the prompt and generate. Seed, steps and CFG under
     "More settings"; model files, logs and custom workflows under "Manage".
 - **AI Models** — your own fictional adult characters with up to 200 photos (shown across the

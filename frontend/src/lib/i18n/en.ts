@@ -852,7 +852,7 @@ export const en = {
   "cf.image": "Container image",
   "cf.imageHint": "Leave empty for the studio default.",
   "cf.imageDefault": "studio default",
-  "cf.deployNote": "First start: about 5–15 minutes (the GPU starts and ComfyUI with PyTorch is installed). After it connects you choose the model and download it.",
+  "cf.deployNote": "Ready in about 1–2 minutes: the GPU runs RunPod's ComfyUI image, nothing is installed (the very first start can take a little longer). Then you download the model with one click.",
   "cf.deploy": "Start GPU",
   "cf.connect": "Connect",
   "cf.connected": "ComfyUI connected",
@@ -864,7 +864,8 @@ export const en = {
   "cf.kind.runpod": "RunPod",
   "cf.kind.modal": "Modal",
   "cf.stage.starting": "Starting the GPU container",
-  "cf.stage.installing": "Installing ComfyUI and Krea 2 files",
+  "cf.stage.booting": "Starting ComfyUI",
+  "cf.stage.installing": "Setting up (older version)",
   "cf.stage.ready": "Ready",
   "cf.stage.stopped": "Stopped",
   "cf.stage.error": "Failed",
@@ -904,7 +905,7 @@ export const en = {
   "cf.download": "Download",
   "cf.downloadStarted": "Downloading {name} on the GPU",
   "cf.downloadUrl": "Download URL",
-  "cf.downloadUrlHint": "https only; your Hugging Face token is used for huggingface.co.",
+  "cf.downloadUrlHint": "A Hugging Face link (https://huggingface.co/…/resolve/…). It is downloaded straight to the GPU; your Hugging Face token is used for it.",
   "cf.filename": "File name",
   "cf.downloadTo": "Download to {folder}",
   "cf.refreshAfter": "Test the connection after a download finishes to see the new files.",
@@ -1326,11 +1327,11 @@ export const en = {
   "auth.tryAgain": "Try again",
 
   "cf.setupStarting": "Starting the GPU…",
-  "cf.setupInstalling": "Installing ComfyUI…",
+  "cf.setupBooting": "Starting ComfyUI…",
   "cf.setupStep1": "Start the GPU",
-  "cf.setupStep2": "Install ComfyUI and PyTorch",
+  "cf.setupStep2": "Start ComfyUI",
   "cf.setupStep3": "Connected",
-  "cf.setupHint": "The first start takes about 5–15 minutes. You can leave this page; it continues by itself.",
+  "cf.setupHint": "Usually ready in 1–2 minutes (the very first start a little longer). You can leave this page; it continues by itself.",
   "cf.tryAgain": "Try again",
   "cf.stoppedHint": "The GPU is stopped and not billed. Your files stay on it.",
   "k2.stepGpu": "1 · Where Krea 2 runs",
@@ -1338,8 +1339,9 @@ export const en = {
   "k2.notDownloaded": "Not downloaded",
   "k2.downloading": "Downloading {n}%",
   "k2.downloadingHint": "Downloading the model to the GPU…",
+  "k2.downloadingFile": "Downloading {name}…",
   "k2.download": "Download {name} (≈ {size} GB)",
-  "k2.downloadHint": "Downloaded once to the GPU's disk, a few minutes.",
+  "k2.downloadHint": "Downloaded once from Hugging Face straight to the GPU's disk.",
   "k2.downloadStarted": "Download started",
   "k2.downloadFirst": "Download the model first.",
   "k2.noVerifiedDownload": "This model has no verified download yet. Add its file under Manage › Model files.",
@@ -1347,7 +1349,7 @@ export const en = {
 
   "k2.stepPhotos": "3 · AI model and its look",
 
-  "cf.gpuMemoryHint": "More GPU memory is faster; 24 GB or more is recommended for Krea 2 (studio estimate, Krea publishes none).",
+  "cf.gpuMemoryHint": "Only GPUs with 24 GB or more are listed; more memory is faster.",
 } as const;
 
 export type MessageKey = keyof typeof en;

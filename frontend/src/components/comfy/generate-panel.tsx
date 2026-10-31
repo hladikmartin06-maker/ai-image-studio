@@ -308,7 +308,9 @@ export function ComfyPanel({
                   {job?.status === "running" && job.variant === draft.variant ? (
                     <>
                       <div className="row tiny" style={{ gap: 8 }}>
-                        <span className="grow">{t("k2.downloadingHint")}</span>
+                        <span className="grow truncate">
+                          {job.current ? t("k2.downloadingFile", { name: job.current }) : t("k2.downloadingHint")}
+                        </span>
                         <span>{job.progress}%</span>
                       </div>
                       <Progress value={job.progress} />

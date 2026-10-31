@@ -97,8 +97,10 @@ export function ComfyConnectionBar({
   }
 
   const d = selected?.deploy ?? {};
-  const stage = d.stage === "installing" ? "installing" : "starting";
-  const since = secondsSince(stage === "installing" ? d.installing_at : d.started_at);
+  // starting: the GPU boots and the studio agent comes up; booting: ComfyUI starts (the first
+  // start copies it onto the GPU's disk).
+  const stage = d.stage === "booting" ? "booting" : "starting";
+  const since = secondsSince(d.started_at);
 
   return (
     <div className="col" style={{ gap: 10 }}>
@@ -125,13 +127,13 @@ export function ComfyConnectionBar({
           <div className="row" style={{ gap: 8 }}>
             <span className="dot pulse" style={{ color: "var(--accent)" }} />
             <span className="small grow" style={{ fontWeight: 600 }}>
-              {t(stage === "installing" ? "cf.setupInstalling" : "cf.setupStarting")}
+              {t(stage === "booting" ? "cf.setupBooting" : "cf.setupStarting")}
             </span>
             {since !== null ? <span className="tiny subtle">{formatElapsed(since)}</span> : null}
           </div>
           <ol className="setup-steps tiny">
             <li data-state={stage === "starting" ? "active" : "done"}>{t("cf.setupStep1")}</li>
-            <li data-state={stage === "installing" ? "active" : "todo"}>{t("cf.setupStep2")}</li>
+            <li data-state={stage === "booting" ? "active" : "todo"}>{t("cf.setupStep2")}</li>
             <li data-state="todo">{t("cf.setupStep3")}</li>
           </ol>
           <div className="tiny subtle">{t("cf.setupHint")}</div>

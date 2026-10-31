@@ -1,28 +1,36 @@
 """AI Image Studio agent: a small HTTP service that runs inside the user's GPU container
-(RunPod pod or Modal sandbox) so the studio on the Mac can move files, run training and
-reach ComfyUI there. Python standard library only (3.8+), started by the studio with:
+(RunPod pod or Modal sandbox) so the studio on the Mac can move files, run training, download
+models and reach ComfyUI there. One file, Python standard library only (3.8+), nothing to
+install. Started by the studio either from a file the container's start command writes
+(ComfyUI pods, see gpu/agent COMFY_BOOT) or with:
 
-    python3 -c "import base64,os,zlib;exec(zlib.decompress(
-        base64.b64decode(os.environ['STUDIO_AGENT_CODE'])))"   (one line)
+    python3 -c "import base64,gzip,os;exec(gzip.decompress(
+        base64.b64decode(os.environ['STUDIO_AGENT_CODE'])))"   (one line, training)
 
 Environment:
   STUDIO_AGENT_TOKEN  required; every request needs "Authorization: Bearer <token>"
   STUDIO_AGENT_PORT   default 8765
   STUDIO_WORKSPACE    default /workspace (all files live below it)
   STUDIO_AITK_DIR     ai-toolkit folder for training (default /app/ai-toolkit)
-  STUDIO_COMFY_DIR    ComfyUI folder (default $STUDIO_WORKSPACE/ComfyUI)
-  STUDIO_COMFY_DEPS_MARK  file that marks ComfyUI's packages as installed in this container
-                      (default /tmp/studio-comfy-deps; the container disk is reset on stop)
-  HF_TOKEN            optional, for gated Hugging Face downloads
+  STUDIO_COMFY_DIR    ComfyUI folder (default $STUDIO_WORKSPACE/runpod-slim/ComfyUI, where
+                      RunPod's ComfyUI image keeps it)
+  STUDIO_COMFY_PORT   ComfyUI's local port (default 8188; never exposed)
+  STUDIO_BOOT_LOG     the container's start log (ComfyUI's output), served on /boot-log
+  HF_TOKEN            optional, for gated Hugging Face downloads (sent to huggingface.co only)
 
 API (JSON unless noted):
   GET    /health                     agent, GPU (nvidia-smi), CPU load, RAM, disk, jobs
+  GET    /boot-log?offset=<n>        plain text of the container's start log from that offset
   GET    /files?dir=<rel>            files below a folder (recursive)
   PUT    /files/<rel>?offset=<n>     write a chunk (offset 0 starts the file)
   GET    /files/<rel>                download; honours "Range: bytes=a-b"
   DELETE /files/<rel>
-  POST   /jobs                       {id, kind: train|comfyui|models|download, args}
-  GET    /jobs/<id>                  status, exit code, progress (step/total), loss points
+  POST   /jobs                       {id, kind: train|models|download, args}
+                                     models: {models: [{url, folder, filename}]}
+                                     download: {url, folder, filename}
+                                     (downloads: https://huggingface.co only, into
+                                     ComfyUI/models/<folder>/, as .part until complete)
+  GET    /jobs/<id>                  status, exit code, progress (step/total, files), loss
   GET    /jobs/<id>/logs?offset=<n>  plain text from that byte offset
   POST   /jobs/<id>/cancel
   *      /comfy/<path>               proxied to the local ComfyUI (127.0.0.1:8188)
@@ -30,6 +38,7 @@ API (JSON unless noted):
 
 import contextlib
 import hmac
+import http.client
 import json
 import os
 import re
@@ -44,14 +53,14 @@ import urllib.parse
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-VERSION = "1"
+VERSION = "2"
 TOKEN = os.environ.get("STUDIO_AGENT_TOKEN", "")
 PORT = int(os.environ.get("STUDIO_AGENT_PORT", "8765"))
 WORKSPACE = os.path.realpath(os.environ.get("STUDIO_WORKSPACE", "/workspace"))
 AITK_DIR = os.environ.get("STUDIO_AITK_DIR", "/app/ai-toolkit")
-COMFY_DIR = os.environ.get("STUDIO_COMFY_DIR", os.path.join(WORKSPACE, "ComfyUI"))
+COMFY_DIR = os.environ.get("STUDIO_COMFY_DIR", os.path.join(WORKSPACE, "runpod-slim", "ComfyUI"))
 COMFY_PORT = int(os.environ.get("STUDIO_COMFY_PORT", "8188"))
-COMFY_REPO = "https://github.com/comfyanonymous/ComfyUI.git"
+BOOT_LOG = os.environ.get("STUDIO_BOOT_LOG", "")
 CHUNK = 1024 * 1024
 
 STEP_RE = re.compile(r"(\d+)/(\d+) \[")
@@ -210,119 +219,262 @@ class Job:
         }
 
 
-def _shell_quote(value):
-    return "'" + str(value).replace("'", "'\"'\"'") + "'"
+# --- model downloads (Hugging Face only) -----------------------------------------------------
+
+HF_HOST = "huggingface.co"
+# Hugging Face serves file contents from its own CDN hosts (e.g. cas-bridge.xethub.hf.co,
+# cdn-lfs.huggingface.co); redirects anywhere else are refused.
+HF_REDIRECT_SUFFIXES = (".huggingface.co", ".hf.co")
+HF_TOKEN = os.environ.get("HF_TOKEN", "")
+FOLDER_RE = re.compile(r"[a-z0-9_]{1,40}")
+NAME_RE = re.compile(r"[\w.\- ]{1,200}")
 
 
-# ComfyUI's README: PyTorch 2.7 is the minimum, and Nvidia users install the wheel for the
-# newest CUDA (cu130). The wheel must not be newer than what the GPU driver supports.
-TORCH_CHECK = (
-    "import sys\n"
-    "try:\n"
-    "    import torch\n"
-    "except Exception:\n"
-    "    print('install'); sys.exit()\n"
-    "driver = int(sys.argv[1] or 0)\n"
-    "major, minor = (int(x) for x in torch.__version__.split('+')[0].split('.')[:2])\n"
-    "cuda = torch.version.cuda or ''\n"
-    "built = int(''.join(cuda.split('.')[:2])) if cuda else 0\n"
-    "fits = built and built <= driver and (driver < 130 or built >= 130)\n"
-    "ok = (major, minor) >= (2, 7) and fits\n"
-    "print('ok' if ok else 'install')\n"
-)
+class DownloadError(Exception):
+    def __init__(self, code, message):
+        Exception.__init__(self, message)
+        self.code = code  # denied | not_found | no_space | not_allowed | failed | cancelled
+        self.message = message
 
 
-def _download_lines(models):
-    """curl lines for the files that are not there yet, with "[studio] file i/n" markers
-    for progress."""
-    files = []
+def hf_url(url):
+    """Only https://huggingface.co/... is downloaded."""
+    url = str(url or "")
+    parts = urllib.parse.urlsplit(url)
+    if (
+        parts.scheme != "https"
+        or (parts.hostname or "").lower() != HF_HOST
+        or parts.username
+        or parts.password
+        or parts.port not in (None, 443)
+    ):
+        raise ValueError("only https://huggingface.co downloads are allowed")
+    return url
+
+
+def _hf_host(host):
+    host = (host or "").lower()
+    return host == HF_HOST or host.endswith(HF_REDIRECT_SUFFIXES)
+
+
+class _HFRedirect(urllib.request.HTTPRedirectHandler):
+    """Follows Hugging Face's redirects to its CDN only. The token goes to huggingface.co
+    only (it is an unredirected header, re-added on same-host redirects)."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        parts = urllib.parse.urlsplit(newurl)
+        if parts.scheme != "https" or not _hf_host(parts.hostname):
+            raise DownloadError("not_allowed", "redirect outside Hugging Face refused")
+        new = urllib.request.HTTPRedirectHandler.redirect_request(
+            self, req, fp, code, msg, headers, newurl
+        )
+        if new is not None and HF_TOKEN and (parts.hostname or "").lower() == HF_HOST:
+            new.add_unredirected_header("Authorization", "Bearer " + HF_TOKEN)
+        return new
+
+
+def _opener():
+    return urllib.request.build_opener(_HFRedirect())
+
+
+def model_targets(models):
+    """[(url, absolute destination, name)] inside ComfyUI/models/<folder>/."""
+    out = []
     for m in models:
-        folder = re.sub(r"[^a-z_]", "", str(m.get("folder", "")))
-        name = os.path.basename(str(m.get("filename", "")))
-        url = str(m.get("url", ""))
-        if folder and name and url.startswith("https://"):
-            files.append((folder, name, url))
-    lines = []
-    for i, (folder, name, url) in enumerate(files, 1):
-        dest = os.path.join(COMFY_DIR, "models", folder, name)
-        auth = ""
-        if "huggingface.co" in url:
-            auth = '${HF_TOKEN:+-H "Authorization: Bearer $HF_TOKEN"} '
-        lines += [
-            "echo '[studio] file " + str(i) + "/" + str(len(files)) + " " + name + "'",
-            "if [ ! -s " + _shell_quote(dest) + " ]; then",
-            "  mkdir -p " + _shell_quote(os.path.dirname(dest)),
-            # A failed download stops the job (set -e does not apply inside "if").
-            "  if ! curl -fL --retry 5 "
-            + auth
-            + "-o "
-            + _shell_quote(dest + ".part")
-            + " "
-            + _shell_quote(url)
-            + "; then",
-            "    echo '[studio] download failed: " + name + "' >&2",
-            "    exit 1",
-            "  fi",
-            "  mv " + _shell_quote(dest + ".part") + " " + _shell_quote(dest),
-            "fi",
+        url = hf_url(m.get("url"))
+        folder = str(m.get("folder", ""))
+        name = str(m.get("filename", ""))
+        if not FOLDER_RE.fullmatch(folder) or not NAME_RE.fullmatch(name) or name in (".", ".."):
+            raise ValueError("bad model folder or file name")
+        out.append((url, os.path.join(COMFY_DIR, "models", folder, name), name))
+    if not out:
+        raise ValueError("no files to download")
+    return out
+
+
+class DownloadJob:
+    """Downloads files one after another in a thread: each is written as <name>.part
+    (resumed after a dropped connection) and renamed when complete. Files that are already
+    there are skipped. Progress per file is in json()["files"]."""
+
+    RETRIES = 5
+    RETRY_PAUSE = 2.0  # seconds, times the attempt
+
+    def __init__(self, job_id, kind, targets):
+        self.id = job_id
+        self.kind = kind
+        self.log_path = os.path.join(WORKSPACE, ".studio", "logs", job_id + ".log")
+        os.makedirs(os.path.dirname(self.log_path), exist_ok=True)
+        self.status = "running"
+        self.exit_code = None
+        self.error = None
+        self.started_at = time.time()
+        self.ended_at = None
+        self.cancelled = False
+        self.targets = targets
+        self.files = [
+            {"name": name, "size": None, "done": 0, "status": "waiting"}
+            for _url, _dest, name in targets
         ]
-    return lines
+        self._thread = threading.Thread(target=self._run, daemon=True)
+        self._thread.start()
 
+    def _log(self, text):
+        with open(self.log_path, "a") as log:
+            log.write(text + "\n")
 
-def comfyui_script(models):
-    """Installs ComfyUI once into the workspace (a persistent volume keeps it and the
-    models), installs its Python packages on every new container (the container disk is
-    reset when a pod stops), fetches requested model files that are missing, then runs it
-    on 127.0.0.1 only."""
-    deps_mark = os.environ.get("STUDIO_COMFY_DEPS_MARK", "/tmp/studio-comfy-deps")
-    lines = [
-        "set -e",
-        "cd " + _shell_quote(WORKSPACE),
-        "PY=python3",
-        'if command -v python >/dev/null 2>&1 && python -c "import torch" >/dev/null 2>&1; then',
-        "  PY=python",
-        "fi",
-        "export PIP_BREAK_SYSTEM_PACKAGES=1",
-        "export PIP_CACHE_DIR=" + _shell_quote(os.path.join(WORKSPACE, ".cache", "pip")),
-        "if [ ! -f " + _shell_quote(os.path.join(COMFY_DIR, "main.py")) + " ]; then",
-        "  echo '[studio] installing ComfyUI'",
-        "  git clone --depth 1 " + COMFY_REPO + " " + _shell_quote(COMFY_DIR),
-        "fi",
-        "cd " + _shell_quote(COMFY_DIR),
-        "if [ ! -f " + _shell_quote(deps_mark) + " ]; then",
-        "  DRIVER_CUDA=$(nvidia-smi 2>/dev/null"
-        " | sed -n 's/.*CUDA Version: *\\([0-9]*\\)\\.\\([0-9]*\\).*/\\1\\2/p' | head -n 1)",
-        '  echo "[studio] GPU driver supports CUDA ${DRIVER_CUDA:-unknown}"',
-        '  TORCH_STATE=$("$PY" -c ' + _shell_quote(TORCH_CHECK) + ' "${DRIVER_CUDA:-0}" 2>/dev/null'
-        " || echo install)",
-        '  if [ "$TORCH_STATE" != ok ]; then',
-        '    if [ "${DRIVER_CUDA:-0}" -ge 130 ]; then TORCH_INDEX=cu130',
-        '    elif [ "${DRIVER_CUDA:-0}" -ge 128 ]; then TORCH_INDEX=cu128',
-        "    else",
-        "      echo \"[studio] This GPU's driver supports CUDA ${DRIVER_CUDA:-unknown}; ComfyUI"
-        ' needs 12.8 or newer. Remove this ComfyUI and rent the GPU again." >&2',
-        "      exit 1",
-        "    fi",
-        '    echo "[studio] installing PyTorch ($TORCH_INDEX)"',
-        '    "$PY" -m pip install --upgrade torch torchvision'
-        ' --index-url "https://download.pytorch.org/whl/$TORCH_INDEX"',
-        "  fi",
-        "  echo '[studio] installing ComfyUI packages'",
-        '  "$PY" -m pip install -r requirements.txt',
-        "  touch " + _shell_quote(deps_mark),
-        "fi",
-    ]
-    lines += _download_lines(models)
-    lines += [
-        "echo '[studio] starting ComfyUI'",
-        'exec "$PY" main.py --listen 127.0.0.1 --port ' + str(COMFY_PORT),
-    ]
-    return "\n".join(lines)
+    def _run(self):
+        try:
+            if not os.path.isdir(COMFY_DIR):
+                raise DownloadError("failed", "ComfyUI is not set up yet (" + COMFY_DIR + ")")
+            total = len(self.targets)
+            for index, (url, dest, name) in enumerate(self.targets):
+                state = self.files[index]
+                self._log("[studio] file %d/%d %s" % (index + 1, total, name))
+                if os.path.isfile(dest) and os.path.getsize(dest) > 0:
+                    size = os.path.getsize(dest)
+                    state.update(size=size, done=size, status="skipped")
+                    self._log("[studio] already there: " + name)
+                    continue
+                state["status"] = "downloading"
+                self._fetch(url, dest, state)
+                state["status"] = "done"
+                self._log("[studio] saved " + dest)
+            with contextlib.suppress(AttributeError, OSError):
+                os.sync()  # flush to the volume (Modal commits it in the background)
+            self.exit_code = 0
+            self.status = "completed"
+            self._log("[studio] models ready")
+        except DownloadError as exc:
+            self.error = {"code": exc.code, "message": exc.message}
+            self.exit_code = 1
+            self.status = "cancelled" if exc.code == "cancelled" else "failed"
+            self._log("[studio] download failed: " + exc.message)
+        except Exception as exc:  # noqa: BLE001 - reported to the studio, never raised
+            self.error = {"code": "failed", "message": type(exc).__name__ + ": " + str(exc)}
+            self.exit_code = 1
+            self.status = "failed"
+            self._log("[studio] download failed: " + self.error["message"])
+        self.ended_at = time.time()
 
+    def _fetch(self, url, dest, state):
+        os.makedirs(os.path.dirname(dest), exist_ok=True)
+        part = dest + ".part"
+        opener = _opener()
+        attempt = 0
+        while True:
+            if self.cancelled:
+                raise DownloadError("cancelled", "cancelled")
+            have = os.path.getsize(part) if os.path.exists(part) else 0
+            request = urllib.request.Request(
+                url, headers={"User-Agent": "ai-image-studio/" + VERSION}
+            )
+            if HF_TOKEN and (urllib.parse.urlsplit(url).hostname or "").lower() == HF_HOST:
+                request.add_unredirected_header("Authorization", "Bearer " + HF_TOKEN)
+            if have:
+                request.add_header("Range", "bytes=%d-" % have)
+            try:
+                response = opener.open(request, timeout=60)
+            except urllib.error.HTTPError as exc:
+                if exc.code == 416 and have:
+                    whole = re.search(r"/(\d+)\s*$", exc.headers.get("Content-Range") or "")
+                    if whole and int(whole.group(1)) == have:
+                        state["size"] = have
+                        break  # the .part file is already complete
+                    os.remove(part)  # not this file: start again
+                    attempt = self._retry(attempt, "HTTP 416")
+                    continue
+                if exc.code in (401, 403):
+                    raise DownloadError(
+                        "denied", "Hugging Face refused the download (HTTP %d)" % exc.code
+                    ) from exc
+                if exc.code == 404:
+                    raise DownloadError("not_found", "file not found on Hugging Face") from exc
+                attempt = self._retry(attempt, "HTTP %d" % exc.code)
+                continue
+            except (urllib.error.URLError, OSError, http.client.HTTPException) as exc:
+                attempt = self._retry(attempt, type(exc).__name__ + ": " + str(exc)[:200])
+                continue
+            try:
+                self._write(response, part, have, state)
+            except DownloadError:
+                raise
+            except (OSError, http.client.HTTPException) as exc:
+                if getattr(exc, "errno", None) == 28:
+                    raise DownloadError("no_space", "No space left on device") from exc
+                attempt = self._retry(attempt, type(exc).__name__ + ": " + str(exc)[:200])
+                continue
+            finally:
+                response.close()
+            if state.get("size") is None or os.path.getsize(part) >= state["size"]:
+                break
+            attempt = self._retry(attempt, "connection closed early")
+        os.replace(part, dest)
+        state["done"] = os.path.getsize(dest)
+        state["size"] = state["done"]
 
-def models_script(models):
-    """Downloads model files into ComfyUI/models (the ones that are missing)."""
-    return "\n".join(["set -e", *_download_lines(models), "echo '[studio] models ready'"])
+    def _retry(self, attempt, reason):
+        attempt += 1
+        if attempt > self.RETRIES:
+            raise DownloadError("failed", reason)
+        self._log("[studio] retrying (%s)" % reason)
+        until = time.time() + self.RETRY_PAUSE * attempt
+        while time.time() < until:
+            if self.cancelled:
+                raise DownloadError("cancelled", "cancelled")
+            time.sleep(0.2)
+        return attempt
+
+    def _write(self, response, part, have, state):
+        if have and response.status != 206:
+            have = 0  # the server sent the whole file again
+        length = response.headers.get("Content-Length")
+        rng = re.search(r"/(\d+)\s*$", response.headers.get("Content-Range") or "")
+        if rng:
+            state["size"] = int(rng.group(1))
+        elif length is not None:
+            state["size"] = have + int(length)
+        state["done"] = have
+        if state.get("size"):
+            free = shutil.disk_usage(os.path.dirname(part)).free
+            if state["size"] - have > free:
+                raise DownloadError(
+                    "no_space",
+                    "No space left on device (needs %.1f GB, %.1f GB free)"
+                    % ((state["size"] - have) / 1e9, free / 1e9),
+                )
+        with open(part, "ab" if have else "wb") as f:
+            while True:
+                if self.cancelled:
+                    raise DownloadError("cancelled", "cancelled")
+                data = response.read(CHUNK)
+                if not data:
+                    break
+                f.write(data)
+                state["done"] += len(data)
+
+    def cancel(self):
+        self.cancelled = True
+
+    def json(self):
+        done = sum(f["done"] for f in self.files)
+        sizes = [f["size"] for f in self.files]
+        return {
+            "id": self.id,
+            "kind": self.kind,
+            "status": self.status,
+            "exit_code": self.exit_code,
+            "error": self.error,
+            "started_at": self.started_at,
+            "ended_at": self.ended_at,
+            "step": None,
+            "total": None,
+            "loss": [],
+            "files": [dict(f) for f in self.files],
+            "bytes_done": done,
+            "bytes_total": sum(sizes) if all(s is not None for s in sizes) else None,
+            "log_size": os.path.getsize(self.log_path) if os.path.exists(self.log_path) else 0,
+        }
 
 
 def start_job(body):
@@ -331,57 +483,46 @@ def start_job(body):
     args = body.get("args") or {}
     if not job_id:
         raise ValueError("id is required")
-    env = dict(os.environ)
-    env.pop("STUDIO_AGENT_TOKEN", None)
-    env.pop("STUDIO_AGENT_CODE", None)
-    env["PYTHONUNBUFFERED"] = "1"
-    if kind == "train":
-        config = safe_path(args.get("config", ""))
-        if not config or not os.path.isfile(config):
-            raise ValueError("config file not found")
-        command = [os.environ.get("STUDIO_PYTHON", "python3"), "run.py", config]
-        cwd = AITK_DIR
-        if not os.path.isfile(os.path.join(AITK_DIR, "run.py")):
-            raise ValueError("ai-toolkit was not found in " + AITK_DIR)
-    elif kind == "comfyui":
-        command = ["bash", "-c", comfyui_script(args.get("models") or [])]
-        cwd = WORKSPACE
-    elif kind == "models":
-        command = ["bash", "-c", models_script(args.get("models") or [])]
-        cwd = WORKSPACE
-    elif kind == "download":
-        dest = safe_path(args.get("dest", ""))
-        url = str(args.get("url", ""))
-        if not dest or not url.startswith("https://"):
-            raise ValueError("an https url and a destination are required")
-        auth = ""
-        if "huggingface.co" in url:
-            auth = '${HF_TOKEN:+-H "Authorization: Bearer $HF_TOKEN"} '
-        script = (
-            "set -e; mkdir -p "
-            + _shell_quote(os.path.dirname(dest))
-            + "; curl -fL --retry 5 "
-            + auth
-            + "-o "
-            + _shell_quote(dest + ".part")
-            + " "
-            + _shell_quote(url)
-            + "; mv "
-            + _shell_quote(dest + ".part")
-            + " "
-            + _shell_quote(dest)
-        )
-        command = ["bash", "-c", script]
-        cwd = WORKSPACE
-    else:
-        raise ValueError("unknown job kind")
     with JOBS_LOCK:
         existing = JOBS.get(job_id)
         if existing is not None and existing.status == "running":
             return existing
-        job = Job(job_id, kind, command, cwd, env)
+        if kind in ("models", "download"):
+            models = args.get("models") if kind == "models" else [args]
+            job = DownloadJob(job_id, kind, model_targets(models or []))
+        elif kind == "train":
+            config = safe_path(args.get("config", ""))
+            if not config or not os.path.isfile(config):
+                raise ValueError("config file not found")
+            if not os.path.isfile(os.path.join(AITK_DIR, "run.py")):
+                raise ValueError("ai-toolkit was not found in " + AITK_DIR)
+            env = dict(os.environ)
+            for key in ("STUDIO_AGENT_TOKEN", "STUDIO_AGENT_CODE"):
+                env.pop(key, None)
+            env["PYTHONUNBUFFERED"] = "1"
+            command = [os.environ.get("STUDIO_PYTHON", "python3"), "run.py", config]
+            job = Job(job_id, kind, command, AITK_DIR, env)
+        else:
+            raise ValueError("unknown job kind")
         JOBS[job_id] = job
     return job
+
+
+# A start log can show generated passwords (e.g. the image's SSH root password).
+SECRET_LINE = re.compile(r"(password[^:\n=]*[:=]\s*)\S+", re.IGNORECASE)
+
+
+def read_boot_log(offset):
+    if not BOOT_LOG:
+        return b"", 0
+    try:
+        with open(BOOT_LOG, "rb") as f:
+            f.seek(max(0, offset))
+            data = f.read(512 * 1024)
+    except OSError:
+        return b"", max(0, offset)
+    text = SECRET_LINE.sub(lambda m: m.group(1) + "********", data.decode("utf-8", "replace"))
+    return text.encode(), max(0, offset) + len(data)
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -431,6 +572,9 @@ class Handler(BaseHTTPRequestHandler):
                 return self._proxy(method, path[len("/comfy") :] or "/", parsed.query)
             if method == "GET" and path == "/health":
                 return self._health()
+            if method == "GET" and path == "/boot-log":
+                data, next_offset = read_boot_log(int(query.get("offset", ["0"])[0]))
+                return self._text(data, next_offset)
             if path == "/files" and method == "GET":
                 return self._list(query.get("dir", [""])[0])
             if path.startswith("/files/"):
@@ -494,6 +638,7 @@ class Handler(BaseHTTPRequestHandler):
                 "disk_free": usage.free if usage else None,
                 "disk_total": usage.total if usage else None,
                 "aitoolkit": os.path.isfile(os.path.join(AITK_DIR, "run.py")),
+                "comfyui_dir": os.path.isdir(COMFY_DIR),
                 "jobs": {k: j.status for k, j in JOBS.items()},
                 **memory_info(),
             },
@@ -597,10 +742,13 @@ class Handler(BaseHTTPRequestHandler):
                 data = f.read(512 * 1024)
         except OSError:
             data = b""
+        self._text(data, max(0, offset) + len(data))
+
+    def _text(self, data, next_offset):
         self.send_response(200)
         self.send_header("Content-Type", "text/plain; charset=utf-8")
         self.send_header("Content-Length", str(len(data)))
-        self.send_header("X-Next-Offset", str(max(0, offset) + len(data)))
+        self.send_header("X-Next-Offset", str(next_offset))
         self.end_headers()
         self.wfile.write(data)
 

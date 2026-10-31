@@ -21,7 +21,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.comfy import deploy, krea2, workflows
 from app.comfy.client import ComfyError
 from app.comfy.generation import ComfyGenerateBody, create_comfy_generation
-from app.comfy.service import agent_for, assoc, check_url, file_capability, inspect, owned
+from app.comfy.service import (
+    agent_for,
+    assoc,
+    check_url,
+    comfy_subdir,
+    file_capability,
+    inspect,
+    owned,
+)
 from app.db import get_db
 from app.deps import api_error, current_user
 from app.gpu import service as gpu_service
@@ -78,6 +86,8 @@ def _fail(exc: ComfyError):
 
 def _gpu_fail(exc: GPUError):
     status = 400 if exc.code in ("invalid_credentials", "invalid_request") else 502
+    if exc.code == "unavailable":
+        status = 409
     return api_error(status, exc.code, exc.message)
 
 
@@ -260,11 +270,8 @@ class DeployBody(BaseModel):
     gpu_type: str = Field(min_length=1, max_length=80)
     gpu_count: int = Field(default=1, ge=1, le=8)
     cloud_type: Literal["SECURE", "COMMUNITY"] = "SECURE"
-    image: str | None = Field(default=None, max_length=250)
     volume_gb: int = Field(default=120, ge=40, le=2000)
     container_disk_gb: int = Field(default=50, ge=20, le=500)
-    # Model files to download during setup; the studio's UI downloads them after connecting.
-    variants: list[Literal["turbo", "raw"]] = Field(default_factory=list)
     auto_stop_minutes: int | None = Field(default=30, ge=0, le=1440)
     timeout_minutes: int = Field(default=720, ge=10, le=1440)
     confirm_billing: bool = False
@@ -276,8 +283,6 @@ async def deploy_comfyui(
 ):
     if not body.confirm_billing:
         raise api_error(400, "confirmation_required", "Confirm that the provider will bill you.")
-    if body.image and not re.fullmatch(r"[a-z0-9][a-z0-9._/:@-]{1,250}", body.image, re.I):
-        raise api_error(400, "invalid_parameter", "Enter a container image such as repo/name:tag.")
     conn = ComfyConnection(
         id=uuid.uuid4(),
         user_id=user.id,
@@ -293,10 +298,8 @@ async def deploy_comfyui(
             "gpu_type": body.gpu_type,
             "gpu_count": body.gpu_count,
             "cloud_type": body.cloud_type,
-            "image": body.image,
             "volume_gb": body.volume_gb,
             "container_disk_gb": body.container_disk_gb,
-            "variants": body.variants,
             "auto_stop_minutes": body.auto_stop_minutes or None,
             "timeout_minutes": body.timeout_minutes,
         },
@@ -328,6 +331,8 @@ async def start_deployment(
         raise api_error(400, "unsupported", "Only ComfyUI deployed by the studio can be started.")
     if not body.confirm_billing:
         raise api_error(400, "confirmation_required", "Confirm that the provider will bill you.")
+    if deploy.outdated(conn):
+        raise api_error(409, "outdated", deploy.OUTDATED)
     try:
         await deploy.start(db, conn)
     except GPUError as exc:
@@ -404,17 +409,17 @@ async def download_model(
     user: User = Depends(current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Downloads a model file directly on the GPU (fast; Hugging Face token from Settings is
-    used for gated files)."""
+    """Downloads a model file directly on the GPU from Hugging Face (the token from
+    Integrations › Hugging Face is used for gated files)."""
     conn = await _owned(db, user, conn_id)
     name = _safe_name(body.filename)
-    if not body.url.startswith("https://"):
-        raise api_error(400, "invalid_url", "Use an https:// download URL.")
+    if not re.match(r"https://huggingface\.co/", body.url):
+        raise api_error(
+            400, "invalid_url", "Use a Hugging Face link (https://huggingface.co/…/resolve/…)."
+        )
     try:
         job = await deploy.agent_job(
-            conn,
-            "download",
-            {"url": body.url, "dest": f"ComfyUI/models/{body.folder}/{name}"},
+            conn, "download", {"url": body.url, "folder": body.folder, "filename": name}
         )
     except ComfyError as exc:
         raise _fail(exc) from exc
@@ -493,7 +498,7 @@ async def upload_model(
         if capability == "agent":
             agent = agent_for(conn)
             assert agent is not None
-            await agent.upload_file(f"ComfyUI/models/{body.folder}/{name}", path)
+            await agent.upload_file(f"{comfy_subdir(conn)}/models/{body.folder}/{name}", path)
         elif capability == "folder":
             await asyncio.to_thread(_copy_into, conn.models_dir or "", body.folder, name, path)
         else:

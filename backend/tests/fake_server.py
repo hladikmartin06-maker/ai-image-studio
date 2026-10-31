@@ -32,6 +32,7 @@ import signal
 import subprocess
 import sys
 import tempfile
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -335,6 +336,20 @@ async def runpod_graphql(request: Request):
                         "securePrice": 2.99,
                         "communityPrice": None,
                     },
+                    {
+                        "id": "AMD Instinct MI300X OAM",
+                        "displayName": "MI300X",
+                        "memoryInGb": 192,
+                        "securePrice": 2.49,
+                        "communityPrice": None,
+                    },
+                    {
+                        "id": "NVIDIA A40",
+                        "displayName": "A40",
+                        "memoryInGb": 48,
+                        "securePrice": None,
+                        "communityPrice": 0.35,
+                    },
                 ]
             }
         }
@@ -354,7 +369,7 @@ async def runpod_create(request: Request):
     if not _authorized(request):
         return _unauthorized()
     body = await request.json()
-    pod_id = f"pod{next(_ids):04d}"
+    pod_id = f"pod{uuid.uuid4().hex[:10]}"  # unique across restarts of this fake
     _pods[pod_id] = {
         "id": pod_id,
         "name": body["name"],
@@ -411,8 +426,11 @@ def _spawn(pod_id: str) -> None:
         "STUDIO_WORKSPACE": str(base / "workspace"),
         "STUDIO_AITK_DIR": str(make_toolkit(_root / "image")),
         "STUDIO_PYTHON": sys.executable,
+        "TMPDIR": str(base),
         **comfy_env(make_comfy_dir(base / "gpu")),
         "FAKE_TRAIN_SLEEP": "0.4",
+        # The first start copies ComfyUI onto the volume (seconds), like the real image.
+        "FAKE_COPY_SLEEP": "8",
     }
     (base / "workspace").mkdir(parents=True, exist_ok=True)
     log = (base / "container.log").open("ab")
