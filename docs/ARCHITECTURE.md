@@ -27,10 +27,12 @@ Next.js 16 (127.0.0.1:3000) ── /api/* rewrite ──▶ FastAPI (127.0.0.1:8
 | `services/generation.py` | validates a request against the catalog and creates the job |
 | `services/worker.py` | runs jobs: upload references, submit, poll, download, store, publish |
 | `services/storage.py` | originals byte-for-byte + 640 px WebP thumbnails, path-safe |
+| `services/references.py` | reference validation, SHA-256 de-duplication, provider upload reuse (24 h), clean-up |
+| `services/personas.py` | AI models: profile schema, prompt text, adult-only checks, which references go with a request |
 | `services/events.py` | per-user publish/subscribe for live updates |
 | `services/safety.py` | prompt checks before anything is sent |
 | `services/preferences.py` | the Settings page document |
-| `routes/` | auth/account, integrations, reference images, generations/history, images, misc, ai, gpu |
+| `routes/` | auth/account, integrations, reference images, AI models (`personas.py`), generations/history, images, misc, ai, gpu |
 | `ai/registry.py` | chat providers, cost tiers, model resolution from the live model lists |
 | `ai/providers/` | `anthropic_provider.py` (official SDK), `openai_compat.py` (OpenAI, xAI, any compatible API), `gemini.py` |
 | `ai/router.py` | local complexity routing → tier, output cap, effort |
@@ -46,8 +48,9 @@ Next.js 16 (127.0.0.1:3000) ── /api/* rewrite ──▶ FastAPI (127.0.0.1:8
 | `auth_sessions` | token hash, user agent, expiry |
 | `user_settings` | preferences JSON |
 | `integrations` | provider, encrypted key, last 4 characters, status, last error |
-| `reference_images` | uploaded files, per-provider upload URLs (uploaded once) |
-| `generations` | the history entry: model, provider, endpoint, prompt, settings, request body, status, error, timestamps, idempotency key |
+| `reference_images` | uploaded files (SHA-256, one row per distinct file), per-provider upload URLs and their upload time |
+| `personas` / `persona_images` | AI models (saved fictional adult characters): name, description, private notes, appearance JSON, primary image; their reference images (links to `reference_images`, so a duplicate shares files) |
+| `generations` | the history entry: model, provider, endpoint, prompt (and `final_prompt` as sent with an AI model's description), settings, request body, AI model used (`persona_id`, `persona_meta`), status, error, timestamps, idempotency key |
 | `provider_tasks` | one provider request each: status, provider id, outputs, error |
 | `images` | file paths, size, dimensions, favorite, in-library flag, NSFW flag |
 | `ai_integrations` | chat provider, encrypted key, base URL (compatible APIs), cached model list, tier choices |
@@ -77,6 +80,24 @@ provider task:  pending ─▶ submitting ─▶ processing ─▶ completed | f
   change is pushed to the browser over server-sent events. The browser falls back to
   polling active jobs every 4 s when the stream is unavailable.
 
+### AI models in a generation
+
+```
+POST /api/generations  {…, persona: {id, reference_image_ids, use_references, use_description}}
+  edit endpoint for this model + provider?  no ──▶ description only (text-to-image)
+  room = endpoint's max references − the user's own references
+  AI model images (primary first, in the user's order) up to that room; they go first
+  description on? ──▶ final_prompt = prompt + "Character: adult …" (+ "keep the same person …"
+                      when references are attached); prompt rules run on the final text
+  history keeps the AI model's name and the references it contributed; "regenerate" repeats
+  the request exactly as sent, even after the AI model was edited
+```
+
+A reference file is stored once per user (SHA-256) and uploaded to a provider once; the
+upload URL is reused for 24 h (how long providers keep uploads is not documented), then the
+file is uploaded again. Deleting an AI model or one of its images deletes the file unless
+another AI model links it or a running generation needs it.
+
 ### Assistant turn
 
 ```
@@ -99,7 +120,8 @@ in answers can be applied back to it ("Use in studio", "Apply settings").
 |---|---|
 | `proxy.ts` | refuses requests with a foreign `Host` (DNS rebinding protection) |
 | `app/welcome` | sign in / create account |
-| `app/(studio)/…` | dashboard, generate, assistant, library, library/history, favorites, compute (GPU), integrations (image / AI / GPU tabs), settings |
+| `app/(studio)/…` | dashboard, generate, ai-models (list, `[id]` detail), assistant, library, library/history, favorites, compute (GPU), integrations (image / AI / GPU tabs), settings |
+| `components/personas` | AI model picker and Generate section, profile form, reference collection, "Add to AI model" |
 | `components/assistant` | chat panel, safe Markdown with prompt/settings action cards, floating drawer |
 | `components/integrations` | image, AI and GPU provider management |
 | `components/ui` | design-system components (button, select, popover, modal, confirm, switch, …) |

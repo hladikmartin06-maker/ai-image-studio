@@ -11,14 +11,14 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from fastapi import APIRouter, Depends, Query, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
-from sqlalchemy import delete, func, select, text
+from sqlalchemy import delete, exists, func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.catalog import catalog_json
 from app.config import get_settings
 from app.db import get_db
 from app.deps import current_user
-from app.models import Generation, Image, ReferenceImage, User
+from app.models import Generation, Image, PersonaImage, ReferenceImage, User
 from app.services import preferences, storage
 from app.services.events import broker
 from app.services.preferences import PreferencesPatch
@@ -196,6 +196,11 @@ async def storage_info(user: User = Depends(current_user), db: AsyncSession = De
     refs = await db.scalar(
         select(func.count(ReferenceImage.id)).where(ReferenceImage.user_id == user.id)
     )
+    persona_refs = await db.scalar(
+        select(func.count(func.distinct(PersonaImage.reference_image_id))).where(
+            PersonaImage.user_id == user.id
+        )
+    )
     failed = await db.scalar(
         select(func.count(Generation.id)).where(
             Generation.user_id == user.id, Generation.status.in_(("failed", "cancelled"))
@@ -209,6 +214,8 @@ async def storage_info(user: User = Depends(current_user), db: AsyncSession = De
         "unsaved_images": counts[1],
         "favorites": counts[2],
         "reference_images": refs,
+        # Of those, the ones that belong to AI models (kept by "remove unused").
+        "persona_reference_images": persona_refs,
         "failed_generations": failed,
     }
 
@@ -252,8 +259,14 @@ async def storage_cleanup(
             )
         ).all()
         keep = {ref for ids in busy for ref in ids}
+        # References of AI models are never "unused".
         rows = (
-            await db.scalars(select(ReferenceImage).where(ReferenceImage.user_id == user.id))
+            await db.scalars(
+                select(ReferenceImage).where(
+                    ReferenceImage.user_id == user.id,
+                    ~exists().where(PersonaImage.reference_image_id == ReferenceImage.id),
+                )
+            )
         ).all()
         doomed = [r for r in rows if str(r.id) not in keep]
         paths = [p for r in doomed for p in (r.file_path, r.thumb_path)]

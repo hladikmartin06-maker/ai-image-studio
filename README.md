@@ -30,6 +30,12 @@ First steps in the app:
   and WaveSpeed balance.
 - **Generate** — model cards, large prompt editor with history, reference images (drag & drop),
   only the settings the selected model and provider support, live progress.
+- **AI Models** — your own fictional adult characters: name, description, appearance (age,
+  hair, face, body, style, …) and a collection of reference images with a primary image.
+  Select one on Generate: its description is added to the prompt and its reference images are
+  attached when the chosen model and provider accept references (primary first, within that
+  endpoint's limit), for the same face and look in every image. Duplicate, edit, delete, add
+  images from the library, and see everything generated with each AI model.
 - **Image Library** — justified grid, search (prompt, model, provider, size, seed), filters,
   full-resolution viewer with details, bulk download (ZIP), favorite and delete;
   **History** tab with every request, its exact settings and "regenerate".

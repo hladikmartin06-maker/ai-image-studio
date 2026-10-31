@@ -105,7 +105,7 @@ async def test_nano_banana_on_wavespeed(connected: Api, fake):
     image = gen["images"][0]
     original = await connected.get(image["download_url"])
     assert original.status_code == 200
-    assert original.content == png_bytes()  # byte for byte
+    assert original.content == png_bytes(96, 72)  # byte for byte (as the fake CDN serves)
     assert "attachment" in original.headers["content-disposition"]
     thumb = await connected.get(image["thumb_url"])
     assert thumb.headers["content-type"] == "image/webp"

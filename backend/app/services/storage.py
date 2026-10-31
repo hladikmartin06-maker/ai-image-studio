@@ -111,6 +111,26 @@ async def store_reference(user_id: uuid.UUID, file_id: uuid.UUID, data: bytes) -
     return await asyncio.to_thread(_store, user_id, file_id, data, "refs")
 
 
+def fit_for_reference(data: bytes, max_bytes: int, max_edge: int) -> bytes:
+    """Keeps an image as it is when it fits the reference limits; otherwise re-encodes it
+    as a high-quality JPEG, scaled down only as far as needed."""
+    with PILImage.open(io.BytesIO(data)) as probe:
+        size = probe.size
+    if len(data) <= max_bytes and max(size) <= max_edge:
+        return data
+    with PILImage.open(io.BytesIO(data)) as img:
+        img = ImageOps.exif_transpose(img).convert("RGB")
+        edge = min(max(img.size), max_edge)
+        while True:
+            copy = img.copy()
+            copy.thumbnail((edge, edge), PILImage.Resampling.LANCZOS)
+            out = io.BytesIO()
+            copy.save(out, format="JPEG", quality=92, optimize=True)
+            if out.tell() <= max_bytes or edge <= 1024:
+                return out.getvalue()
+            edge = int(edge * 0.8)
+
+
 def delete_files(*relative_paths: str) -> None:
     for relative in relative_paths:
         with contextlib.suppress(FileNotFoundError):

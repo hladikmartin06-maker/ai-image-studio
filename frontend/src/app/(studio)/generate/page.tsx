@@ -14,6 +14,12 @@ import {
   SettingsControls,
 } from "@/components/generate/controls";
 import { openAssistant } from "@/components/assistant/drawer";
+import {
+  attachedPersonaImages,
+  newPersonaDraft,
+  type PersonaDraft,
+  PersonaSection,
+} from "@/components/personas/persona-picker";
 import { JobCard } from "@/components/generate/job-card";
 import { ImageViewer } from "@/components/images/image-viewer";
 import { ProviderLogo } from "@/components/logos";
@@ -32,6 +38,7 @@ import {
   useCreateGeneration,
   useGenerations,
   useIntegrations,
+  usePersonas,
   useSettings,
 } from "@/lib/queries";
 import type {
@@ -52,6 +59,23 @@ interface Draft {
   count: number;
   settings: DraftSettings;
   refs: ReferenceImage[];
+  // The saved AI model (character) whose description and references go with the request.
+  persona: PersonaDraft | null;
+}
+
+/** The AI model part of a past generation, for "load these settings". */
+function personaFromGeneration(gen: Generation): { persona: PersonaDraft | null; refs: ReferenceImage[] } {
+  const used = gen.persona?.id ? gen.persona : null;
+  if (!used?.id) return { persona: null, refs: gen.reference_images };
+  const fromPersona = new Set(used.reference_ids);
+  return {
+    persona: {
+      ...newPersonaDraft(used.id),
+      useRefs: used.references_used,
+      useDescription: used.description_used,
+    },
+    refs: gen.reference_images.filter((r) => !fromPersona.has(r.id)),
+  };
 }
 
 function pickVariant(model: ModelInfo | undefined, provider: ProviderKey | null, withRefs: boolean) {
@@ -122,6 +146,7 @@ export default function GeneratePage() {
   const integrations = useIntegrations();
   const create = useCreateGeneration();
   const results = useGenerations({ limit: 10 });
+  const personas = usePersonas();
   const prefs = settings.data;
   const userId = auth.data?.user?.id;
   const draftKey = userId ? `studio:draft:${userId}` : null;
@@ -149,8 +174,12 @@ export default function GeneratePage() {
       count: prefs.default_image_count,
       settings: {},
       refs: [],
+      persona: null,
     };
-    const from = new URLSearchParams(window.location.search).get("from");
+    const params = new URLSearchParams(window.location.search);
+    const from = params.get("from");
+    // ?ai_model=<id>: "Use in Generate" from the AI Models page.
+    const chosenPersona = params.get("ai_model");
     if (from) {
       api<Generation>(`/api/generations/${from}`)
         .then((gen) => {
@@ -163,7 +192,7 @@ export default function GeneratePage() {
               ...gen.settings,
               seed: gen.settings.seed !== undefined ? String(gen.settings.seed) : "",
             },
-            refs: gen.reference_images,
+            ...personaFromGeneration(gen),
           });
           router.replace("/generate");
         })
@@ -190,7 +219,13 @@ export default function GeneratePage() {
       count: Math.min(4, Math.max(1, saved?.count ?? defaults.count)),
       settings: saved?.settings ?? {},
       refs: saved?.refs ?? [],
+      persona: chosenPersona
+        ? saved?.persona?.id === chosenPersona
+          ? saved.persona
+          : newPersonaDraft(chosenPersona)
+        : (saved?.persona ?? null),
     });
+    if (chosenPersona) router.replace("/generate");
   }, [draft, prefs, integrations.data, catalog.data, connected, draftKey, router]);
 
   // Remember the draft (prompt persistence).
@@ -205,9 +240,19 @@ export default function GeneratePage() {
 
   const model = catalog.data?.models.find((m) => m.key === draft?.model);
   const provider = draft?.provider ?? null;
-  const withRefs = (draft?.refs.length ?? 0) > 0;
-  const variant = pickVariant(model, provider, withRefs);
   const editVariant = pickVariant(model, provider, true);
+  // The selected AI model counts only while it still exists.
+  const persona = draft?.persona ? personas.data?.items.find((p) => p.id === draft.persona?.id) : undefined;
+  const personaDraft = persona ? (draft?.persona ?? null) : null;
+  const { attached: personaRefs } = attachedPersonaImages(
+    persona,
+    personaDraft,
+    editVariant ? editVariant.max_reference_images : null,
+    draft?.refs.length ?? 0,
+  );
+  const referenceTotal = (draft?.refs.length ?? 0) + personaRefs.length;
+  const withRefs = referenceTotal > 0;
+  const variant = pickVariant(model, provider, withRefs);
   const maxPrompt = catalog.data?.limits.max_prompt_chars ?? 4000;
   const maxImages = catalog.data?.limits.max_images ?? 4;
 
@@ -222,8 +267,15 @@ export default function GeneratePage() {
       provider: draft.provider,
       settings: fitted ? toPayload(fitted) : {},
       prompt: draft.prompt,
-      reference_count: draft.refs.length,
+      reference_count: referenceTotal,
       count: draft.count,
+      ...(persona && personaDraft
+        ? {
+            ai_model: persona.name,
+            ai_model_text: personaDraft.useDescription ? persona.prompt_text : "",
+            ai_model_references: personaRefs.length,
+          }
+        : {}),
     });
   });
   useEffect(() => () => publishStudioContext(null), []);
@@ -305,6 +357,15 @@ export default function GeneratePage() {
         settings: toPayload(fitted),
         reference_image_ids: draft.refs.map((r) => r.id),
         client_request_id: newRequestId(),
+        persona:
+          persona && personaDraft
+            ? {
+                id: persona.id,
+                reference_image_ids: personaRefs.map((r) => r.id),
+                use_references: personaDraft.useRefs && personaRefs.length > 0,
+                use_description: personaDraft.useDescription,
+              }
+            : null,
       });
       if (prefs?.clear_prompt_after_generate) update({ prompt: "" });
       setTouched(false);
@@ -328,7 +389,7 @@ export default function GeneratePage() {
       prompt: gen.prompt,
       count: gen.image_count,
       settings: { ...gen.settings, seed: gen.settings.seed !== undefined ? String(gen.settings.seed) : "" },
-      refs: gen.reference_images,
+      ...personaFromGeneration(gen),
     });
     toast.success(t("gen.loaded"));
   };
@@ -407,6 +468,27 @@ export default function GeneratePage() {
 
           <div>
             <div className="section-title">
+              <span className="eyebrow grow">{t("pm.section")}</span>
+              <Link href="/ai-models" className="tiny subtle">
+                {t("pm.manage")}
+              </Link>
+            </div>
+            <PersonaSection
+              value={personaDraft ?? draft.persona}
+              persona={persona}
+              loading={personas.isLoading}
+              hasPersonas={(personas.data?.total ?? 0) > 0}
+              onChange={(value) => update({ persona: value })}
+              attached={personaRefs}
+              maxReferences={editVariant ? editVariant.max_reference_images : null}
+              modelName={model?.name ?? ""}
+              providerName={provider === "atlas" ? "Atlas Cloud" : provider === "wavespeed" ? "WaveSpeed" : ""}
+              manualCount={draft.refs.length}
+            />
+          </div>
+
+          <div>
+            <div className="section-title">
               <span className="eyebrow grow">{t("gen.prompt")}</span>
             </div>
             <PromptEditor
@@ -423,7 +505,14 @@ export default function GeneratePage() {
               <div className="section-title">
                 <span className="eyebrow grow">{t("refs.title")}</span>
                 <span className="tiny subtle">
-                  {draft.refs.length}/{editVariant.max_reference_images}
+                  {personaRefs.length
+                    ? t("pm.refCounter", {
+                        n: referenceTotal,
+                        max: editVariant.max_reference_images,
+                        own: personaRefs.length,
+                        name: persona?.name ?? "",
+                      })
+                    : `${draft.refs.length}/${editVariant.max_reference_images}`}
                 </span>
               </div>
               <ReferenceImages

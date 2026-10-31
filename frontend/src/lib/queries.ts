@@ -26,6 +26,8 @@ import type {
   GpuWorkload,
   IntegrationList,
   Page,
+  Persona,
+  PersonaList,
   Preferences,
   ReferenceImage,
   SessionInfo,
@@ -177,6 +179,7 @@ export interface ImageFilters {
   scope?: "library" | "all" | "unsaved";
   sort?: "newest" | "oldest" | "favorited";
   generation_id?: string;
+  persona?: string;
   limit?: number;
 }
 
@@ -301,6 +304,7 @@ export interface GenerationFilters {
   provider?: string;
   sort?: "newest" | "oldest";
   active?: boolean;
+  persona?: string;
   limit?: number;
 }
 
@@ -335,6 +339,12 @@ export interface CreateGenerationBody {
   settings: Record<string, unknown>;
   reference_image_ids: string[];
   client_request_id: string;
+  persona?: {
+    id: string;
+    reference_image_ids: string[];
+    use_references: boolean;
+    use_description: boolean;
+  } | null;
 }
 
 /** Puts a generation (new or updated) into every cached generation list. */
@@ -368,6 +378,7 @@ export function useCreateGeneration() {
       qc.invalidateQueries({ queryKey: keys.generations });
       qc.invalidateQueries({ queryKey: keys.stats });
       qc.invalidateQueries({ queryKey: keys.prompts });
+      if (gen.persona) qc.invalidateQueries({ queryKey: personaKeys.all });
     },
   });
 }
@@ -427,6 +438,141 @@ export function useUploadReference() {
       const form = new FormData();
       form.append("file", file);
       return api<ReferenceImage>("/api/reference-images", { body: form });
+    },
+  });
+}
+
+// --- AI models (saved characters) -------------------------------------------------------------
+
+export const personaKeys = {
+  all: ["personas"] as const,
+  list: (q: string) => ["personas", "list", q] as const,
+  one: (id: string) => ["personas", "one", id] as const,
+};
+
+export function usePersonas(q = "", enabled = true) {
+  return useQuery({
+    queryKey: personaKeys.list(q),
+    queryFn: ({ signal }) => api<PersonaList>(`/api/personas${query({ q: q || undefined })}`, { signal }),
+    enabled,
+    staleTime: 15_000,
+    placeholderData: (prev) => prev,
+  });
+}
+
+export function usePersona(id: string | null) {
+  return useQuery({
+    queryKey: personaKeys.one(id ?? ""),
+    queryFn: () => api<Persona>(`/api/personas/${id}`),
+    enabled: Boolean(id),
+  });
+}
+
+/** Writes a changed AI model into its detail query and every cached list. */
+function storePersona(qc: QueryClient, persona: Persona) {
+  qc.setQueryData(personaKeys.one(persona.id), persona);
+  qc.setQueriesData<PersonaList>({ queryKey: ["personas", "list"] }, (data) =>
+    data ? { ...data, items: data.items.map((p) => (p.id === persona.id ? persona : p)) } : data,
+  );
+  qc.invalidateQueries({ queryKey: ["personas", "list"] });
+}
+
+export interface PersonaBody {
+  name?: string;
+  description?: string;
+  notes?: string;
+  appearance?: Partial<Persona["appearance"]>;
+  adult_confirmed?: boolean;
+  cover_reference_id?: string | null;
+  image_order?: string[];
+}
+
+export function useCreatePersona() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: PersonaBody) =>
+      api<Persona>("/api/personas", { body: body as Record<string, unknown> }),
+    onSuccess: (persona) => {
+      qc.setQueryData(personaKeys.one(persona.id), persona);
+      qc.invalidateQueries({ queryKey: personaKeys.all });
+    },
+  });
+}
+
+export function useUpdatePersona(id: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: PersonaBody) =>
+      api<Persona>(`/api/personas/${id}`, { method: "PATCH", body: body as Record<string, unknown> }),
+    onSuccess: (persona) => storePersona(qc, persona),
+  });
+}
+
+export function useDuplicatePersona() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => api<Persona>(`/api/personas/${id}/duplicate`, { body: {} }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: personaKeys.all }),
+  });
+}
+
+export function useDeletePersona() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => api(`/api/personas/${id}`, { method: "DELETE" }),
+    onSuccess: (_, id) => {
+      qc.removeQueries({ queryKey: personaKeys.one(id) });
+      qc.invalidateQueries({ queryKey: personaKeys.all });
+      qc.invalidateQueries({ queryKey: keys.storage });
+    },
+  });
+}
+
+export function useUploadPersonaImage(id: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (file: File) => {
+      const form = new FormData();
+      form.append("file", file);
+      return api<{ persona: Persona; added: number }>(`/api/personas/${id}/images`, { body: form });
+    },
+    onSuccess: (res) => {
+      storePersona(qc, res.persona);
+      qc.invalidateQueries({ queryKey: keys.storage });
+    },
+  });
+}
+
+export function useAddPersonaImages() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      id,
+      libraryImageIds = [],
+      referenceImageIds = [],
+    }: {
+      id: string;
+      libraryImageIds?: string[];
+      referenceImageIds?: string[];
+    }) =>
+      api<{ persona: Persona; added: number }>(`/api/personas/${id}/images/add`, {
+        body: { library_image_ids: libraryImageIds, reference_image_ids: referenceImageIds },
+      }),
+    onSuccess: (res) => {
+      storePersona(qc, res.persona);
+      qc.invalidateQueries({ queryKey: keys.storage });
+    },
+  });
+}
+
+export function useRemovePersonaImage(id: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (referenceId: string) =>
+      api<Persona>(`/api/personas/${id}/images/${referenceId}`, { method: "DELETE" }),
+    onSuccess: (persona) => {
+      storePersona(qc, persona);
+      qc.invalidateQueries({ queryKey: keys.storage });
     },
   });
 }

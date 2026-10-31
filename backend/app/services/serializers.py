@@ -50,6 +50,23 @@ def image_json(image: Image, generation: Generation | None = None) -> dict[str, 
         "settings": gen.settings,
         "seed": gen.settings.get("seed"),
         "status": gen.status,
+        "persona_id": str(gen.persona_id) if gen.persona_id else None,
+        "persona_name": (gen.persona_meta or {}).get("name"),
+    }
+
+
+def persona_summary(gen: Generation) -> dict[str, Any] | None:
+    """The AI model used for a generation (id is None once that AI model was deleted)."""
+    meta = gen.persona_meta or {}
+    if not meta and gen.persona_id is None:
+        return None
+    return {
+        "id": str(gen.persona_id) if gen.persona_id else None,
+        "name": meta.get("name"),
+        "reference_ids": list(meta.get("reference_ids", [])),
+        "description_used": bool(meta.get("description_used")),
+        "references_used": bool(meta.get("references_used", True)),
+        "references_skipped": meta.get("references_skipped"),
     }
 
 
@@ -106,6 +123,8 @@ def generation_json(gen: Generation, *, images: list[Image] | None = None) -> di
         "error_code": gen.error_code,
         "error_message": gen.error_message,
         "source_generation_id": str(gen.source_generation_id) if gen.source_generation_id else None,
+        "final_prompt": gen.final_prompt,
+        "persona": persona_summary(gen),
         "created_at": iso(gen.created_at),
         "started_at": iso(gen.started_at),
         "completed_at": iso(gen.completed_at),

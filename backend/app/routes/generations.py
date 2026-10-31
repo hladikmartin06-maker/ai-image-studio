@@ -17,7 +17,12 @@ from app.deps import api_error, current_user
 from app.models import Generation, Image, ReferenceImage, User
 from app.routes.paging import after, encode_cursor
 from app.services import storage
-from app.services.generation import GenerationRejected, GenerationRequest, create_generation
+from app.services.generation import (
+    GenerationRejected,
+    GenerationRequest,
+    Replay,
+    create_generation,
+)
 from app.services.serializers import generation_json
 
 router = APIRouter(prefix="/api", tags=["generations"])
@@ -66,6 +71,7 @@ async def list_generations(
     status: str | None = Query(default=None),
     model: str | None = Query(default=None),
     provider: str | None = Query(default=None),
+    persona: uuid.UUID | None = Query(default=None),
     sort: str = Query(default="newest", pattern="^(newest|oldest)$"),
     active: bool = Query(default=False),
     cursor: str | None = None,
@@ -89,6 +95,8 @@ async def list_generations(
         conditions.append(Generation.model_key == model)
     if provider:
         conditions.append(Generation.provider == provider)
+    if persona:
+        conditions.append(Generation.persona_id == persona)
 
     total = await db.scalar(select(func.count()).select_from(Generation).where(*conditions))
     descending = sort == "newest"
@@ -150,8 +158,14 @@ async def regenerate(
         client_request_id=body.client_request_id,
         source_generation_id=source.id,
     )
+    # Same prompt as sent last time (with the AI model's description of that moment).
+    replay = Replay(
+        final_prompt=source.final_prompt,
+        persona_id=source.persona_id,
+        persona_meta=dict(source.persona_meta or {}),
+    )
     try:
-        gen = await create_generation(db, user, request)
+        gen = await create_generation(db, user, request, replay=replay)
     except GenerationRejected as exc:
         raise _rejected(exc) from exc
     return generation_json(gen)

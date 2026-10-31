@@ -9,18 +9,13 @@ from fastapi.responses import FileResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.config import get_settings
 from app.db import get_db
 from app.deps import api_error, current_user
-from app.models import ReferenceImage, User
-from app.services import storage
+from app.models import Persona, PersonaImage, ReferenceImage, User
+from app.services import references, storage
 from app.services.serializers import reference_json
 
 router = APIRouter(prefix="/api/reference-images", tags=["references"])
-
-ALLOWED_MIME = {"image/png", "image/jpeg", "image/webp"}
-MIN_EDGE = 64
-MAX_EDGE = 8192
 
 
 async def _owned(db: AsyncSession, user: User, ref_id: uuid.UUID) -> ReferenceImage:
@@ -38,37 +33,11 @@ async def upload(
     user: User = Depends(current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    limit = get_settings().max_upload_mb * 1024 * 1024
-    data = await file.read(limit + 1)
-    if len(data) > limit:
-        raise api_error(413, "file_too_large", f"Images up to {get_settings().max_upload_mb} MB.")
-    if not data:
-        raise api_error(400, "empty_file", "The file is empty.")
+    data = await file.read(references.max_bytes() + 1)
     try:
-        mime, _, width, height = storage.inspect(data)
-    except storage.InvalidImage as exc:
-        raise api_error(415, "invalid_image", str(exc)) from exc
-    if mime not in ALLOWED_MIME:
-        raise api_error(415, "invalid_image", "Only PNG, JPEG and WebP images are supported.")
-    if min(width, height) < MIN_EDGE or max(width, height) > MAX_EDGE:
-        raise api_error(
-            400, "invalid_dimensions", f"Images must be {MIN_EDGE} to {MAX_EDGE} pixels per side."
-        )
-    ref_id = uuid.uuid4()
-    stored = await storage.store_reference(user.id, ref_id, data)
-    ref = ReferenceImage(
-        id=ref_id,
-        user_id=user.id,
-        file_path=stored.file_path,
-        thumb_path=stored.thumb_path,
-        original_name=(file.filename or "")[:255],
-        mime_type=stored.mime_type,
-        width=stored.width,
-        height=stored.height,
-        size_bytes=stored.size_bytes,
-        provider_urls={},
-    )
-    db.add(ref)
+        ref, _ = await references.store(db, user.id, data, file.filename or "")
+    except references.ReferenceRejected as exc:
+        raise api_error(exc.status_code, exc.code, exc.message) from exc
     await db.commit()
     return reference_json(ref)
 
@@ -124,6 +93,18 @@ async def remove(
     """Deletes the upload. Past generations keep their record but can no longer be
     regenerated with this reference."""
     ref = await _owned(db, user, ref_id)
+    persona = await db.scalar(
+        select(Persona.name)
+        .join(PersonaImage, PersonaImage.persona_id == Persona.id)
+        .where(PersonaImage.reference_image_id == ref.id, Persona.user_id == user.id)
+        .limit(1)
+    )
+    if persona is not None:
+        raise api_error(
+            409,
+            "reference_in_use",
+            f"This image belongs to the AI model “{persona}”. Remove it there.",
+        )
     paths = (ref.file_path, ref.thumb_path)
     await db.delete(ref)
     await db.commit()

@@ -146,6 +146,8 @@ export interface StudioImage {
   settings: GenerationSettings;
   seed: number | null;
   status: GenerationStatus;
+  persona_id: string | null;
+  persona_name: string | null;
 }
 
 export interface ProviderTask {
@@ -188,12 +190,72 @@ export interface Generation {
   error_code: string | null;
   error_message: string | null;
   source_generation_id: string | null;
+  final_prompt: string | null;
+  persona: GenerationPersona | null;
   created_at: string;
   started_at: string | null;
   completed_at: string | null;
   duration_seconds: number | null;
   tasks: ProviderTask[];
   images: StudioImage[];
+}
+
+/** The AI model (saved character) used for a generation; id is null once it was deleted. */
+export interface GenerationPersona {
+  id: string | null;
+  name: string | null;
+  reference_ids: string[];
+  description_used: boolean;
+  references_used: boolean;
+  references_skipped: number | "unsupported" | null;
+}
+
+// --- AI models (saved characters) ------------------------------------------------------------
+
+export interface PersonaAppearance {
+  age: number | null;
+  gender: string;
+  ethnicity: string;
+  skin: string;
+  eyes: string;
+  hair_color: string;
+  hairstyle: string;
+  face: string;
+  body: string;
+  height: string;
+  style: string;
+  distinctive: string;
+  extra: string;
+}
+
+export interface PersonaImage extends ReferenceImage {
+  is_primary: boolean;
+}
+
+export interface Persona {
+  id: string;
+  name: string;
+  description: string;
+  notes: string;
+  appearance: PersonaAppearance;
+  primary_image: PersonaImage | null;
+  images: PersonaImage[];
+  image_count: number;
+  max_images: number;
+  /** Exactly the text added to the prompt (without the identity line for references). */
+  prompt_text: string;
+  /** Added after prompt_text when reference images are attached. */
+  identity_text: { one: string; many: string };
+  generation_count: number;
+  last_used_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface PersonaList {
+  items: Persona[];
+  total: number;
+  max_images: number;
 }
 
 export interface Page<T> {
@@ -242,6 +304,7 @@ export interface StorageInfo {
   unsaved_images: number;
   favorites: number;
   reference_images: number;
+  persona_reference_images: number;
   failed_generations: number;
 }
 
@@ -342,6 +405,9 @@ export interface StudioContextPayload {
   prompt?: string;
   reference_count?: number;
   count?: number;
+  ai_model?: string;
+  ai_model_text?: string;
+  ai_model_references?: number;
 }
 
 // --- GPU compute ----------------------------------------------------------------------------

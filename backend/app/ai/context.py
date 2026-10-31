@@ -24,6 +24,10 @@ class StudioContext(BaseModel):
     prompt: str | None = Field(default=None, max_length=4000)
     reference_count: int = Field(default=0, ge=0, le=20)
     count: int | None = Field(default=None, ge=1, le=4)
+    # The saved AI model (fictional character) selected on the Generate page.
+    ai_model: str | None = Field(default=None, max_length=80)
+    ai_model_text: str | None = Field(default=None, max_length=6000)
+    ai_model_references: int = Field(default=0, ge=0, le=24)
 
 
 def _catalog_facts() -> str:
@@ -67,6 +71,10 @@ How the app works:
 - Generate page: pick a model and provider, write a prompt, optional reference images (PNG, JPEG \
 or WebP up to 10 MB) switch to image editing, settings shown are only those the endpoint supports, \
 1–4 images per run (each image is a separate paid request unless the endpoint batches them).
+- AI Models page: saved fictional adult characters (name, description, appearance, reference \
+images with a primary image). Selected on the Generate page, the character's description is \
+added to the prompt and its reference images are attached when the model and provider accept \
+references (primary first, within the endpoint's limit) for a consistent face and look.
 - A fixed seed with the same settings reproduces a result; empty seed = random.
 - Image Library (with History of every request and its exact parameters), Favorites, Integrations \
 (image providers, AI assistant providers, GPU compute: Modal and RunPod), Settings.
@@ -122,6 +130,14 @@ def format_context(ctx: StudioContext | None, failures: list[dict[str, Any]]) ->
             settings.append(f"reference_images={ctx.reference_count}")
         if settings:
             lines.append("settings: " + ", ".join(str(s) for s in settings))
+        if ctx.ai_model:
+            text = (ctx.ai_model_text or "").strip()
+            if len(text) > 600:
+                text = text[:600] + "…"
+            line = f'AI model (saved character): "{ctx.ai_model}"'
+            if ctx.ai_model_references:
+                line += f", {ctx.ai_model_references} of its reference images attached"
+            lines.append(line + (f" — added to the prompt: {text}" if text else ""))
         if ctx.prompt and ctx.prompt.strip():
             prompt = ctx.prompt.strip()
             if len(prompt) > 1500:

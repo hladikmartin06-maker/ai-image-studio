@@ -20,6 +20,7 @@ import { toast } from "sonner";
 
 import { useImageActions } from "@/components/images/actions";
 import { GridSkeleton, ImageGrid } from "@/components/images/image-grid";
+import { AddToPersona } from "@/components/personas/shared";
 import { ImageViewer } from "@/components/images/image-viewer";
 import { StatusBadge } from "@/components/images/status";
 import {
@@ -41,6 +42,7 @@ import {
   useCatalog,
   useGenerations,
   useImages,
+  usePersonas,
   useSettings,
 } from "@/lib/queries";
 import type { ModelKey, ProviderKey, StudioImage } from "@/lib/types";
@@ -79,6 +81,8 @@ export function ImageBrowser({
   const [status, setStatus] = useState<StatusFilter>("any");
   const [sort, setSort] = useState<ImageFilters["sort"]>(favoritesOnly ? "favorited" : "newest");
   const [scope, setScope] = useState<"library" | "unsaved">("library");
+  const [persona, setPersona] = useState<string>("any");
+  const personas = usePersonas();
   const [selection, setSelection] = useState<Set<string>>(new Set());
   const [selecting, setSelecting] = useState(false);
   const [lastSelected, setLastSelected] = useState<number | null>(null);
@@ -96,9 +100,10 @@ export function ImageBrowser({
       date_from: since(range),
       sort,
       scope: favoritesOnly ? "all" : scope,
+      persona: persona === "any" ? undefined : persona,
       limit: 60,
     }),
-    [q, models, providers, favoritesOnly, onlyFavorites, status, range, sort, scope],
+    [q, models, providers, favoritesOnly, onlyFavorites, status, range, sort, scope, persona],
   );
   const images = useImages(filters, !generationStatus);
   const gens = useGenerations(
@@ -107,6 +112,7 @@ export function ImageBrowser({
       status: status === "processing" ? "queued,processing" : "failed",
       model: models.length === 1 ? models[0] : undefined,
       provider: providers.length === 1 ? providers[0] : undefined,
+      persona: persona === "any" ? undefined : persona,
       limit: 40,
     },
     generationStatus,
@@ -115,7 +121,13 @@ export function ImageBrowser({
   const items = useMemo(() => images.data?.pages.flatMap((p) => p.items) ?? [], [images.data]);
   const total = generationStatus ? gens.data?.pages[0]?.total : images.data?.pages[0]?.total;
   const filtersActive =
-    Boolean(q) || models.length > 0 || providers.length > 0 || range !== "any" || onlyFavorites || status !== "any";
+    Boolean(q) ||
+    models.length > 0 ||
+    providers.length > 0 ||
+    range !== "any" ||
+    onlyFavorites ||
+    status !== "any" ||
+    persona !== "any";
 
   const resetFilters = () => {
     setSearch("");
@@ -124,6 +136,7 @@ export function ImageBrowser({
     setRange("any");
     setOnlyFavorites(false);
     setStatus("any");
+    setPersona("any");
   };
 
   const select = useCallback(
@@ -207,6 +220,18 @@ export function ImageBrowser({
           onChange={setModels}
           options={modelOptions}
         />
+        {personas.data?.items.length ? (
+          <Select
+            label={t("pm.section")}
+            value={persona}
+            onChange={setPersona}
+            highlight={persona !== "any"}
+            options={[
+              { value: "any", label: t("pm.filterAny") },
+              ...personas.data.items.map((p) => ({ value: p.id, label: p.name })),
+            ]}
+          />
+        ) : null}
         {!favoritesOnly ? (
           <>
             <MultiSelect
@@ -391,6 +416,7 @@ export function ImageBrowser({
           <Button size="sm" icon={<HeartOff />} onClick={() => runBulk("unfavorite")}>
             {t("images.unfavorite")}
           </Button>
+          <AddToPersona imageIds={ids} />
           <Button size="sm" variant="danger" icon={<Trash2 />} onClick={() => runBulk("delete")}>
             {t("common.delete")}
           </Button>

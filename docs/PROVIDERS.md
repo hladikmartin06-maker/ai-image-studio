@@ -90,6 +90,22 @@ guidance scale, steps, safety-checker switches. Mature content on the Wan models
 providers' own policies; images the provider flags (`has_nsfw_contents`) are blurred when
 "Blur mature content" is on.
 
+## Reference images and AI models
+
+Reference images reach a provider only through an editing endpoint above, and never more than
+that endpoint's limit (WaveSpeed: Nano Banana Pro 4, Seedream 10, Wan 2.7 / Pro 3; Atlas:
+Nano Banana Pro 4, Seedream 4, Wan 2.7 / Pro 3 — where a provider documents no maximum, the
+catalog uses a conservative one). A saved AI model adds its images first (primary first) only up to
+the room left after the user's own references; with references switched off, or on an endpoint
+without editing, nothing is uploaded. Each file is uploaded to a provider once and its URL is
+reused for 24 hours: neither provider documents how long an uploaded file stays available, so
+the studio uploads it again after that instead of risking an expired URL.
+
+The description of an AI model is plain text appended to the prompt (`Character: adult …`, plus
+"Keep the same person as in the reference images …" when images are attached). It is not a
+provider parameter; History shows the prompt exactly as sent. **Not run against the real
+WaveSpeed / Atlas APIs** — how strongly each model keeps the identity is up to the model.
+
 ## Errors
 
 HTTP status and provider messages are normalized (`providers/base.py`): 401/403 invalid key,

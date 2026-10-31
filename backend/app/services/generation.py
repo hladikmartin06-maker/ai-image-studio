@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import uuid
+from datetime import UTC, datetime
 from typing import Any
 
 from pydantic import BaseModel, Field
@@ -22,10 +23,22 @@ from app.catalog import (
     plan_tasks,
     resolve_variant,
 )
-from app.models import Generation, Integration, ProviderTask, ReferenceImage, User
-from app.services import preferences
+from app.models import Generation, Integration, Persona, ProviderTask, ReferenceImage, User
+from app.services import personas, preferences
 from app.services.safety import PromptRefused, check_prompt
 from app.services.worker import worker
+
+
+class PersonaUse(BaseModel):
+    """The saved AI model to use for this request."""
+
+    id: uuid.UUID
+    # Which of its reference images to attach (in the AI model's order). None = all, primary
+    # first, as many as the endpoint accepts.
+    reference_image_ids: list[uuid.UUID] | None = Field(default=None, max_length=24)
+    use_references: bool = True
+    # Adds the AI model's description to the prompt.
+    use_description: bool = True
 
 
 class GenerationRequest(BaseModel):
@@ -37,6 +50,15 @@ class GenerationRequest(BaseModel):
     reference_image_ids: list[uuid.UUID] = Field(default_factory=list, max_length=10)
     client_request_id: str | None = Field(default=None, max_length=64)
     source_generation_id: uuid.UUID | None = None
+    persona: PersonaUse | None = None
+
+
+class Replay(BaseModel):
+    """What a repeated request copies from the original instead of recomposing it."""
+
+    final_prompt: str | None = None
+    persona_id: uuid.UUID | None = None
+    persona_meta: dict[str, Any] = Field(default_factory=dict)
 
 
 class GenerationRejected(Exception):
@@ -55,7 +77,62 @@ async def _existing(db: AsyncSession, user: User, client_request_id: str) -> Gen
     )
 
 
-async def create_generation(db: AsyncSession, user: User, req: GenerationRequest) -> Generation:
+async def _persona_references(
+    db: AsyncSession,
+    user: User,
+    use: PersonaUse,
+    *,
+    model_key: str,
+    provider: str,
+    manual_count: int,
+) -> tuple[Persona, list[uuid.UUID], dict[str, Any]]:
+    """Which of the AI model's references go with this request. They are attached only
+    when the endpoint takes reference images, within its limit (after the user's own)."""
+    persona = await personas.owned(db, user.id, use.id)
+    if persona is None:
+        raise GenerationRejected("not_found", "The selected AI model no longer exists.", 404)
+    ordered = [r.id for r in personas.ordered_references(persona)]
+    if use.reference_image_ids is not None:
+        wanted = set(use.reference_image_ids)
+        if not wanted <= set(ordered):
+            raise GenerationRejected(
+                "invalid_parameter", "A selected image is no longer part of this AI model."
+            )
+        chosen = [r for r in ordered if r in wanted]
+        explicit = True
+    else:
+        chosen = ordered
+        explicit = False
+    meta: dict[str, Any] = {
+        "name": persona.name,
+        "description_used": use.use_description,
+        "references_used": use.use_references,
+        "reference_ids": [],
+        "references_available": len(ordered),
+    }
+    if not use.use_references or not chosen:
+        return persona, [], meta
+    edit = get_model(model_key).variant(provider, "image-edit")
+    if edit is None:
+        meta["references_skipped"] = "unsupported"
+        return persona, [], meta
+    room = max(0, edit.max_reference_images - manual_count)
+    if explicit and len(chosen) > room:
+        raise GenerationRejected(
+            "invalid_parameter",
+            f"{get_model(model_key).name} on {PROVIDERS[provider]['name']} accepts up to "
+            f"{edit.max_reference_images} reference images. Choose fewer images of the AI model.",
+        )
+    if len(chosen) > room:
+        meta["references_skipped"] = len(chosen) - room
+    chosen = chosen[:room]
+    meta["reference_ids"] = [str(r) for r in chosen]
+    return persona, chosen, meta
+
+
+async def create_generation(
+    db: AsyncSession, user: User, req: GenerationRequest, *, replay: Replay | None = None
+) -> Generation:
     prompt = req.prompt.strip()
     if not prompt:
         raise GenerationRejected("invalid_parameter", "Enter a prompt.")
@@ -85,6 +162,23 @@ async def create_generation(db: AsyncSession, user: User, req: GenerationRequest
         )
 
     ref_ids = list(dict.fromkeys(req.reference_image_ids))
+    persona: Persona | None = None
+    persona_meta: dict[str, Any] = {}
+    if req.persona is not None and replay is None:
+        try:
+            get_model(req.model)
+        except CatalogError as exc:
+            raise GenerationRejected(exc.code, exc.message) from exc
+        persona, persona_refs, persona_meta = await _persona_references(
+            db,
+            user,
+            req.persona,
+            model_key=req.model,
+            provider=provider,
+            manual_count=len(ref_ids),
+        )
+        # The AI model's images go first (primary first), then the user's own references.
+        ref_ids = list(dict.fromkeys([*persona_refs, *ref_ids]))
     if ref_ids:
         found = (
             await db.scalars(
@@ -114,15 +208,36 @@ async def create_generation(db: AsyncSession, user: User, req: GenerationRequest
             f"{variant.max_reference_images} reference images.",
         )
 
+    allows_mature = model.content == "sfw+nsfw"
     try:
-        check_prompt(prompt, allows_mature=model.content == "sfw+nsfw")
+        check_prompt(prompt, allows_mature=allows_mature)
     except PromptRefused as exc:
         raise GenerationRejected(exc.code, exc.message, 422) from exc
+
+    final_prompt: str | None = None
+    if replay is not None:
+        final_prompt = replay.final_prompt
+        persona_meta = dict(replay.persona_meta)
+    elif persona is not None and req.persona is not None and req.persona.use_description:
+        composed = personas.compose_prompt(prompt, persona, len(persona_meta["reference_ids"]))
+        final_prompt = composed if composed != prompt else None
+    if final_prompt is not None:
+        if len(final_prompt) > MAX_PROMPT_CHARS + personas.PROMPT_TEXT_MAX:
+            raise GenerationRejected(
+                "invalid_parameter", "The prompt with the AI model's description is too long."
+            )
+        try:
+            if persona is not None:
+                personas.check_composed(final_prompt, persona, allows_mature)
+            else:
+                check_prompt(final_prompt, allows_mature=allows_mature)
+        except PromptRefused as exc:
+            raise GenerationRejected(exc.code, exc.message, 422) from exc
 
     plan = plan_tasks(variant, req.count)
     preview = build_payload(
         variant,
-        prompt=prompt,
+        prompt=final_prompt or prompt,
         settings=settings,
         image_urls=[f"<reference {i + 1}>" for i in range(len(ref_ids))],
         count=plan[0],
@@ -141,9 +256,14 @@ async def create_generation(db: AsyncSession, user: User, req: GenerationRequest
         image_count=req.count,
         status="queued",
         source_generation_id=req.source_generation_id,
+        persona_id=persona.id if persona is not None else (replay.persona_id if replay else None),
+        persona_meta=persona_meta,
+        final_prompt=final_prompt,
         tasks=[ProviderTask(index=i, images_requested=n) for i, n in enumerate(plan)],
     )
     db.add(gen)
+    if persona is not None:
+        persona.last_used_at = datetime.now(UTC)
     try:
         await db.commit()
     except IntegrityError:

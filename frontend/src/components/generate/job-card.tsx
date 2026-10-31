@@ -83,6 +83,7 @@ export function JobCard({
             {gen.reference_images.length ? (
               <span className="small subtle">· {t("gen.withRefs", { n: gen.reference_images.length })}</span>
             ) : null}
+            {gen.persona?.name ? <span className="small subtle">· {gen.persona.name}</span> : null}
           </div>
           <div className={showPrompts ? "clamp-2" : "truncate"} style={{ color: "var(--text-2)" }}>
             {gen.prompt}

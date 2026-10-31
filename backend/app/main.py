@@ -11,7 +11,17 @@ from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app.deps import csrf_guard
-from app.routes import ai, auth, generations, gpu, images, integrations, misc, references
+from app.routes import (
+    ai,
+    auth,
+    generations,
+    gpu,
+    images,
+    integrations,
+    misc,
+    personas,
+    references,
+)
 from app.security import SecretKeyMissing
 from app.services.worker import worker
 
@@ -70,5 +80,5 @@ async def secret_missing(_: Request, exc: SecretKeyMissing):
     )
 
 
-for module in (misc, auth, integrations, references, generations, images, ai, gpu):
+for module in (misc, auth, integrations, references, personas, generations, images, ai, gpu):
     app.include_router(module.router)

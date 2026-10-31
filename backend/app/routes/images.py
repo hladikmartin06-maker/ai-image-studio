@@ -92,6 +92,7 @@ async def list_images(
     date_to: datetime | None = None,
     scope: Literal["library", "all", "unsaved"] = "library",
     generation_id: uuid.UUID | None = None,
+    persona: uuid.UUID | None = None,
     sort: Literal["newest", "oldest", "favorited"] = "newest",
     cursor: str | None = None,
     limit: int = Query(default=48, ge=1, le=120),
@@ -105,6 +106,8 @@ async def list_images(
         conditions.append(Image.in_library.is_(False))
     if generation_id:
         conditions.append(Image.generation_id == generation_id)
+    if persona:
+        conditions.append(Generation.persona_id == persona)
     if model:
         keys = [m for m in model.split(",") if m in MODELS]
         if keys:

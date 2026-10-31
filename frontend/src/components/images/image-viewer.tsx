@@ -12,10 +12,12 @@ import {
   Trash2,
   X,
 } from "lucide-react";
+import Link from "next/link";
 import { useEffect, useState } from "react";
 import { createPortal } from "react-dom";
 
 import { useImageActions } from "@/components/images/actions";
+import { AddToPersona } from "@/components/personas/shared";
 import { Badge, Button, IconButton } from "@/components/ui";
 import { aspectLabel, formatBytes, formatDate } from "@/lib/format";
 import { useI18n } from "@/lib/i18n";
@@ -149,6 +151,7 @@ export function ImageViewer({
                 {t("images.saveToLibrary")}
               </Button>
             ) : null}
+            <AddToPersona imageIds={[image.id]} />
           </div>
         </div>
         <div className="viewer-side-section">
@@ -171,6 +174,20 @@ export function ImageViewer({
             <dd>{image.provider_name}</dd>
             <dt>{t("viewer.mode")}</dt>
             <dd>{image.mode === "image-edit" ? t("gen.modeEdit") : t("gen.modeText")}</dd>
+            {image.persona_name ? (
+              <>
+                <dt>{t("pm.section")}</dt>
+                <dd>
+                  {image.persona_id ? (
+                    <Link href={`/ai-models/${image.persona_id}`} className="link" onClick={onClose}>
+                      {image.persona_name}
+                    </Link>
+                  ) : (
+                    `${image.persona_name} · ${t("pm.deletedTag")}`
+                  )}
+                </dd>
+              </>
+            ) : null}
             <dt>{t("viewer.created")}</dt>
             <dd>{formatDate(image.created_at, locale)}</dd>
             <dt>{t("viewer.resolution")}</dt>

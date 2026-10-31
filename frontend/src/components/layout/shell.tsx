@@ -13,6 +13,7 @@ import {
   Plug,
   Settings,
   Sparkles,
+  SquareUserRound,
   UserRound,
 } from "lucide-react";
 import Link from "next/link";
@@ -40,6 +41,7 @@ import type { Generation, User } from "@/lib/types";
 const NAV: { href: string; label: MessageKey; icon: typeof LayoutDashboard }[] = [
   { href: "/dashboard", label: "nav.dashboard", icon: LayoutDashboard },
   { href: "/generate", label: "nav.generate", icon: Sparkles },
+  { href: "/ai-models", label: "nav.aiModels", icon: SquareUserRound },
   { href: "/assistant", label: "nav.assistant", icon: MessagesSquare },
   { href: "/library", label: "nav.library", icon: Images },
   { href: "/favorites", label: "nav.favorites", icon: Heart },

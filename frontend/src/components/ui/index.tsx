@@ -341,13 +341,19 @@ export function Modal({
 }) {
   const t = useT();
   const panel = useRef<HTMLDivElement>(null);
+  // The latest onClose without re-running the focus effect (callers pass inline functions,
+  // and a re-render of the page must not move the focus back to the first field).
+  const closeRef = useRef(onClose);
+  useEffect(() => {
+    closeRef.current = onClose;
+  });
   useEffect(() => {
     if (!open) return;
     const previous = document.activeElement as HTMLElement | null;
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
         e.stopPropagation();
-        onClose();
+        closeRef.current();
       }
     };
     window.addEventListener("keydown", onKey);
@@ -364,7 +370,7 @@ export function Modal({
       window.removeEventListener("keydown", onKey);
       previous?.focus?.();
     };
-  }, [open, onClose]);
+  }, [open]);
   if (!open) return null;
   return createPortal(
     <div className="overlay" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>

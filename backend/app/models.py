@@ -95,6 +95,7 @@ class Integration(Base):
 
 class ReferenceImage(Base):
     __tablename__ = "reference_images"
+    __table_args__ = (Index("ix_reference_images_user_sha", "user_id", "sha256"),)
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_id)
     user_id: Mapped[uuid.UUID] = mapped_column(
@@ -109,6 +110,10 @@ class ReferenceImage(Base):
     size_bytes: Mapped[int] = mapped_column(BigInteger)
     # URLs returned by each provider's upload API, so a file is uploaded once per provider.
     provider_urls: Mapped[dict[str, str]] = mapped_column(JSONB, default=dict)
+    # When each of those uploads happened (ISO time per provider); old uploads are renewed.
+    provider_uploaded_at: Mapped[dict[str, str]] = mapped_column(JSONB, default=dict)
+    # SHA-256 of the file: the same image uploaded again reuses this row (no second copy).
+    sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
@@ -143,6 +148,14 @@ class Generation(Base):
     error_code: Mapped[str | None] = mapped_column(String(40), nullable=True)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     source_generation_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
+    # The saved AI model (character) used for this request, if any. The name and the
+    # references it contributed are kept in persona_meta so history survives a deletion.
+    persona_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("personas.id", ondelete="SET NULL"), index=True
+    )
+    persona_meta: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
+    # The prompt exactly as sent when the AI model's description was added to it.
+    final_prompt: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
@@ -216,6 +229,68 @@ class Image(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
     generation: Mapped[Generation] = relationship(back_populates="images")
+
+
+# --- AI models (saved fictional characters) ---------------------------------------------------
+
+
+class Persona(Base):
+    """A reusable fictional adult character: visual description and reference images."""
+
+    __tablename__ = "personas"
+    __table_args__ = (Index("ix_personas_user_updated", "user_id", "updated_at"),)
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_id)
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), index=True
+    )
+    name: Mapped[str] = mapped_column(String(80))
+    # Added to the prompt (with the appearance fields) when the user keeps it switched on.
+    description: Mapped[str] = mapped_column(Text, default="")
+    # Private notes, never sent anywhere.
+    notes: Mapped[str] = mapped_column(Text, default="")
+    # Visual characteristics: age, gender, hair, face, body, style, ... (see services/personas.py).
+    appearance: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
+    # The primary reference image (sent first).
+    cover_reference_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("reference_images.id", ondelete="SET NULL")
+    )
+    adult_confirmed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow
+    )
+
+    images: Mapped[list["PersonaImage"]] = relationship(
+        back_populates="persona", cascade="all, delete-orphan", order_by="PersonaImage.position"
+    )
+
+
+class PersonaImage(Base):
+    """One reference image in an AI model's collection (the file is a ReferenceImage, so a
+    duplicated model shares files and provider uploads instead of copying them)."""
+
+    __tablename__ = "persona_images"
+    __table_args__ = (
+        UniqueConstraint("persona_id", "reference_image_id", name="uq_persona_image"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_id)
+    persona_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("personas.id", ondelete="CASCADE"), index=True
+    )
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), index=True
+    )
+    reference_image_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("reference_images.id", ondelete="CASCADE"), index=True
+    )
+    position: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    persona: Mapped[Persona] = relationship(back_populates="images")
+    reference: Mapped[ReferenceImage] = relationship()
 
 
 # --- AI assistant ---------------------------------------------------------------------------

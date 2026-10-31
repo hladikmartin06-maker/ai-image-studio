@@ -71,6 +71,18 @@ _MINOR_RE = re.compile(r"\b(?:" + "|".join(_MINOR_TERMS) + r")\b", re.IGNORECASE
 _EXPLICIT_RE = re.compile(r"\b(?:" + "|".join(_EXPLICIT_TERMS) + r")\b", re.IGNORECASE)
 
 
+# Common phrases that contain a listed word but say nothing about age.
+_HARMLESS_RE = re.compile(
+    r"\bbaby[ -]?(?:blue|pink|hairs?|bangs)\b|\bkid[ -]?gloves?\b", re.IGNORECASE
+)
+
+
+def mentions_minors(text: str) -> bool:
+    """True when the text refers to children or teenagers (used for AI model profiles,
+    which must describe adults)."""
+    return bool(_MINOR_RE.search(_HARMLESS_RE.sub(" ", text)))
+
+
 class PromptRefused(ValueError):
     def __init__(self, code: str, message: str):
         super().__init__(message)

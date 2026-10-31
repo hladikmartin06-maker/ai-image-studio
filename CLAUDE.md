@@ -49,6 +49,11 @@ same way. Never push to `biznismarko9-source` repositories.
 - No fake results or fabricated statistics; empty, loading and error states everywhere.
 - Prompts with sexual content and minor-related terms are always refused; explicit prompts
   are refused on the SFW-only models (`services/safety.py`).
+- AI Models (`personas`, page `/ai-models`) are saved fictional adult characters, not image
+  models. Creating one needs the adult confirmation; profile text with minor-related terms is
+  refused; age ≥ 18. Their description is appended to the prompt only when the user keeps it
+  on (History shows `final_prompt`). Their reference images are sent only through an editing
+  endpoint and within its `max_reference_images`, primary first, after the user's own.
 - Three separate integration families, never mixed: image providers (`providers/`,
   `integrations`), AI chat providers (`ai/`, `ai_integrations`) and GPU compute
   (`gpu/`, `gpu_integrations`). A new chat or GPU provider = one registry entry + adapter.
@@ -80,7 +85,8 @@ same way. Never push to `biznismarko9-source` repositories.
 
 - Answer in Slovak, short and simple.
 - No progress messages while working; deliver only the result.
-- Commit and push only after the owner approves.
+- Commit and push to `main` right away when the work is done and all checks pass (the owner
+  approved this permanently).
 - Say plainly what was not tested against the real WaveSpeed / Atlas API.
 - End every reply with the launch command:
 

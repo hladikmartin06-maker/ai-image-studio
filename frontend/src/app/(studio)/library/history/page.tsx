@@ -139,6 +139,16 @@ function GenerationDetails({ id, onClose }: { id: string | null; onClose: () => 
               </div>
               <div className="prompt-box">{g.prompt}</div>
             </div>
+            {g.final_prompt ? (
+              <div>
+                <div className="eyebrow" style={{ marginBottom: 8 }}>
+                  {t("pm.promptAsSent")}
+                </div>
+                <div className="prompt-box" style={{ color: "var(--text-2)" }}>
+                  {g.final_prompt}
+                </div>
+              </div>
+            ) : null}
             {g.images.length ? (
               <div>
                 <div className="eyebrow" style={{ marginBottom: 8 }}>
@@ -168,7 +178,15 @@ function GenerationDetails({ id, onClose }: { id: string | null; onClose: () => 
                 <div className="refs" style={{ gridTemplateColumns: "repeat(8, 1fr)" }}>
                   {g.reference_images.map((r) => (
                     <div key={r.id} className="ref">
-                      <img src={r.thumb_url} alt="" loading="lazy" />
+                      <img
+                        src={r.thumb_url}
+                        alt=""
+                        loading="lazy"
+                        // A reference deleted later (e.g. with its AI model) leaves an empty tile.
+                        onError={(e) => {
+                          e.currentTarget.style.visibility = "hidden";
+                        }}
+                      />
                     </div>
                   ))}
                 </div>
@@ -185,6 +203,23 @@ function GenerationDetails({ id, onClose }: { id: string | null; onClose: () => 
               <dd className="mono">{g.provider_model_id}</dd>
               <dt>{t("viewer.mode")}</dt>
               <dd>{g.mode === "image-edit" ? t("gen.modeEdit") : t("gen.modeText")}</dd>
+              {g.persona?.name ? (
+                <>
+                  <dt>{t("pm.section")}</dt>
+                  <dd>
+                    {g.persona.id ? (
+                      <Link href={`/ai-models/${g.persona.id}`} className="link">
+                        {g.persona.name}
+                      </Link>
+                    ) : (
+                      `${g.persona.name} · ${t("pm.deletedTag")}`
+                    )}
+                    {g.persona.reference_ids.length
+                      ? ` · ${t("pm.historyRefs", { n: g.persona.reference_ids.length })}`
+                      : ""}
+                  </dd>
+                </>
+              ) : null}
               <dt>{t("gen.imageCount")}</dt>
               <dd>
                 {g.images.length} / {g.image_count}

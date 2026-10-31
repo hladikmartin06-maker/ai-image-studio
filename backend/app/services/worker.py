@@ -39,7 +39,7 @@ from app.models import (
 from app.providers import get_adapter
 from app.providers.base import ProviderError, failure_from_message
 from app.security import decrypt_secret
-from app.services import preferences, storage
+from app.services import preferences, references, storage
 from app.services.events import broker
 from app.services.serializers import generation_json
 
@@ -196,7 +196,8 @@ class JobWorker:
         return decrypt_secret(integration.encrypted_key, associated=f"{gen.user_id}:{gen.provider}")
 
     async def _reference_urls(self, gen: Generation, api_key: str) -> list[str]:
-        """Uploads reference images to the provider once and remembers the URLs."""
+        """Uploads reference images to the provider once and reuses the URLs (renewed
+        after references.UPLOAD_REUSE)."""
         if not gen.reference_image_ids:
             return []
         adapter = get_adapter(gen.provider)
@@ -213,12 +214,12 @@ class JobWorker:
                     raise ProviderError(
                         "invalid_parameters", gen.provider, "A reference image was deleted"
                     )
-                url = (ref.provider_urls or {}).get(gen.provider)
+                url = references.reusable_url(ref, gen.provider)
                 if not url:
                     data = await asyncio.to_thread(storage.absolute(ref.file_path).read_bytes)
                     ext = ref.file_path.rsplit(".", 1)[-1]
                     url = await adapter.upload(api_key, data, f"{ref.id}.{ext}", ref.mime_type)
-                    ref.provider_urls = {**(ref.provider_urls or {}), gen.provider: url}
+                    references.remember_upload(ref, gen.provider, url)
                     await db.commit()
                 urls.append(url)
             row = await db.get(Generation, gen.id)
@@ -244,7 +245,7 @@ class JobWorker:
                 await self._set_task(task.id, status="submitting")
                 payload = build_payload(
                     variant,
-                    prompt=gen.prompt,
+                    prompt=gen.final_prompt or gen.prompt,
                     settings=gen.settings,
                     image_urls=image_urls,
                     count=task.images_requested,

@@ -73,7 +73,9 @@ class FakeProviders:
     def handle(self, request: httpx.Request) -> httpx.Response:
         url = request.url
         if url.host == "cdn.fake":
-            return httpx.Response(200, content=png_bytes(), headers={"content-type": "image/png"})
+            return httpx.Response(
+                200, content=png_bytes(96, 72), headers={"content-type": "image/png"}
+            )
         if not self._auth_ok(request):
             return httpx.Response(401, json={"code": 401, "message": "Unauthorized"})
         path = url.path
