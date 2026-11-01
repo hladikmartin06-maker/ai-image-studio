@@ -90,8 +90,9 @@ repositories.
   generate.
 - Rented ComfyUI GPUs (the owner's design, `comfy/deploy.py`, sources in `docs/PROVIDERS.md`):
   ready in about 1–2 minutes, nothing installed at start. RunPod's image `runpod/comfyui:cuda12.8`
-  (`allowedCudaVersions` 12.8, 12.9), `runpod/comfyui:cuda13.0` (13.0–13.3) only for GPUs
-  that offer CUDA 13 only. Start command `/bin/bash -c`: write the agent file (base64 env),
+  (`allowedCudaVersions` 12.8, 12.9), `runpod/comfyui:cuda13.0` (13.0–13.3, only the ones
+  RunPod's API spec accepts — it refuses the whole request otherwise) only for GPUs that
+  offer CUDA 13 only. Start command `/bin/bash -c`: write the agent file (base64 env),
   start it in the background, `exec /start.sh`. Volume at /workspace. Only the agent's port
   8189/http is exposed (Bearer token per deployment); ComfyUI's 8188 stays private and listens
   on 127.0.0.1. Poll ~10 s; "Ready" only when ComfyUI answers through the agent; no answer in

@@ -429,9 +429,9 @@ def no_poll_wait(monkeypatch):
 async def test_runpod_falls_back_to_cuda13_and_stops_when_comfyui_never_answers(
     user: Api, monkeypatch, no_poll_wait
 ):
-    """No free host with a CUDA 12.8/12.9 driver: the CUDA 13 image is tried (and the
-    documented CUDA list when RunPod refuses newer ones). A ComfyUI that never answers stops
-    the GPU after the time limit."""
+    """No free machine with a CUDA 12.8/12.9 driver: the CUDA 13 image is tried, with only the
+    CUDA versions RunPod's API accepts (it refuses the whole request otherwise). A ComfyUI
+    that never answers stops the GPU after the time limit."""
     import httpx
 
     from app.comfy import deploy
@@ -439,7 +439,7 @@ async def test_runpod_falls_back_to_cuda13_and_stops_when_comfyui_never_answers(
     from app.gpu.runpod import RunPodProvider
     from tests.test_gpu import FakeRunPod
 
-    fake = FakeRunPod(no_capacity={"12.8", "12.9"}, strict_cuda=True)
+    fake = FakeRunPod(no_capacity={"12.8", "12.9"})
     set_gpu_adapter("runpod", RunPodProvider(transport=fake.transport()))
     AgentClient.transport = httpx.MockTransport(lambda r: httpx.Response(502, text="booting"))
     try:
@@ -450,8 +450,7 @@ async def test_runpod_falls_back_to_cuda13_and_stops_when_comfyui_never_answers(
         sent = [b for m, path, b in fake.calls if m == "POST" and path == "/v1/pods"]
         assert [(b["imageName"], b["allowedCudaVersions"]) for b in sent] == [
             ("runpod/comfyui:cuda12.8", ["12.8", "12.9"]),
-            ("runpod/comfyui:cuda13.0", ["13.0", "13.1", "13.2", "13.3"]),
-            ("runpod/comfyui:cuda13.0", ["13.0"]),
+            ("runpod/comfyui:cuda13.0", ["13.0"]),  # 13.1-13.3 are not in RunPod's spec
         ]
         assert len(fake.pods) == 1  # only the last request created a pod
         conn = r.json()

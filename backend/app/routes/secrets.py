@@ -66,9 +66,12 @@ async def huggingface_status(
             "set": False,
             "masked": None,
             "token": None,
+            "token_message": None,
             "account": None,
             "ready": False,
-            "repos": [{**r, "access": "unknown"} for r in huggingface.gated_repos()],
+            "repos": [
+                {**r, "access": "unknown", "message": None} for r in huggingface.gated_repos()
+            ],
         }
     token = decrypt_secret(row.encrypted_value, associated=f"{user.id}:secret:huggingface")
     result = await huggingface.status(token, refresh=refresh)
@@ -88,12 +91,15 @@ async def save_secret(
             raise api_error(400, "invalid_parameter", "Hugging Face tokens start with hf_.")
         # A token Hugging Face rejects is never saved; when Hugging Face cannot be reached
         # the token is saved and checked again later.
-        state, _ = await huggingface.HubClient(value).whoami()
+        state, _, reason = await huggingface.HubClient(value).whoami()
         if state == "invalid":
             raise api_error(
                 400,
                 "invalid_key",
-                "Hugging Face rejected this token. Create a new one (type Read) and paste it.",
+                "Hugging Face rejected this token"
+                + (f" ({reason})" if reason else "")
+                + ". Copy the whole token (it starts with hf_), or create a new one of type "
+                "Read, and paste it.",
             )
     row = await _row(db, user, name)
     if row is None:

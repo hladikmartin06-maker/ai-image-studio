@@ -65,37 +65,56 @@ class HubClient:
             transport=self.transport,
         )
 
-    async def whoami(self) -> tuple[Literal["valid", "invalid", "unknown"], str | None]:
+    async def whoami(
+        self,
+    ) -> tuple[Literal["valid", "invalid", "unknown"], str | None, str | None]:
+        """(state, account name, Hugging Face's own reason when it is not valid)."""
         try:
             async with self._client() as client:
                 r = await client.get("/api/whoami-v2")
-        except httpx.HTTPError:
-            return "unknown", None
+        except httpx.HTTPError as exc:
+            return "unknown", None, f"Hugging Face could not be reached ({type(exc).__name__})."
         if r.status_code == 401:
-            return "invalid", None
+            return "invalid", None, hub_message(r)
         if r.status_code != 200:
-            return "unknown", None
+            return "unknown", None, hub_message(r)
         try:
             name = r.json().get("name")
         except ValueError:
             name = None
-        return "valid", str(name) if name else None
+        return "valid", str(name) if name else None, None
 
-    async def access(self, repo: str) -> Access:
+    async def access(self, repo: str) -> tuple[Access, str | None]:
+        """(access, Hugging Face's own reason when it is not granted)."""
         try:
             async with self._client() as client:
                 r = await client.get(f"/api/models/{repo}/auth-check")
-        except httpx.HTTPError:
-            return "unknown"
+        except httpx.HTTPError as exc:
+            return "unknown", f"Hugging Face could not be reached ({type(exc).__name__})."
         if r.status_code == 200:
-            return "granted"
+            return "granted", None
         if r.headers.get("X-Error-Code") == "GatedRepo":
-            return "needs_license"
+            return "needs_license", hub_message(r)
         if r.status_code == 401:
-            return "invalid_token"
+            return "invalid_token", hub_message(r)
         if r.status_code == 404:
-            return "not_found"
-        return "unknown"
+            return "not_found", hub_message(r)
+        return "unknown", hub_message(r)
+
+
+def hub_message(r: httpx.Response) -> str | None:
+    """Hugging Face's reason for a refusal: the X-Error-Message header (as huggingface_hub
+    reads it) or the JSON "error" field."""
+    message = r.headers.get("X-Error-Message")
+    if not message:
+        try:
+            data = r.json()
+            message = data.get("error") if isinstance(data, dict) else None
+        except ValueError:
+            message = None
+    if not message:
+        return f"HTTP {r.status_code}"
+    return str(message)[:400]
 
 
 def _key(*parts: str) -> str:
@@ -114,33 +133,40 @@ def clear_cache() -> None:
     _CACHE.clear()
 
 
-async def repo_access(token: str, repo: str, refresh: bool = False) -> Access:
-    """Access to one repository. Only a definite answer is cached ("unknown" is retried)."""
+async def repo_access(token: str, repo: str, refresh: bool = False) -> tuple[Access, str | None]:
+    """Access to one repository and Hugging Face's reason when it is not granted. Only a
+    definite answer is cached ("unknown" is retried)."""
     key = _key("access", token, repo)
     if not refresh and (hit := _cached(key)) is not None:
         return hit
     result = await HubClient(token).access(repo)
-    if result != "unknown":
+    if result[0] != "unknown":
         _CACHE[key] = (time.monotonic(), result)
     return result
 
 
 async def status(token: str, refresh: bool = False) -> dict[str, Any]:
-    """What the integration card shows: the token's account and each gated repository."""
+    """What the integration card shows: the token's account and each gated repository, with
+    Hugging Face's own reason for anything that is not ready."""
     key = _key("whoami", token)
     who = None if refresh else _cached(key)
     if who is None:
         who = await HubClient(token).whoami()
         if who[0] != "unknown":
             _CACHE[key] = (time.monotonic(), who)
-    token_state, account = who
+    token_state, account, token_message = who
     repos = []
     for item in gated_repos():
-        access: Access = (
-            "invalid_token"
-            if token_state == "invalid"
-            else await repo_access(token, item["repo"], refresh)
-        )
-        repos.append({**item, "access": access})
+        if token_state == "invalid":
+            access, message = "invalid_token", token_message
+        else:
+            access, message = await repo_access(token, item["repo"], refresh)
+        repos.append({**item, "access": access, "message": message})
     ready = token_state != "invalid" and all(r["access"] == "granted" for r in repos)
-    return {"token": token_state, "account": account, "repos": repos, "ready": ready}
+    return {
+        "token": token_state,
+        "token_message": token_message,
+        "account": account,
+        "repos": repos,
+        "ready": ready,
+    }

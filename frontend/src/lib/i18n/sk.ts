@@ -812,8 +812,6 @@ export const sk: Record<MessageKey, string> = {
   "gpu.gpuCount": "GPU",
   "gpu.noPrice": "Tento poskytovateľ cenu neuvádza; pozri jeho dashboard.",
   "gpu.noProviderConnected": "Na prenájom GPU najprv pripoj RunPod alebo Modal.",
-  "gpu.priceHint": "Cena {provider} za toto GPU, kým beží, účtuje ju {provider}. Disk účtuje {provider} zvlášť, aj keď je GPU zastavené.",
-  "gpu.perHour": "za hodinu",
   "gpu.typesFailed": "Zoznam GPU sa z {provider} nepodarilo načítať.",
   "gpu.noGpus": "{provider} teraz neponúka žiadne GPU s {n} GB alebo viac.",  "gpu.tooSmall": "Toto GPU má menej ako odporúčaných {n} GB VRAM.",
   "gpu.utilization": "GPU",
@@ -1265,6 +1263,8 @@ export const sk: Record<MessageKey, string> = {
   "hf.needToken": "Najprv pridaj Hugging Face token (Integrácie › Hugging Face).",
   "hf.needLicense": "Najprv prijmi licenciu Krea 2 na Hugging Face.",
   "hf.tokenInvalid": "Hugging Face odmietol uložený token. Vlož nový.",
+  "hf.hubSays": "Hugging Face hovorí: {message}",
+  "hf.fineGrained": "Tvoj token je typu fine-grained: na huggingface.co › Settings › Access Tokens zapni „Read access to contents of all public gated repos you can access“, alebo vytvor token typu Read.",
   "hf.openSetup": "Otvoriť nastavenie Hugging Face",
 
   "ls.presetSimple.character_identity": "Najlepšie pre väčšinu postáv. Odporúčané.",

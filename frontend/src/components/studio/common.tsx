@@ -202,7 +202,8 @@ export function GpuPicker({
   }
   return (
     <div className="col gap-12">
-      <div className="form-grid">
+      {/* One field per row: the GPU label (name · memory · price per hour) stays readable. */}
+      <div className="col gap-12">
         <Field label={t("gpu.provider")}>
           <Select
             label={t("gpu.provider")}
@@ -248,17 +249,7 @@ export function GpuPicker({
       {selected && minMemoryGb && selected.memory_gb && selected.memory_gb < minMemoryGb ? (
         <div className="error-text">{t("gpu.tooSmall", { n: minMemoryGb })}</div>
       ) : null}
-      {selected ? (
-        selectedPrice ? (
-          <div className="price-line">
-            <span className="price">{formatMoney(selectedPrice, locale)}</span>
-            <span className="small">{t("gpu.perHour")}</span>
-            <span className="hint grow">{t("gpu.priceHint", { provider: providerName })}</span>
-          </div>
-        ) : (
-          <div className="hint">{t("gpu.noPrice")}</div>
-        )
-      ) : null}
+      {selected && !selectedPrice ? <div className="hint">{t("gpu.noPrice")}</div> : null}
     </div>
   );
 }

@@ -924,9 +924,19 @@ export interface HfStatus {
   set: boolean;
   masked: string | null;
   token: "valid" | "invalid" | "unknown" | null;
+  // Hugging Face's own reason when the token is not valid or could not be checked.
+  token_message: string | null;
   account: string | null;
   ready: boolean;
-  repos: { repo: string; variant: "raw" | "turbo"; name: string; url: string; access: HfAccess }[];
+  repos: {
+    repo: string;
+    variant: "raw" | "turbo";
+    name: string;
+    url: string;
+    access: HfAccess;
+    // Hugging Face's own reason when access is not granted.
+    message: string | null;
+  }[];
 }
 
 export interface SecretInfo {

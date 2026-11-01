@@ -145,7 +145,11 @@ class FakeHub:
             path = request.url.path
             self.calls.append(path)
             if token in self.invalid_tokens:
-                return httpx.Response(401, json={"error": "Invalid credentials"})
+                return httpx.Response(
+                    401,
+                    headers={"X-Error-Message": "Invalid credentials in Authorization header"},
+                    json={"error": "Invalid credentials in Authorization header"},
+                )
             if path == "/api/whoami-v2":
                 return httpx.Response(200, json={"type": "user", "name": "studio-user"})
             if path.startswith("/api/models/") and path.endswith("/auth-check"):
@@ -153,7 +157,11 @@ class FakeHub:
                 if repo in self.no_license.get(token, set()):
                     return httpx.Response(
                         403,
-                        headers={"X-Error-Code": "GatedRepo"},
+                        headers={
+                            "X-Error-Code": "GatedRepo",
+                            "X-Error-Message": f"Access to model {repo} is restricted. You "
+                            "must have access to it and be authenticated to access it.",
+                        },
                         json={"error": "Access to model is restricted."},
                     )
                 return httpx.Response(200, json={})

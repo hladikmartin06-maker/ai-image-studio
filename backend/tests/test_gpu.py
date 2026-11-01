@@ -15,11 +15,19 @@ from app.db import SessionLocal
 from app.gpu.base import GPUError, WorkloadSpec
 from app.gpu.modal_provider import ModalProvider
 from app.gpu.registry import set_gpu_adapter
-from app.gpu.runpod import RunPodProvider
+from app.gpu.runpod import REST_CUDA, REST_GPU_IDS, RunPodProvider
 from app.models import GPUIntegration, GPUWorkload
 from tests.conftest import Api, make_user
 
 RUNPOD_KEY = "rp_test_key_123456"
+
+
+# RunPod's answer to a body outside its spec (the owner's error message, 2026-11-01).
+SCHEMA_ERROR = (
+    "At #/paths/pods/post for POST https://rest.runpod.io/v1/pods, The request body is defined "
+    "as an object. However, it does not meet the schema requirements of the specification. "
+    "Suggestion: Ensure that the object being submitted, matches the schema correctly"
+)
 
 
 @dataclass
@@ -39,8 +47,6 @@ class FakeRunPod:
     calls: list[tuple[str, str, Any]] = field(default_factory=list)
     # Driver CUDA versions with no free host right now (pod creation answers "no instances").
     no_capacity: set[str] = field(default_factory=set)
-    # Refuse allowedCudaVersions outside the enum of RunPod's published API (up to "13.0").
-    strict_cuda: bool = False
     _ids: itertools.count = field(default_factory=lambda: itertools.count(1))
 
     def transport(self) -> httpx.MockTransport:
@@ -89,11 +95,11 @@ class FakeRunPod:
             return httpx.Response(200, json=list(self.pods.values()))
         if path == "/v1/pods" and request.method == "POST":
             allowed = body.get("allowedCudaVersions") or []
-            documented = {"13.0", "12.9", "12.8", "12.7", "12.6", "12.5", "12.4"}
-            if self.strict_cuda and any(v not in documented for v in allowed):
-                return httpx.Response(
-                    400, json={"error": "allowedCudaVersions: value is not one of the enum"}
-                )
+            # Like RunPod's API: every value is checked against its OpenAPI enums.
+            if any(v not in REST_CUDA for v in allowed) or any(
+                g not in REST_GPU_IDS for g in body.get("gpuTypeIds") or []
+            ):
+                return httpx.Response(400, json={"error": SCHEMA_ERROR})
             if allowed and all(v in self.no_capacity for v in allowed):
                 return httpx.Response(
                     500,
@@ -364,3 +370,64 @@ async def test_runpod_requests_get_through_cloudflare():
         await RunPodProvider(transport=httpx.MockTransport(blocked)).gpu_types(creds)
     assert err.value.code == "provider_error"
     assert "Cloudflare" in err.value.message and "1010" in err.value.message
+
+
+async def test_runpod_sends_only_values_its_api_accepts():
+    """RunPod checks requests against its OpenAPI spec: the studio reads the spec's lists
+    (live when reachable, else the checked-in ones) and sends only accepted GPU types and CUDA
+    versions; GPU types the API does not accept are not offered."""
+    from app.gpu import runpod
+
+    live = {
+        "components": {
+            "schemas": {
+                "PodCreateInput": {
+                    "properties": {
+                        "gpuTypeIds": {"items": {"enum": ["NVIDIA L4", "NVIDIA New GPU"]}},
+                        "allowedCudaVersions": {"items": {"enum": ["13.0", "13.1"]}},
+                    }
+                }
+            }
+        }
+    }
+    bodies: list[dict] = []
+
+    def answer(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/openapi.json"):
+            return httpx.Response(200, json=live)
+        if request.url.host == "api.runpod.io":
+            return httpx.Response(
+                200,
+                json={
+                    "data": {
+                        "gpuTypes": [
+                            {"id": i, "displayName": i, "memoryInGb": 48, "securePrice": 1.0}
+                            for i in ("NVIDIA L4", "NVIDIA New GPU", "NVIDIA Old GPU")
+                        ]
+                    }
+                },
+            )
+        bodies.append(json.loads(request.content))
+        return httpx.Response(200, json={"id": "pod-x", "desiredStatus": "RUNNING"})
+
+    creds = {"api_key": RUNPOD_KEY}
+    runpod.clear_spec_cache()
+    try:
+        provider = RunPodProvider(transport=httpx.MockTransport(answer))
+        assert [g.id for g in await provider.gpu_types(creds)] == ["NVIDIA L4", "NVIDIA New GPU"]
+        spec = WorkloadSpec(
+            name="t", image="img", gpu_type="NVIDIA New GPU", allowed_cuda_versions=["13.0", "13.2"]
+        )
+        await provider.create_workload(creds, spec)
+        assert bodies[-1]["allowedCudaVersions"] == ["13.0"]
+        with pytest.raises(GPUError) as err:
+            await provider.create_workload(
+                creds, WorkloadSpec(name="t", image="img", gpu_type="NVIDIA Old GPU")
+            )
+        assert err.value.code == "invalid_request" and len(bodies) == 1
+    finally:
+        runpod.clear_spec_cache()
+    # Without the live spec, the lists checked into the studio are used.
+    offline = RunPodProvider(transport=httpx.MockTransport(lambda r: httpx.Response(404)))
+    assert await offline.accepted_cuda(creds, ["12.8", "13.0", "13.3"]) == ["12.8", "13.0"]
+    runpod.clear_spec_cache()

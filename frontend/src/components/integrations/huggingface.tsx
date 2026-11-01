@@ -154,7 +154,12 @@ export function HuggingFaceTab() {
             ) : null}
             {!s.set || s.token === "invalid" ? (
               <div style={{ marginTop: 10 }}>
-                {s.token === "invalid" ? <Notice tone="danger">{t("hf.tokenInvalid")}</Notice> : null}
+                {s.token === "invalid" ? (
+                  <Notice tone="danger">
+                    <div>{t("hf.tokenInvalid")}</div>
+                    {s.token_message ? <div className="tiny" style={{ marginTop: 4 }}>{t("hf.hubSays", { message: s.token_message })}</div> : null}
+                  </Notice>
+                ) : null}
                 <TokenForm />
               </div>
             ) : null}
@@ -173,6 +178,14 @@ export function HuggingFaceTab() {
                   <div className="grow" style={{ minWidth: 0 }}>
                     <div className="small" style={{ fontWeight: 600 }}>{r.name}</div>
                     <div className="tiny subtle mono truncate">{r.repo}</div>
+                    {r.access !== "granted" && r.message ? (
+                      <div className="tiny" style={{ marginTop: 4, color: "var(--text-2)" }}>
+                        {t("hf.hubSays", { message: r.message })}
+                      </div>
+                    ) : null}
+                    {r.access !== "granted" && /fine-grained/i.test(r.message ?? "") ? (
+                      <div className="tiny" style={{ marginTop: 4, color: "var(--warning)" }}>{t("hf.fineGrained")}</div>
+                    ) : null}
                   </div>
                   {r.access === "granted" ? (
                     <Badge tone="success">{t("hf.access.granted")}</Badge>
@@ -189,7 +202,12 @@ export function HuggingFaceTab() {
                 <Button size="sm" icon={<RefreshCw />} loading={refresh.isPending} onClick={check}>
                   {t("hf.checkAgain")}
                 </Button>
-                {s.token === "unknown" ? <span className="tiny subtle">{t("hf.unreachable")}</span> : null}
+                {s.token === "unknown" ? (
+                  <span className="tiny subtle">
+                    {t("hf.unreachable")}
+                    {s.token_message ? ` ${s.token_message}` : ""}
+                  </span>
+                ) : null}
               </div>
             ) : (
               <div className="tiny subtle" style={{ marginTop: 10 }}>{t("hf.tokenFirst")}</div>

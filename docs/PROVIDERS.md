@@ -250,10 +250,15 @@ are installed afterwards with one click. Code: `backend/app/comfy/deploy.py`,
   `/workspace/runpod-slim/ComfyUI/models/<folder>`; started only once ComfyUI answers. ComfyUI
   lists new files without a restart (its `folder_paths` file list is refreshed when a folder
   changes); the studio checks `/object_info` again after the download.
-- **CUDA list**: RunPod's published API (`runpod/docs`, `api-reference/openapi.json`, checked
-  2026-10-31) lists `allowedCudaVersions` values up to "13.0" only. "13.1"–"13.3" are sent as
-  the owner asked; if RunPod refuses them (HTTP 400 naming the CUDA field), the request is sent
-  again with `["13.0"]` (a refused request creates no pod). Training pods do the same.
+- **Request validation** (found 2026-11-01): RunPod's REST API checks every `POST /v1/pods`
+  body against its OpenAPI spec and refuses values outside its enums ("The request body is
+  defined as an object. However, it does not meet the schema requirements of the
+  specification"). The spec (`runpod/docs`, `api-reference/openapi.json`, checked
+  2026-10-31) lists `allowedCudaVersions` up to "13.0" and 49 `gpuTypeIds`. The studio reads
+  the live spec (`GET https://rest.runpod.io/v1/openapi.json`, cached 6 h; the checked-in lists
+  in `gpu/runpod.py` when it cannot) and sends only accepted values: the CUDA 13 image asks
+  for 13.0 (13.1–13.3 when the spec lists them), training pods likewise; GPU types the pod
+  API does not accept are not offered.
 - **No free GPU**: RunPod's wording "There are no longer any instances available …" /
   "does not have the resources" (from RunPod's own pod tests in comfyui-base,
   `tests/runpod_smoke/pod.py`) is shown as "No GPU of this type is free right now"; then the
@@ -270,8 +275,8 @@ are installed afterwards with one click. Code: `backend/app/comfy/deploy.py`,
   sit behind Cloudflare, which refuses library User-Agents such as Python-urllib (error 1010,
   noted in the same file), so every request carries `User-Agent: ai-image-studio/1.0 (+…)`;
   a Cloudflare block page is reported as such, not as a wrong key. The chosen GPU's hourly
-  price is the API's `securePrice` (Secure Cloud) and is shown before renting and in the
-  confirmation; disk storage is billed by RunPod separately (no price API is used for it).
+  price is the API's `securePrice` (Secure Cloud), shown in the GPU list and in the
+  confirmation (disk storage is billed by RunPod separately; no price API is used for it).
 - Connections set up by older studio versions (which installed ComfyUI themselves) are not
   started again: the studio asks to delete them and rent a new GPU.
 - **Not run on a real RunPod or Modal GPU** and not against huggingface.co: verified from the
@@ -324,6 +329,9 @@ Status (2026-10-31): endpoints, headers and status codes read from the source of
 against the real Hub** — verified with a fake Hub (`tests/fakes.py` `FakeHub`, and
 `tests/fake_server.py` for trying the app). When the Hub cannot be reached, the token is still
 saved and training is not blocked (the trainer then reports a download error itself).
+Hugging Face's own reason for a refusal (`X-Error-Message` header, as huggingface_hub reads it,
+else the JSON `error`) is shown next to the token or the repository; fine-grained tokens need
+"Read access to contents of all public gated repos you can access".
 
 # Assistant photos
 

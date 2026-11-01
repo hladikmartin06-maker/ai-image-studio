@@ -239,6 +239,8 @@ async def test_training_on_runpod_end_to_end(user: Api, tmp_path: Path, hub: Fak
         hub.invalid_tokens.add("hf_badtoken999")
         bad = await user.put("/api/secrets/huggingface", json={"value": "hf_badtoken999"})
         assert bad.status_code == 400 and bad.json()["error"]["code"] == "invalid_key"
+        # Hugging Face's own reason is shown.
+        assert "Invalid credentials in Authorization header" in bad.json()["error"]["message"]
         hub.no_license["hf_testtoken123"] = {"krea/Krea-2-Raw"}
         assert (
             await user.put("/api/secrets/huggingface", json={"value": "hf_testtoken123"})
@@ -252,11 +254,14 @@ async def test_training_on_runpod_end_to_end(user: Api, tmp_path: Path, hub: Fak
             "krea/Krea-2-Raw": "needs_license",
             "krea/Krea-2-Turbo": "granted",
         }
+        raw = next(r for r in status["repos"] if r["repo"] == "krea/Krea-2-Raw")
+        assert "Access to model krea/Krea-2-Raw is restricted" in raw["message"]
         blocked = await user.post(
             f"/api/loras/{lora['id']}/versions", json={**body, "confirm_billing": True}
         )
         assert blocked.status_code == 409
         assert blocked.json()["error"]["code"] == "hf_license_required"
+        assert "Hugging Face says" in blocked.json()["error"]["message"]
         assert fake.pods == {} and not fake.bodies  # nothing rented
         hub.no_license.clear()  # the user clicked "Agree" on huggingface.co
         status = (await user.get("/api/secrets/huggingface/status?refresh=true")).json()
@@ -281,6 +286,8 @@ async def test_training_on_runpod_end_to_end(user: Api, tmp_path: Path, hub: Fak
         pod = next(iter(fake.bodies.values()))
         assert pod["env"]["HF_TOKEN"] == "hf_testtoken123"
         assert pod["imageName"] == "ostris/aitoolkit:latest"
+        # Only CUDA versions RunPod's API accepts (13.1-13.3 are not in its spec).
+        assert pod["allowedCudaVersions"] == ["13.0"]
         assert version["step"] == 100 and version["loss"]
         assert version["checkpoints"][0]["step"] == 50
         assert version["samples"] and version["cost_final"] is not None

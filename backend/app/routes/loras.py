@@ -682,14 +682,14 @@ async def start_training(
             )
         # Checked before any GPU is rented; when Hugging Face cannot be reached the run goes
         # ahead and the trainer reports a download error itself.
-        access = await huggingface.repo_access(token, variant["name_or_path"], refresh=True)
+        access, reason = await huggingface.repo_access(token, variant["name_or_path"], refresh=True)
         if access == "needs_license":
             raise api_error(
                 409,
                 "hf_license_required",
                 f"Accept the Krea 2 license once on https://huggingface.co/"
                 f"{variant['name_or_path']} (button “Agree and access repository”), "
-                "then start again.",
+                "then start again." + (f" Hugging Face says: {reason}" if reason else ""),
             )
         if access == "invalid_token":
             raise api_error(

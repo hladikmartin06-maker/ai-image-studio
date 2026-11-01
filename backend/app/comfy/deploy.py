@@ -32,7 +32,7 @@ from app.gpu.agent import AGENT_PORT, COMFY_AGENT_PORT, COMFY_BOOT, agent_env, n
 from app.gpu.agent_client import AgentClient, AgentError
 from app.gpu.base import GPUError, WorkloadSpec
 from app.gpu.registry import get_gpu_adapter
-from app.gpu.runpod import CUDA12, CUDA13, CUDA13_DOCUMENTED, refused_cuda
+from app.gpu.runpod import CUDA12, CUDA13
 from app.models import ComfyConnection, Generation, UserSecret
 from app.security import decrypt_secret, encrypt_secret
 
@@ -138,26 +138,29 @@ def spec_for(
 
 
 async def _create(db, conn: ComfyConnection, token: str, hf: str | None):
-    """Creates the pod with the first image a free GPU fits. Only requests the provider
-    refused are sent again, so no second pod can be created by mistake."""
+    """Creates the pod with the first image a free GPU fits. A request is only followed by the
+    next one when RunPod answered that no machine is free (no pod was created)."""
     provider = conn.deploy["provider"]
     plan = image_plan(provider, conn.deploy["gpu_type"])
+    creds = await gpu_service.load_creds(db, conn.user_id, provider)
+    adapter = get_gpu_adapter(provider)
     last: GPUError | None = None
-    for image, cuda in plan:
-        for versions in (cuda, CUDA13_DOCUMENTED) if cuda == CUDA13 else (cuda,):
-            spec = spec_for(conn, token, hf, image, versions)
-            try:
-                workload = await gpu_service.launch(db, conn.user_id, provider, spec, "comfyui")
-                return workload, image, versions
-            except GPUError as exc:
-                last = exc
-                if refused_cuda(exc) and versions != CUDA13_DOCUMENTED:
-                    continue
-                if exc.code == "unavailable":
-                    break  # no free host for this image: try the next one
-                raise
-    assert last is not None
-    raise last
+    for image, wanted in plan:
+        # Only the CUDA versions RunPod's API accepts are sent (it refuses the whole request
+        # otherwise).
+        cuda = await adapter.accepted_cuda(creds, wanted) if wanted else []
+        if wanted and not cuda:
+            continue
+        spec = spec_for(conn, token, hf, image, cuda)
+        try:
+            workload = await gpu_service.launch(db, conn.user_id, provider, spec, "comfyui")
+            return workload, image, cuda
+        except GPUError as exc:
+            last = exc
+            if exc.code == "unavailable":
+                continue  # no free machine for this image: try the next one
+            raise
+    raise last or GPUError("unavailable", "No CUDA version of this GPU is accepted by RunPod.")
 
 
 async def launch(db, conn: ComfyConnection) -> None:

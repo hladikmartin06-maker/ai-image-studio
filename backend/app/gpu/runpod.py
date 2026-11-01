@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import json
 import re
+import time
 from typing import Any
 
 import httpx
@@ -69,18 +70,78 @@ UNAVAILABLE_RE = re.compile(
 )
 
 
-# Driver CUDA versions for allowedCudaVersions. RunPod's published API (runpod/docs,
-# api-reference/openapi.json) lists versions up to "13.0"; newer drivers are asked for too,
-# and if RunPod refuses them the request is sent again with CUDA13_DOCUMENTED (a refused
-# request created no pod, so nothing can be billed twice).
+# Driver CUDA versions the studio asks for (allowedCudaVersions); only the ones RunPod's API
+# accepts are sent (see accepted_cuda).
 CUDA12 = ["12.8", "12.9"]
 CUDA13 = ["13.0", "13.1", "13.2", "13.3"]
-CUDA13_DOCUMENTED = ["13.0"]
+
+# RunPod's REST API checks every request against its OpenAPI spec and refuses values outside
+# its lists ("The request body ... does not meet the schema requirements of the
+# specification"). The lists below are PodCreateInput's enums from that spec (runpod/docs,
+# api-reference/openapi.json, checked 2026-10-31); the live spec (GET /v1/openapi.json) is
+# read when it can be, so GPUs and CUDA versions RunPod adds later work without an update.
+REST_GPU_IDS = frozenset(
+    [
+        "NVIDIA GeForce RTX 4090",
+        "NVIDIA A40",
+        "NVIDIA RTX A5000",
+        "NVIDIA GeForce RTX 5090",
+        "NVIDIA H100 80GB HBM3",
+        "NVIDIA GeForce RTX 3090",
+        "NVIDIA RTX A4500",
+        "NVIDIA L40S",
+        "NVIDIA H200",
+        "NVIDIA L4",
+        "NVIDIA RTX 6000 Ada Generation",
+        "NVIDIA A100-SXM4-80GB",
+        "NVIDIA RTX 4000 Ada Generation",
+        "NVIDIA RTX A6000",
+        "NVIDIA A100 80GB PCIe",
+        "NVIDIA RTX 2000 Ada Generation",
+        "NVIDIA RTX A4000",
+        "NVIDIA RTX PRO 6000 Blackwell Server Edition",
+        "NVIDIA H100 PCIe",
+        "NVIDIA H100 NVL",
+        "NVIDIA L40",
+        "NVIDIA B200",
+        "NVIDIA GeForce RTX 3080 Ti",
+        "NVIDIA RTX PRO 6000 Blackwell Workstation Edition",
+        "NVIDIA GeForce RTX 3080",
+        "NVIDIA GeForce RTX 3070",
+        "AMD Instinct MI300X OAM",
+        "NVIDIA GeForce RTX 4080 SUPER",
+        "Tesla V100-PCIE-16GB",
+        "Tesla V100-SXM2-32GB",
+        "NVIDIA RTX 5000 Ada Generation",
+        "NVIDIA GeForce RTX 4070 Ti",
+        "NVIDIA RTX 4000 SFF Ada Generation",
+        "NVIDIA GeForce RTX 3090 Ti",
+        "NVIDIA RTX A2000",
+        "NVIDIA GeForce RTX 4080",
+        "NVIDIA A30",
+        "NVIDIA GeForce RTX 5080",
+        "Tesla V100-FHHL-16GB",
+        "NVIDIA H200 NVL",
+        "Tesla V100-SXM2-16GB",
+        "NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition",
+        "NVIDIA A5000 Ada",
+        "Tesla V100-PCIE-32GB",
+        "NVIDIA  RTX A4500",
+        "NVIDIA  A30",
+        "NVIDIA GeForce RTX 3080TI",
+        "Tesla T4",
+        "NVIDIA RTX A30",
+    ]
+)
+REST_CUDA = frozenset(
+    ["13.0", "12.9", "12.8", "12.7", "12.6", "12.5", "12.4", "12.3", "12.2", "12.1", "12.0", "11.8"]
+)
+_SPEC_SECONDS = 6 * 3600
+_spec_cache: dict[str, tuple[float, frozenset[str], frozenset[str]]] = {}
 
 
-def refused_cuda(exc: GPUError) -> bool:
-    """RunPod rejected the allowedCudaVersions values themselves."""
-    return exc.code == "invalid_request" and "cuda" in exc.detail.lower()
+def clear_spec_cache() -> None:
+    _spec_cache.clear()
 
 
 def _cloudflare(response: httpx.Response) -> bool:
@@ -169,12 +230,37 @@ class RunPodProvider:
     async def check(self, creds: dict[str, str]) -> None:
         await self._call(creds, "GET", f"{_rest()}/pods")
 
+    async def rest_enums(self, creds: dict[str, str]) -> tuple[frozenset[str], frozenset[str]]:
+        """GPU type ids and CUDA versions the pod API accepts: from the live spec when it
+        can be read (cached), else the lists checked into the studio."""
+        hit = _spec_cache.get(_rest())
+        if hit and time.monotonic() - hit[0] < _SPEC_SECONDS:
+            return hit[1], hit[2]
+        gpus, cuda = REST_GPU_IDS, REST_CUDA
+        try:
+            data = await self._call(creds, "GET", f"{_rest()}/openapi.json")
+            props = data["components"]["schemas"]["PodCreateInput"]["properties"]
+            live_gpus = frozenset(str(g) for g in props["gpuTypeIds"]["items"]["enum"])
+            live_cuda = frozenset(str(c) for c in props["allowedCudaVersions"]["items"]["enum"])
+            if live_gpus and live_cuda:
+                gpus, cuda = live_gpus, live_cuda
+        except (GPUError, KeyError, TypeError, AttributeError):
+            pass  # the checked-in lists
+        _spec_cache[_rest()] = (time.monotonic(), gpus, cuda)
+        return gpus, cuda
+
+    async def accepted_cuda(self, creds: dict[str, str], versions: list[str]) -> list[str]:
+        """The CUDA versions of this list that RunPod's API accepts (order kept)."""
+        _, cuda = await self.rest_enums(creds)
+        return [v for v in versions if v in cuda]
+
     async def gpu_types(self, creds: dict[str, str]) -> list[GpuType]:
         data = await self._graphql(
             creds,
             "query GpuTypes { gpuTypes { id displayName memoryInGb securePrice communityPrice "
             "manufacturer } }",
         )
+        accepted, _ = await self.rest_enums(creds)
         out = [
             GpuType(
                 id=str(g.get("id")),
@@ -186,7 +272,8 @@ class RunPodProvider:
                 manufacturer=str(g["manufacturer"]) if g.get("manufacturer") else None,
             )
             for g in data.get("gpuTypes") or []
-            if g.get("id")
+            # Only GPU types the pod API accepts can be rented.
+            if g.get("id") and str(g.get("id")) in accepted
         ]
         return sorted(out, key=lambda g: (g.memory_gb or 0, g.name))
 
@@ -230,6 +317,19 @@ class RunPodProvider:
         return [self._workload(p) for p in pods if isinstance(p, dict)]
 
     async def create_workload(self, creds: dict[str, str], spec: WorkloadSpec) -> Workload:
+        gpus, _ = await self.rest_enums(creds)
+        if spec.gpu_type not in gpus:
+            raise GPUError(
+                "invalid_request",
+                f"RunPod's API does not accept the GPU type “{spec.gpu_type}”. Pick another GPU.",
+            )
+        cuda = await self.accepted_cuda(creds, spec.allowed_cuda_versions)
+        if spec.allowed_cuda_versions and not cuda:
+            raise GPUError(
+                "invalid_request",
+                "RunPod's API accepts none of the CUDA versions "
+                + ", ".join(spec.allowed_cuda_versions),
+            )
         body: dict[str, Any] = {
             "name": spec.name,
             "imageName": spec.image,
@@ -252,8 +352,8 @@ class RunPodProvider:
             body["dockerStartCmd"] = spec.command[1:]
         if spec.volume_gb:
             body["volumeMountPath"] = "/workspace"
-        if spec.allowed_cuda_versions:
-            body["allowedCudaVersions"] = list(spec.allowed_cuda_versions)
+        if cuda:
+            body["allowedCudaVersions"] = cuda
         data = await self._call(creds, "POST", f"{_rest()}/pods", json=body)
         if not isinstance(data, dict) or not data.get("id"):
             raise GPUError("provider_error", "No pod id in the response")

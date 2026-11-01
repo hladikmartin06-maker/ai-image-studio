@@ -44,7 +44,7 @@ class GPUError(Exception):
     def message(self) -> str:
         base = MESSAGES.get(self.code, "The GPU provider request failed.")
         if self.detail and self.code not in ("invalid_credentials", "network_error"):
-            return f"{base} ({self.detail[:240]})"
+            return f"{base} ({self.detail[:600]})"
         return base
 
 

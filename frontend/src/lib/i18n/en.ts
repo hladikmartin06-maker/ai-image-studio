@@ -810,8 +810,6 @@ export const en = {
   "gpu.gpuCount": "GPUs",
   "gpu.noPrice": "This provider reports no price; see its dashboard.",
   "gpu.noProviderConnected": "To rent a GPU, connect RunPod or Modal first.",
-  "gpu.priceHint": "{provider}'s price for this GPU while it runs, billed by {provider}. The disk is billed by {provider} separately, also while the GPU is stopped.",
-  "gpu.perHour": "per hour",
   "gpu.typesFailed": "The GPU list could not be loaded from {provider}.",
   "gpu.noGpus": "{provider} offers no GPU with {n} GB or more right now.",
   "gpu.tooSmall": "This GPU has less than the recommended {n} GB of VRAM.",
@@ -1264,6 +1262,8 @@ export const en = {
   "hf.needToken": "Add your Hugging Face token first (Integrations › Hugging Face).",
   "hf.needLicense": "Accept the Krea 2 license on Hugging Face first.",
   "hf.tokenInvalid": "Hugging Face rejected the saved token. Paste a new one.",
+  "hf.hubSays": "Hugging Face says: {message}",
+  "hf.fineGrained": "Your token is fine-grained: on huggingface.co › Settings › Access Tokens enable “Read access to contents of all public gated repos you can access”, or create a token of type Read.",
   "hf.openSetup": "Open Hugging Face setup",
 
   "ls.presetSimple.character_identity": "Best for most characters. Recommended.",

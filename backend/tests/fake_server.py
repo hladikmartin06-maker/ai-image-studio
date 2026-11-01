@@ -335,7 +335,7 @@ async def runpod_graphql(request: Request):
                         "communityPrice": 0.39,
                     },
                     {
-                        "id": "NVIDIA RTX 4090",
+                        "id": "NVIDIA GeForce RTX 4090",
                         "displayName": "RTX 4090",
                         "memoryInGb": 24,
                         "securePrice": 0.69,
@@ -356,6 +356,15 @@ async def runpod_graphql(request: Request):
                         "memoryInGb": 192,
                         "securePrice": 2.49,
                         "manufacturer": "AMD",
+                        "communityPrice": None,
+                    },
+                    {
+                        # Listed by GraphQL but not accepted by the pod API: never offered.
+                        "id": "NVIDIA A100-SXM4-40GB",
+                        "displayName": "A100 SXM 40GB",
+                        "memoryInGb": 40,
+                        "securePrice": 1.19,
+                        "manufacturer": "Nvidia",
                         "communityPrice": None,
                     },
                     {
@@ -385,6 +394,20 @@ async def runpod_create(request: Request):
     if not _authorized(request):
         return _unauthorized()
     body = await request.json()
+    # Like RunPod's API: values outside its OpenAPI enums are refused.
+    from app.gpu.runpod import REST_CUDA, REST_GPU_IDS
+
+    if any(v not in REST_CUDA for v in body.get("allowedCudaVersions") or []) or any(
+        g not in REST_GPU_IDS for g in body.get("gpuTypeIds") or []
+    ):
+        return JSONResponse(
+            {
+                "error": "At #/paths/pods/post for POST https://rest.runpod.io/v1/pods, The "
+                "request body is defined as an object. However, it does not meet the schema "
+                "requirements of the specification."
+            },
+            status_code=400,
+        )
     pod_id = f"pod{uuid.uuid4().hex[:10]}"  # unique across restarts of this fake
     _pods[pod_id] = {
         "id": pod_id,
