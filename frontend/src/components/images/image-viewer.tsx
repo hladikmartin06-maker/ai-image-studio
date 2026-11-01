@@ -18,7 +18,7 @@ import { createPortal } from "react-dom";
 
 import { useImageActions } from "@/components/images/actions";
 import { AddToPersona } from "@/components/personas/shared";
-import { Badge, Button, IconButton } from "@/components/ui";
+import { Badge, Button, IconButton, Notice, Segmented } from "@/components/ui";
 import { aspectLabel, formatBytes, formatDate } from "@/lib/format";
 import { useI18n } from "@/lib/i18n";
 import { StatusBadge } from "@/components/images/status";
@@ -39,11 +39,16 @@ export function ImageViewer({
   const actions = useImageActions();
   const image = index !== null ? images[index] : undefined;
   const [loadedId, setLoadedId] = useState<string | null>(null);
+  // Enhance photo: the result, before/after with a slider, or both side by side.
+  const [view, setView] = useState<"result" | "slider" | "side">("result");
+  const [missingOriginal, setMissingOriginal] = useState<string | null>(null);
 
   useEffect(() => {
     if (index === null) return;
     const onKey = (e: KeyboardEvent) => {
       if ((e.target as HTMLElement)?.closest?.(".modal")) return;
+      // The before/after slider uses the arrow keys itself.
+      if (e.key !== "Escape" && (e.target as HTMLElement)?.closest?.(".viewer-compare")) return;
       if (e.key === "Escape") onClose();
       if (e.key === "ArrowLeft" && index > 0) onIndexChange(index - 1);
       if (e.key === "ArrowRight" && index < images.length - 1) onIndexChange(index + 1);
@@ -63,6 +68,9 @@ export function ImageViewer({
 
   if (!image || index === null) return null;
   const s = image.settings;
+  const input = image.comfy?.family === "pgupscaler" ? image.comfy.input : null;
+  const original = input && missingOriginal !== input.url ? input.url : null;
+  const shown = original ? view : "result";
 
   const settingsRows: [string, string][] = [];
   if (s.resolution) settingsRows.push([t("gen.resolution"), s.resolution.toUpperCase()]);
@@ -96,16 +104,29 @@ export function ImageViewer({
             {index + 1} / {images.length}
           </span>
         </div>
-        {loadedId !== image.id ? (
-          <img className="thumb-layer" src={image.thumb_url} alt="" aria-hidden />
-        ) : null}
-        <img
-          key={image.id}
-          src={image.url}
-          alt={image.prompt}
-          onLoad={() => setLoadedId(image.id)}
-          style={{ opacity: loadedId === image.id ? 1 : 0, transition: "opacity 200ms" }}
-        />
+        {original && shown !== "result" ? (
+          <BeforeAfter
+            key={`${image.id}:${shown}`}
+            mode={shown}
+            before={original}
+            after={image.url}
+            labels={[t("en.before"), t("en.after")]}
+            onBeforeError={() => setMissingOriginal(original)}
+          />
+        ) : (
+          <>
+            {loadedId !== image.id ? (
+              <img className="thumb-layer" src={image.thumb_url} alt="" aria-hidden />
+            ) : null}
+            <img
+              key={image.id}
+              src={image.url}
+              alt={image.prompt}
+              onLoad={() => setLoadedId(image.id)}
+              style={{ opacity: loadedId === image.id ? 1 : 0, transition: "opacity 200ms" }}
+            />
+          </>
+        )}
         {index > 0 ? (
           <span className="viewer-nav prev">
             <IconButton label={t("viewer.previous")} onMedia onClick={() => onIndexChange(index - 1)}>
@@ -153,6 +174,28 @@ export function ImageViewer({
             <AddToPersona imageIds={[image.id]} />
           </div>
         </div>
+        {input ? (
+          <div className="viewer-side-section">
+            <div className="eyebrow" style={{ marginBottom: 10 }}>
+              {t("en.view")}
+            </div>
+            {original ? (
+              <Segmented
+                label={t("en.view")}
+                value={shown}
+                block
+                onChange={setView}
+                options={[
+                  { value: "result", label: t("en.viewResult") },
+                  { value: "slider", label: t("en.viewSlider") },
+                  { value: "side", label: t("en.viewSide") },
+                ]}
+              />
+            ) : (
+              <Notice>{t("en.originalGone")}</Notice>
+            )}
+          </div>
+        ) : null}
         <div className="viewer-side-section">
           <div className="row" style={{ marginBottom: 8 }}>
             <div className="eyebrow grow">{t("viewer.prompt")}</div>
@@ -261,5 +304,60 @@ export function ImageViewer({
       </aside>
     </div>,
     document.body,
+  );
+}
+
+/** Enhance photo: the original and the result, with a slider (the original on the left of
+ * the line) or side by side. The result sets the size; the original is scaled to it. */
+function BeforeAfter({
+  mode,
+  before,
+  after,
+  labels,
+  onBeforeError,
+}: {
+  mode: "slider" | "side";
+  before: string;
+  after: string;
+  labels: [string, string];
+  onBeforeError: () => void;
+}) {
+  const [split, setSplit] = useState(50);
+  if (mode === "side") {
+    return (
+      <div className="viewer-side-by-side">
+        <figure>
+          <img src={before} alt={labels[0]} onError={onBeforeError} />
+          <figcaption>{labels[0]}</figcaption>
+        </figure>
+        <figure>
+          <img src={after} alt={labels[1]} />
+          <figcaption>{labels[1]}</figcaption>
+        </figure>
+      </div>
+    );
+  }
+  return (
+    <div className="viewer-compare">
+      <img src={after} alt={labels[1]} />
+      <img
+        className="before"
+        src={before}
+        alt={labels[0]}
+        onError={onBeforeError}
+        style={{ clipPath: `inset(0 ${100 - split}% 0 0)` }}
+      />
+      <div className="compare-line" style={{ left: `${split}%` }} />
+      <span className="compare-label left">{labels[0]}</span>
+      <span className="compare-label right">{labels[1]}</span>
+      <input
+        type="range"
+        min={0}
+        max={100}
+        value={split}
+        onChange={(e) => setSplit(Number(e.target.value))}
+        aria-label={`${labels[0]} / ${labels[1]}`}
+      />
+    </div>
   );
 }

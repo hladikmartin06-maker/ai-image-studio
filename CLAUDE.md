@@ -114,12 +114,14 @@ repositories.
   (estimates); the GPU stops at the session limit, the spending limit or after inactivity.
 - Enhance photo (Generate › "Vylepšiť fotku", `comfy/enhance.py`): the workflow of the free
   RunPod template "PG - Free Upscaler" (PGUpscaler: Z-Image Turbo skin fix, optional SAM 3.1
-  face mask, SeedVR2 7B upscale 1.5/2/3×) rebuilt in API format from built-in ComfyUI nodes
+  face mask, SeedVR2 7B upscale 1.5/2/3×; strength 0.15–0.4 like the template's picker;
+  optional skin-prompt words and face-only target, checked like prompts) rebuilt in API
+  format from built-in ComfyUI nodes
   only — the template's setup.sh and custom nodes are not used. Runs on the same ComfyUI
   connection as Krea 2. Its 6 model files come only from `huggingface.co/AIPRIVATEGROUP/
   pgupscaler` through the agent (one click). The photo is the user's upload, an AI model photo
   or a generated image; it is uploaded to that ComfyUI only for the run. Image viewers have an
-  "Enhance photo" action.
+  "Enhance photo" action and show its results before/after (slider or side by side).
 - Hugging Face: token in Integrations › Hugging Face, checked with `whoami-v2` and the Krea 2
   repositories' `auth-check` (`services/huggingface.py`). Accepting the license is the user's
   own click on huggingface.co (no API exists); the studio links there and checks again, and

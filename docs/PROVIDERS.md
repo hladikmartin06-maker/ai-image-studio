@@ -329,8 +329,10 @@ používam ÚPLNE ZADARMO" by Tomáš Ižvolt). Code: `backend/app/comfy/enhance
 - the template page (its `__NEXT_DATA__`: name, image, disks, readme) and its start command,
   which downloads `setup.sh` from the public Hugging Face repository
   `huggingface.co/AIPRIVATEGROUP/pgupscaler` (the owner also pasted it);
-- the repository's file tree (`/api/models/AIPRIVATEGROUP/pgupscaler/tree/main`, sizes) and
-  `workflows/PGUpscaler - EN.json` (nodes, links, widget values) and `README.md` (settings);
+- the repository's file tree (`/api/models/AIPRIVATEGROUP/pgupscaler/tree/main`, sizes),
+  `workflows/PGUpscaler - EN.json` and `- SK.json` (nodes, links, widget values, the strength
+  picker's values, the instructions note) and `README.md` (settings). The SK file the owner
+  sent on 2026-11-01 is the same graph as the repository's (compared node by node);
 - ComfyUI's own source at v0.30.0 and v0.35.0: every node of the workflow is built in
   (`SAM3_Detect`, `SeedVR2Preprocess`, `SeedVR2Conditioning`, `SeedVR2PostProcessing`,
   `ModelSamplingAuraFlow`, `ImageScaleToTotalPixels`, `ImageCompositeMasked`, …). The
@@ -348,10 +350,18 @@ the image): the same graph in API format, on the same ComfyUI connection as Krea
 - **Graph**: LoadImage → ImageScaleToTotalPixels (2 MP, lanczos) → Z-Image Turbo img2img
   (UNETLoader, CLIPLoader type `lumina2`, ModelSamplingAuraFlow shift 3, the template's skin
   prompt, ConditioningZeroOut negative, KSampler 5 steps, CFG 1, dpmpp_2m_sde / beta,
-  denoise = strength 0.2 / 0.3 / 0.4) → optional face only (CheckpointLoaderSimple SAM 3.1,
-  "face" prompt, SAM3_Detect threshold 0.5, GrowMask 16, blur 31 / σ 10, ImageCompositeMasked)
+  denoise = strength 0.15 / 0.2 / 0.25 / 0.3 / 0.35 / 0.4, the values of the template's
+  picker) → optional face only (CheckpointLoaderSimple SAM 3.1, "face" prompt, SAM3_Detect
+  threshold 0.5, GrowMask 16, blur 31 / σ 10, ImageCompositeMasked)
   → ImageScaleBy 1.5 / 2 / 3 → SeedVR2 7B (tiled VAE 512 / 128, KSampler 1 step euler /
   simple) → SeedVR2PostProcessing color correction `lab` → SaveImage.
+- **Optional texts** (the template's note, under "More settings", English, checked like
+  prompts): words added to the end of the skin prompt (e.g. "freckles"; from strength 0.35
+  what the photo shows) and, with face only, what SAM 3.1 looks for instead of "face" (e.g.
+  "face, neck, hand"). History shows the skin prompt that ran.
+- **Before / after**: the template shows an Image Comparer (slide) and the original and the
+  result side by side; the studio's image viewer does both from the stored photo and the
+  result (no extra ComfyUI nodes).
 - **Photo**: an upload, an AI model photo or a generated image of the same user, uploaded to
   that ComfyUI with `POST /upload/image` for the run (again on "Repeat").
 - **GPU**: 24 GB or more like every GPU list; 3× is "very slow" and the README recommends

@@ -18,11 +18,10 @@ import type { Generation, ReferenceImage } from "@/lib/types";
 /** The photo to enhance: an upload (or an AI model's photo) or a generated image. */
 export type EnhancePhoto = EnhanceRequest;
 
-const STRENGTH_LABEL: Record<number, "en.strength.subtle" | "en.strength.default" | "en.strength.strong"> = {
-  0.2: "en.strength.subtle",
-  0.3: "en.strength.default",
-  0.4: "en.strength.strong",
-};
+/** The template's note: 0.15–0.2 subtle, 0.3 default, 0.35–0.4 strong. */
+function strengthHint(s: number) {
+  return s <= 0.2 ? "en.strength.subtleHint" : s >= 0.35 ? "en.strength.strongHint" : "en.strength.defaultHint";
+}
 
 /** Generate › Enhance photo: PGUpscaler (fixes plastic AI skin, then upscales and sharpens)
  * on the same ComfyUI as Krea 2 — this Mac or a rented GPU. */
@@ -53,7 +52,9 @@ export function EnhancePanel({
   const [faceOnly, setFaceOnly] = useState(before.face_only === true);
   const [upscale, setUpscale] = useState(typeof before.upscale === "number" ? before.upscale : 2);
   const [seed, setSeed] = useState(typeof before.seed === "number" ? String(before.seed) : "");
-  const [more, setMore] = useState(Boolean(seed));
+  const [skinExtra, setSkinExtra] = useState(before.skin_extra ?? "");
+  const [faceTarget, setFaceTarget] = useState(before.face_target ?? "");
+  const [more, setMore] = useState(Boolean(seed || skinExtra || faceTarget));
   const [picking, setPicking] = useState(false);
 
   const all = conns.data?.items ?? [];
@@ -100,6 +101,8 @@ export function EnhancePanel({
         face_only: faceOnly,
         upscale,
         seed: seed ? Number(seed) : null,
+        skin_extra: skinExtra.trim(),
+        face_target: faceOnly ? faceTarget.trim() || (spec?.face_target ?? "face") : (spec?.face_target ?? "face"),
         client_request_id: newRequestId(),
       });
       toast.success(t("en.started"));
@@ -225,15 +228,16 @@ export function EnhancePanel({
                 </div>
 
                 <div className="col gap-16">
-                  <Field label={t("en.strength")} hint={t("en.strengthHint")}>
+                  <Field label={t("en.strength")} hint={t(strengthHint(strength))}>
                     <Segmented
                       label={t("en.strength")}
                       value={strength}
                       block
                       onChange={setStrength}
-                      options={(spec?.strengths ?? [0.2, 0.3, 0.4]).map((s) => ({
+                      options={(spec?.strengths ?? [0.15, 0.2, 0.25, 0.3, 0.35, 0.4]).map((s) => ({
                         value: s,
-                        label: `${s} · ${t(STRENGTH_LABEL[s] ?? "en.strength.default")}`,
+                        label: String(s),
+                        hint: s === spec?.default_strength ? t("en.strength.default") : undefined,
                       }))}
                     />
                   </Field>
@@ -260,6 +264,29 @@ export function EnhancePanel({
                   <button type="button" className="link-button tiny" onClick={() => setMore((v) => !v)} aria-expanded={more}>
                     {t("gen.moreSettings")} <ChevronDown size={13} style={{ transform: more ? "rotate(180deg)" : undefined }} />
                   </button>
+                  {more ? (
+                    <Field label={t("en.skinExtra")} hint={t("en.skinExtraHint")}>
+                      <textarea
+                        className="textarea"
+                        rows={2}
+                        value={skinExtra}
+                        maxLength={spec?.max_skin_extra ?? 500}
+                        placeholder="freckles"
+                        onChange={(e) => setSkinExtra(e.target.value)}
+                      />
+                    </Field>
+                  ) : null}
+                  {more && faceOnly ? (
+                    <Field label={t("en.faceTarget")} hint={t("en.faceTargetHint")}>
+                      <input
+                        className="input"
+                        value={faceTarget}
+                        maxLength={spec?.max_face_target ?? 120}
+                        placeholder={spec?.face_target ?? "face"}
+                        onChange={(e) => setFaceTarget(e.target.value)}
+                      />
+                    </Field>
+                  ) : null}
                   {more ? (
                     <Field label={t("gen.seed")} hint={t("en.seedHint")}>
                       <div className="input-wrap">

@@ -7,8 +7,9 @@ sharpens the photo:
   whole photo, or only on the face that SAM 3.1 finds (soft mask, pasted back) — then
   SeedVR2 7B (1 step) upscales it by 1.5×, 2× or 3× with the original's colours (lab).
 
-Verified 2026-11-01 from the repository: workflows/PGUpscaler - EN.json (nodes, links and
-widget values), README.md (settings) and setup.sh (models/<folder>/ go to ComfyUI/models).
+Verified 2026-11-01 from the repository: workflows/PGUpscaler - EN.json and - SK.json (nodes,
+links, widget values, the strength picker's values and the instructions note), README.md
+(settings) and setup.sh (models/<folder>/ go to ComfyUI/models).
 The workflow uses only ComfyUI's own nodes (SAM3_Detect, SeedVR2*, ModelSamplingAuraFlow, …;
 present since ComfyUI 0.30.0); the template's custom nodes (Pixaroma, rgthree) only draw
 its controls and previews, so the studio builds the same graph in API format and needs no
@@ -79,9 +80,10 @@ REQUIRED_NODES = (
     "SaveImage",
 )
 
-# The template's settings (README): strength 0.2 subtle · 0.3 default · 0.4 strong;
-# upscale 1.5 · 2 default · 3 (very slow, 48 GB VRAM recommended).
-STRENGTHS = (0.2, 0.3, 0.4)
+# The template's controls: its strength picker offers 0.15–0.4 in steps of 0.05 (the note:
+# 0.15–0.2 subtle, 0.3 default, 0.35–0.4 strong); upscale 1.5 · 2 default · 3 (very slow,
+# 48 GB VRAM recommended in the README).
+STRENGTHS = (0.15, 0.2, 0.25, 0.3, 0.35, 0.4)
 UPSCALES = (1.5, 2.0, 3.0)
 DEFAULT_STRENGTH = 0.3
 DEFAULT_UPSCALE = 2.0
@@ -92,6 +94,18 @@ SKIN_PROMPT = (
     "subtle natural imperfections and an even, natural skin tone, no airbrushing, no beauty "
     "filter. Sharp focus, natural lighting, RAW photo quality."
 )
+# The template's note: words may be added to the skin description ("freckles"; at strength
+# 0.35+ what the photo shows), and with face only the "what to fix" text may name more parts
+# ("face, neck, hand"). Both are optional and in English.
+FACE_TARGET = "face"
+MAX_SKIN_EXTRA = 500
+MAX_FACE_TARGET = 120
+
+
+def skin_prompt(extra: str = "") -> str:
+    """The template's skin description with the user's optional words at the end."""
+    extra = " ".join(extra.split())
+    return f"{SKIN_PROMPT} {extra}" if extra else SKIN_PROMPT
 
 
 def downloads() -> list[dict[str, str]]:
@@ -140,15 +154,27 @@ def catalog_json() -> dict[str, Any]:
         "default_upscale": DEFAULT_UPSCALE,
         "min_vram_gb": MIN_VRAM_GB,
         "min_vram_gb_3x": MIN_VRAM_GB_3X,
+        "skin_prompt": SKIN_PROMPT,
+        "face_target": FACE_TARGET,
+        "max_skin_extra": MAX_SKIN_EXTRA,
+        "max_face_target": MAX_FACE_TARGET,
     }
 
 
 def build_workflow(
-    *, image: str, strength: float, face_only: bool, upscale: float, seed: int
+    *,
+    image: str,
+    strength: float,
+    face_only: bool,
+    upscale: float,
+    seed: int,
+    skin_extra: str = "",
+    face_target: str = FACE_TARGET,
 ) -> dict[str, Any]:
     """The PGUpscaler graph in ComfyUI's API format. Node ids are the template's own. With
-    face_only the skin fix is pasted back only where SAM 3.1 finds the face; without it the
-    face branch is left out (the template switches between both with ComfySwitchNode)."""
+    face_only the skin fix is pasted back only where SAM 3.1 finds the face (or what
+    face_target names); without it the face branch is left out (the template switches
+    between both with ComfySwitchNode)."""
     wf: dict[str, Any] = {
         "1": {"class_type": "LoadImage", "inputs": {"image": image}},
         "20": {
@@ -174,7 +200,10 @@ def build_workflow(
         },
         "12": {"class_type": "VAELoader", "inputs": {"vae_name": Z_VAE.filename}},
         "13": {"class_type": "ModelSamplingAuraFlow", "inputs": {"model": ["10", 0], "shift": 3}},
-        "6": {"class_type": "CLIPTextEncode", "inputs": {"clip": ["11", 0], "text": SKIN_PROMPT}},
+        "6": {
+            "class_type": "CLIPTextEncode",
+            "inputs": {"clip": ["11", 0], "text": skin_prompt(skin_extra)},
+        },
         "21": {"class_type": "ConditioningZeroOut", "inputs": {"conditioning": ["6", 0]}},
         "22": {"class_type": "VAEEncode", "inputs": {"pixels": ["20", 0], "vae": ["12", 0]}},
         "24": {
@@ -204,7 +233,7 @@ def build_workflow(
                 },
                 "7": {
                     "class_type": "CLIPTextEncode",
-                    "inputs": {"clip": ["30", 1], "text": "face"},
+                    "inputs": {"clip": ["30", 1], "text": face_target.strip() or FACE_TARGET},
                 },
                 "31": {
                     "class_type": "SAM3_Detect",
