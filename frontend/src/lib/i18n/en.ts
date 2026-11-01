@@ -1416,9 +1416,6 @@ export const en = {
   "en.strength.subtleHint": "0.15–0.2 subtle: the photo stays almost the same.",
   "en.strength.defaultHint": "0.25–0.3: a good balance for most photos (0.3 is the default).",
   "en.strength.strongHint": "0.35–0.4 strong: more skin texture, but it may change the eyes, fingers or clothes.",
-  "en.skinExtra": "Add to the skin description (English, optional)",
-  "en.skinExtraHint": "Added to the end of the built-in description. E.g. “freckles”; from strength 0.35 also say what the photo shows, e.g. “Woman in a white t-shirt sitting in a café.”",
-  "en.faceTarget": "What to fix with “Face only” (English)",
   "en.faceTargetHint": "Empty = face. You can name more parts, e.g. “face, neck, hand”.",
   "en.view": "Show",
   "en.viewResult": "Result",
@@ -1427,6 +1424,11 @@ export const en = {
   "en.before": "Before",
   "en.after": "After",
   "en.originalGone": "The original photo is no longer available.",
+  "en.stepPrompt": "4 · Prompt",
+  "en.prompt": "What to change (English)",
+  "en.promptHint": "You don't have to change it — this is the template's text. Write what the AI should improve: e.g. add “freckles”; from strength 0.35 also say what the photo shows, e.g. “Woman in a white t-shirt sitting in a café.”",
+  "en.promptReset": "Back to the original text",
+  "en.faceTarget": "What to fix (English)",
 } as const;
 
 export type MessageKey = keyof typeof en;

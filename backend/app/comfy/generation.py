@@ -426,9 +426,9 @@ class EnhanceBody(BaseModel):
     face_only: bool = False
     upscale: float = Field(default=enhance.DEFAULT_UPSCALE)
     seed: int | None = Field(default=None, ge=0, le=krea2.SEED_MAX)
-    # Optional, in English (the template's note): words added to the skin description, and
-    # what to fix with face only.
-    skin_extra: str = Field(default="", max_length=enhance.MAX_SKIN_EXTRA)
+    # In English, like the template's prompts: what the skin fix should make (empty = the
+    # template's skin description) and what to fix with face only (empty = "face").
+    prompt: str = Field(default="", max_length=enhance.MAX_PROMPT)
     face_target: str = Field(default=enhance.FACE_TARGET, max_length=enhance.MAX_FACE_TARGET)
     client_request_id: str | None = Field(default=None, max_length=64)
 
@@ -478,10 +478,10 @@ async def create_enhance_generation(db: AsyncSession, user: User, body: EnhanceB
             "invalid_parameter",
             "Strength is one of " + ", ".join(f"{s:g}" for s in enhance.STRENGTHS) + ".",
         )
-    skin_extra = " ".join(body.skin_extra.split())
+    prompt = body.prompt.strip() or enhance.SKIN_PROMPT
     face_target = " ".join(body.face_target.split()) or enhance.FACE_TARGET
     try:
-        for text in (skin_extra, face_target):
+        for text in (prompt, face_target):
             check_prompt(text, allows_mature=True)
     except PromptRefused as exc:
         raise GenerationRejected(exc.code, exc.message, 422) from exc
@@ -515,11 +515,8 @@ async def create_enhance_generation(db: AsyncSession, user: User, body: EnhanceB
         face_only=body.face_only,
         upscale=body.upscale,
         seed=seed,
-        skin_extra=skin_extra,
+        prompt=prompt,
         face_target=face_target,
-    )
-    label = f"{enhance.NAME}: strength {body.strength:g}, {body.upscale:g}× upscale, " + (
-        "face only" if body.face_only else "whole photo"
     )
     gen = Generation(
         user_id=user.id,
@@ -528,9 +525,8 @@ async def create_enhance_generation(db: AsyncSession, user: User, body: EnhanceB
         provider=PROVIDER,
         mode="image-edit",
         provider_model_id=enhance.NAME,
-        prompt=label,
-        # The text the skin fix ran with (History shows it).
-        final_prompt=enhance.skin_prompt(skin_extra),
+        # The prompt the skin fix ran with (cards, History and "load settings" show it).
+        prompt=prompt,
         settings={
             "strength": body.strength,
             "face_only": body.face_only,
@@ -538,7 +534,6 @@ async def create_enhance_generation(db: AsyncSession, user: User, body: EnhanceB
             "seed": seed,
             "source_width": source["width"],
             "source_height": source["height"],
-            **({"skin_extra": skin_extra} if skin_extra else {}),
             **(
                 {"face_target": face_target}
                 if body.face_only and face_target != enhance.FACE_TARGET

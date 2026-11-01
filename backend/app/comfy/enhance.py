@@ -94,18 +94,12 @@ SKIN_PROMPT = (
     "subtle natural imperfections and an even, natural skin tone, no airbrushing, no beauty "
     "filter. Sharp focus, natural lighting, RAW photo quality."
 )
-# The template's note: words may be added to the skin description ("freckles"; at strength
-# 0.35+ what the photo shows), and with face only the "what to fix" text may name more parts
-# ("face, neck, hand"). Both are optional and in English.
+# The template's prompts are editable ("✍️ Popis pleti", "🎯 Čo opraviť pri IBA TVÁR"; its
+# note: add "freckles", at strength 0.35+ say what the photo shows, with face only name more
+# parts like "face, neck, hand"). In English; empty = the template's own text.
 FACE_TARGET = "face"
-MAX_SKIN_EXTRA = 500
+MAX_PROMPT = 2000
 MAX_FACE_TARGET = 120
-
-
-def skin_prompt(extra: str = "") -> str:
-    """The template's skin description with the user's optional words at the end."""
-    extra = " ".join(extra.split())
-    return f"{SKIN_PROMPT} {extra}" if extra else SKIN_PROMPT
 
 
 def downloads() -> list[dict[str, str]]:
@@ -156,7 +150,7 @@ def catalog_json() -> dict[str, Any]:
         "min_vram_gb_3x": MIN_VRAM_GB_3X,
         "skin_prompt": SKIN_PROMPT,
         "face_target": FACE_TARGET,
-        "max_skin_extra": MAX_SKIN_EXTRA,
+        "max_prompt": MAX_PROMPT,
         "max_face_target": MAX_FACE_TARGET,
     }
 
@@ -168,7 +162,7 @@ def build_workflow(
     face_only: bool,
     upscale: float,
     seed: int,
-    skin_extra: str = "",
+    prompt: str = SKIN_PROMPT,
     face_target: str = FACE_TARGET,
 ) -> dict[str, Any]:
     """The PGUpscaler graph in ComfyUI's API format. Node ids are the template's own. With
@@ -202,7 +196,7 @@ def build_workflow(
         "13": {"class_type": "ModelSamplingAuraFlow", "inputs": {"model": ["10", 0], "shift": 3}},
         "6": {
             "class_type": "CLIPTextEncode",
-            "inputs": {"clip": ["11", 0], "text": skin_prompt(skin_extra)},
+            "inputs": {"clip": ["11", 0], "text": prompt.strip() or SKIN_PROMPT},
         },
         "21": {"class_type": "ConditioningZeroOut", "inputs": {"conditioning": ["6", 0]}},
         "22": {"class_type": "VAEEncode", "inputs": {"pixels": ["20", 0], "vae": ["12", 0]}},

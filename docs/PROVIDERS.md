@@ -355,10 +355,12 @@ the image): the same graph in API format, on the same ComfyUI connection as Krea
   threshold 0.5, GrowMask 16, blur 31 / σ 10, ImageCompositeMasked)
   → ImageScaleBy 1.5 / 2 / 3 → SeedVR2 7B (tiled VAE 512 / 128, KSampler 1 step euler /
   simple) → SeedVR2PostProcessing color correction `lab` → SaveImage.
-- **Optional texts** (the template's note, under "More settings", English, checked like
-  prompts): words added to the end of the skin prompt (e.g. "freckles"; from strength 0.35
-  what the photo shows) and, with face only, what SAM 3.1 looks for instead of "face" (e.g.
-  "face, neck, hand"). History shows the skin prompt that ran.
+- **Prompts** (the template's two editable texts, English, checked like prompts): the
+  prompt of the skin fix (node "✍️ Popis pleti"), shown prefilled with the template's text
+  and editable — the note suggests adding "freckles" and, from strength 0.35, what the photo
+  shows; empty = the template's text — and, with face only, what SAM 3.1 looks for (node
+  "🎯 Čo opraviť", default "face", e.g. "face, neck, hand"). The run's prompt is stored as
+  its prompt (cards, History, "load settings").
 - **Before / after**: the template shows an Image Comparer (slide) and the original and the
   result side by side; the studio's image viewer does both from the stored photo and the
   result (no extra ComfyUI nodes).

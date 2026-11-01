@@ -18,6 +18,14 @@ import type { Generation, ReferenceImage } from "@/lib/types";
 /** The photo to enhance: an upload (or an AI model's photo) or a generated image. */
 export type EnhancePhoto = EnhanceRequest;
 
+/** The prompt of an earlier run. Runs made before the prompt was editable stored a label
+ * ("PGUpscaler: strength …") instead; those used the template's text. */
+function promptOf(gen: Generation | null): string | null {
+  if (!gen) return null;
+  if (!gen.prompt.startsWith("PGUpscaler: ")) return gen.prompt;
+  return gen.final_prompt ?? null;
+}
+
 /** The template's note: 0.15–0.2 subtle, 0.3 default, 0.35–0.4 strong. */
 function strengthHint(s: number) {
   return s <= 0.2 ? "en.strength.subtleHint" : s >= 0.35 ? "en.strength.strongHint" : "en.strength.defaultHint";
@@ -52,9 +60,10 @@ export function EnhancePanel({
   const [faceOnly, setFaceOnly] = useState(before.face_only === true);
   const [upscale, setUpscale] = useState(typeof before.upscale === "number" ? before.upscale : 2);
   const [seed, setSeed] = useState(typeof before.seed === "number" ? String(before.seed) : "");
-  const [skinExtra, setSkinExtra] = useState(before.skin_extra ?? "");
+  // null = the template's own skin description.
+  const [prompt, setPrompt] = useState<string | null>(() => promptOf(initial));
   const [faceTarget, setFaceTarget] = useState(before.face_target ?? "");
-  const [more, setMore] = useState(Boolean(seed || skinExtra || faceTarget));
+  const [more, setMore] = useState(Boolean(seed));
   const [picking, setPicking] = useState(false);
 
   const all = conns.data?.items ?? [];
@@ -67,6 +76,8 @@ export function EnhancePanel({
   const downloading = job?.status === "running" && job.variant === "pgupscaler";
   const vramGb = (conn?.info.devices?.[0]?.vram_total ?? 0) / 1024 ** 3;
   const smallFor3x = upscale === 3 && vramGb > 0 && spec && vramGb < spec.min_vram_gb_3x - 1;
+  const promptText = prompt ?? spec?.skin_prompt ?? "";
+  const promptChanged = prompt !== null && prompt.trim() !== (spec?.skin_prompt ?? "");
 
   const problems: string[] = [];
   if (!conn) problems.push(t("k2.noConnection"));
@@ -101,7 +112,7 @@ export function EnhancePanel({
         face_only: faceOnly,
         upscale,
         seed: seed ? Number(seed) : null,
-        skin_extra: skinExtra.trim(),
+        prompt: promptChanged ? promptText.trim() : "",
         face_target: faceOnly ? faceTarget.trim() || (spec?.face_target ?? "face") : (spec?.face_target ?? "face"),
         client_request_id: newRequestId(),
       });
@@ -227,6 +238,27 @@ export function EnhancePanel({
                   )}
                 </div>
 
+                <div>
+                  <div className="section-title">
+                    <span className="eyebrow grow">{t("en.stepPrompt")}</span>
+                    {promptChanged ? (
+                      <button type="button" className="link-button tiny" onClick={() => setPrompt(null)}>
+                        {t("en.promptReset")}
+                      </button>
+                    ) : null}
+                  </div>
+                  <Field label={t("en.prompt")} hint={t("en.promptHint")} htmlFor="enhance-prompt">
+                    <textarea
+                      id="enhance-prompt"
+                      className="textarea"
+                      rows={5}
+                      value={promptText}
+                      maxLength={spec?.max_prompt ?? 2000}
+                      onChange={(e) => setPrompt(e.target.value)}
+                    />
+                  </Field>
+                </div>
+
                 <div className="col gap-16">
                   <Field label={t("en.strength")} hint={t(strengthHint(strength))}>
                     <Segmented
@@ -248,6 +280,18 @@ export function EnhancePanel({
                       <div className="hint">{t("en.faceOnlyHint")}</div>
                     </div>
                   </div>
+                  {faceOnly ? (
+                    <Field label={t("en.faceTarget")} hint={t("en.faceTargetHint")} htmlFor="enhance-target">
+                      <input
+                        id="enhance-target"
+                        className="input"
+                        value={faceTarget}
+                        maxLength={spec?.max_face_target ?? 120}
+                        placeholder={spec?.face_target ?? "face"}
+                        onChange={(e) => setFaceTarget(e.target.value)}
+                      />
+                    </Field>
+                  ) : null}
                   <Field label={t("en.upscale")} hint={t("en.upscaleHint")}>
                     <Segmented
                       label={t("en.upscale")}
@@ -264,29 +308,6 @@ export function EnhancePanel({
                   <button type="button" className="link-button tiny" onClick={() => setMore((v) => !v)} aria-expanded={more}>
                     {t("gen.moreSettings")} <ChevronDown size={13} style={{ transform: more ? "rotate(180deg)" : undefined }} />
                   </button>
-                  {more ? (
-                    <Field label={t("en.skinExtra")} hint={t("en.skinExtraHint")}>
-                      <textarea
-                        className="textarea"
-                        rows={2}
-                        value={skinExtra}
-                        maxLength={spec?.max_skin_extra ?? 500}
-                        placeholder="freckles"
-                        onChange={(e) => setSkinExtra(e.target.value)}
-                      />
-                    </Field>
-                  ) : null}
-                  {more && faceOnly ? (
-                    <Field label={t("en.faceTarget")} hint={t("en.faceTargetHint")}>
-                      <input
-                        className="input"
-                        value={faceTarget}
-                        maxLength={spec?.max_face_target ?? 120}
-                        placeholder={spec?.face_target ?? "face"}
-                        onChange={(e) => setFaceTarget(e.target.value)}
-                      />
-                    </Field>
-                  ) : null}
                   {more ? (
                     <Field label={t("gen.seed")} hint={t("en.seedHint")}>
                       <div className="input-wrap">

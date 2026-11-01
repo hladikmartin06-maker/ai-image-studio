@@ -53,8 +53,9 @@ Integrations and Settings.
     same GPU or Mac as Krea 2: install its models once with one click (≈ 21 GB from Hugging
     Face, straight to the GPU), choose a photo (upload or "From library"), the strength
     (0.15–0.2 subtle · 0.3 default · 0.35–0.4 strong), "Face only" and the upscale (1.5×, 2×,
-    3× — 3× needs about 48 GB of GPU memory). Under "More settings": words to add to the skin
-    description (e.g. "freckles") and what to fix with "Face only" (e.g. "face, neck, hand").
+    3× — 3× needs about 48 GB of GPU memory). The prompt (what to change, in English) is
+    prefilled with the template's text; edit it to steer the fix, e.g. add "freckles" or say
+    what the photo shows. With "Face only" you can name what to fix (e.g. "face, neck, hand").
     The image viewer compares before and after (slider or side by side); every image viewer
     has an "Enhance photo" button.
 - **AI Models** — your own fictional adult characters with up to 200 photos (shown across the

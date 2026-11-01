@@ -925,10 +925,10 @@ def test_enhance_workflow_matches_the_template():
         face_only=True,
         upscale=2.0,
         seed=7,
-        skin_extra="  freckles,\n woman in a café ",
+        prompt="  Natural skin with freckles. Woman in a café. ",
         face_target="face, neck, hand",
     )
-    assert custom["6"]["inputs"]["text"] == enhance.SKIN_PROMPT + " freckles, woman in a café"
+    assert custom["6"]["inputs"]["text"] == "Natural skin with freckles. Woman in a café."
     assert custom["7"]["inputs"]["text"] == "face, neck, hand"
     # Files only from the template's Hugging Face repository (~22.7 GB).
     assert all(
@@ -944,6 +944,7 @@ def test_enhance_workflow_matches_the_template():
 async def test_enhance_photo_on_a_comfyui(user: Api):
     """The user's photo is uploaded to ComfyUI and the template's graph runs on it; the
     result lands in the library like any generation."""
+    from app.comfy import enhance
     from tests.fake_comfy_server import ENHANCE_FILES, KREA_FILES
     from tests.fakes import png_bytes
 
@@ -970,9 +971,7 @@ async def test_enhance_photo_on_a_comfyui(user: Api):
             await user.post("/api/comfy/enhance", json={**body, "strength": 0.45})
         ).status_code == 400
         # The optional texts go through the same safety check as prompts.
-        refused = await user.post(
-            "/api/comfy/enhance", json={**body, "skin_extra": "nude teen girl"}
-        )
+        refused = await user.post("/api/comfy/enhance", json={**body, "prompt": "nude teen girl"})
         assert refused.status_code == 422 and refused.json()["error"]["code"] == "content_blocked"
         r = await user.post("/api/comfy/enhance", json=body)
         assert r.status_code == 201, r.text
@@ -985,20 +984,20 @@ async def test_enhance_photo_on_a_comfyui(user: Api):
         uploaded = sent["1"]["inputs"]["image"]
         assert uploaded in fake.uploads and len(fake.uploads[uploaded]) >= len(photo) - 4
         assert sent["24"]["inputs"]["denoise"] == 0.3 and "31" in sent
-        # Strength 0.35 with the optional texts (the template's note).
+        assert gen["prompt"] == enhance.SKIN_PROMPT  # empty prompt = the template's text
+        # Strength 0.35 with the user's own prompt and face-only target.
+        mine = enhance.SKIN_PROMPT + " Freckles. Woman in a white t-shirt sitting in a café."
         extra = await user.post(
             "/api/comfy/enhance",
-            json={**body, "strength": 0.35, "skin_extra": "freckles", "face_target": "face, neck"},
+            json={**body, "strength": 0.35, "prompt": mine, "face_target": "face, neck"},
         )
         assert extra.status_code == 201, extra.text
         done = await wait_done(user, extra.json()["id"])
         assert done["status"] == "completed", done
-        assert done["settings"]["skin_extra"] == "freckles"
-        assert done["settings"]["face_target"] == "face, neck"
-        assert done["final_prompt"].endswith(" freckles")
+        assert done["prompt"] == mine and done["settings"]["face_target"] == "face, neck"
         sent = list(fake.prompts.values())[-1]["prompt"]
         assert sent["24"]["inputs"]["denoise"] == 0.35
-        assert sent["6"]["inputs"]["text"].endswith(" freckles")
+        assert sent["6"]["inputs"]["text"] == mine
         assert sent["7"]["inputs"]["text"] == "face, neck"
         # A generated image can be enhanced too.
         again = await user.post(

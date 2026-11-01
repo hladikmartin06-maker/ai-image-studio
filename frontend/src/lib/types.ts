@@ -142,7 +142,6 @@ export interface GenerationSettings {
   upscale?: number;
   source_width?: number;
   source_height?: number;
-  skin_extra?: string;
   face_target?: string;
 }
 
@@ -697,7 +696,7 @@ export interface EnhanceCatalog {
   min_vram_gb_3x: number;
   skin_prompt: string;
   face_target: string;
-  max_skin_extra: number;
+  max_prompt: number;
   max_face_target: number;
 }
 
@@ -708,7 +707,7 @@ export interface EnhanceBody {
   face_only: boolean;
   upscale: number;
   seed: number | null;
-  skin_extra: string;
+  prompt: string;
   face_target: string;
   client_request_id: string;
 }
