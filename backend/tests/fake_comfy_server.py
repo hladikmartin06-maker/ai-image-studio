@@ -42,6 +42,9 @@ NODES = [
     "SaveImage",
     "LoraLoaderModelOnly",
     "CheckpointLoaderSimple",
+    # Krea 2 image to image (built-in nodes).
+    "ImageScale",
+    "RepeatLatentBatch",
     # Built-in nodes of the Enhance photo workflow (PGUpscaler; ComfyUI >= 0.30).
     "LoadImage",
     "ImageScaleToTotalPixels",
@@ -320,6 +323,8 @@ class FakeComfy:
             for node in entry["prompt"].values():
                 if node.get("class_type") == "EmptyLatentImage":
                     batch = int(node["inputs"].get("batch_size", 1))
+                if node.get("class_type") == "RepeatLatentBatch":
+                    batch = int(node["inputs"].get("amount", 1))
             images = [
                 {
                     "filename": f"ai-image-studio_{pid[:8]}_{i}.png",

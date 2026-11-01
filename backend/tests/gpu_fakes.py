@@ -227,3 +227,119 @@ class LocalRunPodProvider(RunPodProvider):
         if not pod or "agent_port" not in pod:
             return None
         return f"http://127.0.0.1:{pod['agent_port']}"
+
+
+class SpawningModalSDK:
+    """A fake Modal SDK whose sandboxes really run their command (the studio's start command
+    and agent) as local processes. One folder per Volume stands in for it; each sandbox gets
+    its own copy of the fake image's /opt/comfyui-baked. Like a container runtime, it refuses
+    to start when the working directory does not exist: the image's WORKDIR is
+    /workspace/runpod-slim, which the Volume mounted at /workspace hides."""
+
+    IMAGE_WORKDIR = "runpod-slim"  # under the Volume (/workspace)
+
+    def __init__(self, root: Path, baked: Path, comfy_port: int):
+        self.root = root
+        self.baked = baked
+        self.comfy_port = comfy_port
+        self.sandboxes: dict[str, Any] = {}
+        self.created: list[Any] = []
+        self.procs: dict[str, subprocess.Popen] = {}
+        self._n = 0
+
+    async def client(self, creds):
+        if creds.get("token_secret") != "as-secret-123456":
+            raise RuntimeError("AuthError: invalid token")
+        return object()
+
+    async def app(self, client):
+        return type("App", (), {"app_id": "ap-1"})()
+
+    async def list(self, client, app, tags=None):
+        return [
+            sb
+            for sb in self.sandboxes.values()
+            if all(sb.tags.get(k) == v for k, v in (tags or {}).items())
+        ]
+
+    async def create(self, client, app, spec):
+        self._n += 1
+        sb = type("Sandbox", (), {})()
+        sb.object_id = f"sb-{self._n}"
+        sb.tags = dict(spec.tags)
+        sb.code = None
+        sb.port = free_port()
+        self.sandboxes[sb.object_id] = sb
+        self.created.append(spec)
+        home = self.root / sb.object_id
+        home.mkdir(parents=True, exist_ok=True)
+        volume = self.root / "volumes" / (spec.volume_name or "none")
+        volume.mkdir(parents=True, exist_ok=True)
+        sb.log = home / "output.log"
+        workdir = home if spec.workdir == "/" else volume / self.IMAGE_WORKDIR
+        if not workdir.is_dir():
+            sb.code = 128
+            sb.log.write_text(
+                f"failed to start the container: chdir {workdir}: no such file or directory\n"
+            )
+            return sb
+        baked = home / "opt-comfyui-baked"
+        shutil.copytree(self.baked, baked, symlinks=True)
+        env = {
+            "PATH": os.environ.get("PATH", ""),
+            "HOME": str(home),
+            **spec.env,
+            **spec.secret_env,
+            "STUDIO_AGENT_PORT": str(sb.port),
+            "STUDIO_WORKSPACE": str(volume),
+            "STUDIO_COMFY_BAKED": str(baked),
+            "STUDIO_COMFY_PORT": str(self.comfy_port),
+            "TMPDIR": str(home),
+        }
+        self._spawn(sb, [*spec.entrypoint, *spec.command], workdir, env)
+        return sb
+
+    def _spawn(self, sb: Any, command: list[str], cwd: Path, env: dict[str, str]) -> None:
+        with sb.log.open("ab") as log:
+            self.procs[sb.object_id] = subprocess.Popen(
+                command,
+                cwd=cwd,
+                env=env,
+                stdout=log,
+                stderr=subprocess.STDOUT,
+                start_new_session=True,
+            )
+
+    async def from_id(self, client, sandbox_id):
+        if sandbox_id not in self.sandboxes:
+            raise RuntimeError("NotFoundError: sandbox not found")
+        return self.sandboxes[sandbox_id]
+
+    async def poll(self, sandbox):
+        proc = self.procs.get(sandbox.object_id)
+        if proc is not None and sandbox.code is None:
+            sandbox.code = proc.poll()
+        return sandbox.code
+
+    async def terminate(self, sandbox):
+        proc = self.procs.pop(sandbox.object_id, None)
+        if proc and proc.poll() is None:
+            os.killpg(proc.pid, signal.SIGTERM)
+            proc.wait(timeout=10)
+        sandbox.code = 137
+
+    async def tunnels(self, sandbox):
+        return {8189: f"http://127.0.0.1:{sandbox.port}"}
+
+    async def output(self, sandbox):
+        return sandbox.log.read_text() if sandbox.log.exists() else ""
+
+    async def close(self, client):
+        return None
+
+    def close_all(self) -> None:
+        for sb in list(self.sandboxes.values()):
+            proc = self.procs.pop(sb.object_id, None)
+            if proc and proc.poll() is None:
+                os.killpg(proc.pid, signal.SIGTERM)
+                proc.wait(timeout=10)

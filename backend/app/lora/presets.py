@@ -58,9 +58,12 @@ ARCHITECTURES: dict[str, dict[str, Any]] = {
             "fixed_training_seed": "ai-toolkit's config has no training seed; the seed "
             "applies to the validation images.",
         },
-        # Estimates for choosing a GPU (Krea publishes no training VRAM figures).
+        # Estimates for choosing a GPU (Krea publishes no training VRAM figures). Without
+        # gradient checkpointing all activations stay in memory: the studio asks for an
+        # 80 GB GPU (an estimate, not measured for Krea 2).
         "vram_quantized_gb": 24,
         "vram_full_gb": 48,
+        "vram_no_checkpointing_gb": 80,
         "bucketing": "ai-toolkit buckets images by aspect ratio automatically.",
     }
 }
@@ -90,6 +93,10 @@ class TrainingConfig(BaseModel):
     save_every: int = Field(default=250, ge=50, le=5000)
     max_checkpoints: int = Field(default=6, ge=1, le=12)
     sample_every: int = Field(default=250, ge=0, le=5000)
+    # "end": no baseline and no in-between validation images, only the ones after the last
+    # step (ai-toolkit: skip_first_sample, and sample_every 0 never matches a step). The
+    # images do not change the LoRA; they cost time while the GPU is billed.
+    previews: Literal["during", "end"] = "during"
     validation_prompts: list[str] = Field(default_factory=list, max_length=6)
     seed: int = Field(default=42, ge=0, le=2**31 - 1)
     save_dtype: Literal["float16", "bf16"] = "float16"

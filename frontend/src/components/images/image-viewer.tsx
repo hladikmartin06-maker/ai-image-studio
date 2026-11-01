@@ -68,7 +68,8 @@ export function ImageViewer({
 
   if (!image || index === null) return null;
   const s = image.settings;
-  const input = image.comfy?.family === "pgupscaler" ? image.comfy.input : null;
+  // Enhance photo and Krea 2 image to image keep the photo they started from.
+  const input = image.comfy?.input ?? null;
   const original = input && missingOriginal !== input.url ? input.url : null;
   const shown = original ? view : "result";
 
@@ -86,6 +87,8 @@ export function ImageViewer({
   if (s.strength !== undefined) settingsRows.push([t("en.strength"), String(s.strength)]);
   if (s.face_only !== undefined) settingsRows.push([t("en.faceOnly"), s.face_only ? t("common.on") : t("common.off")]);
   if (s.upscale !== undefined) settingsRows.push([t("en.upscale"), `${s.upscale}×`]);
+  if (s.denoise !== undefined) settingsRows.push([t("k2.denoiseShort"), s.denoise.toFixed(2)]);
+  if (s.adult) settingsRows.push([t("k2.adultShort"), t("common.on")]);
 
   const onDelete = async () => {
     const ok = await actions.deleteImage(image);

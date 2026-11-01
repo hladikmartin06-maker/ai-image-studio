@@ -219,6 +219,7 @@ class FakeSandbox:
         self.object_id = object_id
         self.code: int | None = None
         self.tags = tags or {}
+        self.output = ""
 
 
 class FakeModalSDK:
@@ -261,6 +262,9 @@ class FakeModalSDK:
 
     async def tunnels(self, sandbox):
         return {8000: f"https://{sandbox.object_id}.modal.run"}
+
+    async def output(self, sandbox):
+        return sandbox.output
 
     async def close(self, client):
         return None

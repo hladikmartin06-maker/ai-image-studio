@@ -75,8 +75,12 @@ def build(
             diff_output_preservation_multiplier=config.diff_output_preservation_multiplier,
             diff_output_preservation_class=class_word,
         )
-    if config.sample_every == 0 or not sample_prompts:
+    at_end = config.previews == "end"
+    if not sample_prompts or (config.sample_every == 0 and not at_end):
         train["disable_sampling"] = True
+    elif at_end:
+        # ai-toolkit still samples once after the final step (BaseSDTrainProcess).
+        train["skip_first_sample"] = True
     process: dict[str, Any] = {
         "type": "sd_trainer",
         "training_folder": output_dir,
@@ -104,7 +108,7 @@ def build(
     if not train.get("disable_sampling"):
         process["sample"] = {
             "sampler": "flowmatch",
-            "sample_every": config.sample_every,
+            "sample_every": 0 if at_end else config.sample_every,
             "width": 1024,
             "height": 1024,
             "prompts": sample_prompts,

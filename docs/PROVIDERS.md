@@ -246,9 +246,29 @@ opened from the build sandbox):
   `prompt_id` accepted), `/queue`, `/history/{id}`, `/view`, `POST /interrupt {prompt_id}`,
   `POST /queue {delete}`, `/ws` progress.
 
-Not verified: the ComfyUI file name of the RAW checkpoint (detected by name; added by URL),
-the sampler of RAW inside ComfyUI (studio default euler/simple), VRAM needs (Krea publishes
-none). Only the API format of workflows can be run; UI-format files are kept for export.
+- **RAW files** (checked 2026-11-01, `huggingface.co/api/models/Comfy-Org/Krea-2/tree/main`,
+  not gated; the download links answer with a redirect to Hugging Face's CDN):
+  `diffusion_models/krea2_raw_fp8_scaled.safetensors` (13,141,730,784 bytes; the one-click
+  default), `krea2_raw_int8_convrot` (13,492,686,496) and `krea2_raw_bf16` (26,283,332,608).
+  RAW renders at 1K with 52 steps and CFG 3.5 (Krea's GitHub) and a negative prompt.
+- **Image to image** (Generate › Krea 2 › "Start from a photo", Turbo and RAW): the empty
+  latent is replaced by the user's photo — `LoadImage` (uploaded with `POST /upload/image`
+  before each run) → `ImageScale` (lanczos, center crop) to the photo's aspect ratio at the
+  tier's area (multiples of 16) → `VAEEncode` → `RepeatLatentBatch` (the image count) →
+  `KSampler` with `denoise` 0.1–0.95 (default 0.55); LoRA and AI model as usual. All
+  built-in nodes (checked in ComfyUI v0.35.0 `nodes.py`). Krea publishes no image-to-image
+  template or settings; the defaults and the wording of the strength levels are the
+  studio's. Only the built-in workflow takes a photo.
+
+- **Content**: Krea 2 renders 18+ content (the owner's own Turbo runs, 2026-11-01), so it is
+  listed as SFW + NSFW. The studio allows it only with the "18+ content" switch on
+  (adults only, fictional characters); minor-related terms are always refused. Krea 2's
+  community license (`LICENSE.pdf`) could not be read from the build sandbox (its CDN is
+  blocked): check its terms yourself.
+
+Not verified: the sampler of RAW inside ComfyUI (studio default euler/simple; Comfy-Org has
+no RAW template), image-to-image quality and good denoise values for Krea 2, VRAM needs (Krea
+publishes none). Only the API format of workflows can be run; UI-format files are kept for export.
 **Not run against a real ComfyUI with Krea 2 weights** — verified with a fake ComfyUI that
 reproduces the API.
 
@@ -308,10 +328,20 @@ are installed afterwards with one click. Code: `backend/app/comfy/deploy.py`,
   image is tried — same GPU and cloud, so the same price. "No GPU of this type is free right
   now" when nothing fits.
 - **Modal**: `modal.Image.from_registry("runpod/comfyui:1.4.1-comfyuiv0.35.0-cuda12.8").entrypoint([])`
-  (`Image.entrypoint`, modal 1.6.3), the same command and agent, a named Volume at
-  `/workspace` (sandbox mounts use background commits, `allow_background_commits=True` in the
-  SDK). The first start pulls the image and copies ComfyUI onto the Volume; later starts reuse
-  it.
+  (`Image.entrypoint`, modal 1.6.3), the agent, a named Volume at `/workspace` (sandbox mounts
+  use background commits, `allow_background_commits=True` in the SDK), `workdir="/"`.
+  Changed 2026-11-01 after every Modal start ended with "The GPU stopped before ComfyUI was
+  ready": the image's WORKDIR is `/workspace/runpod-slim` (its Dockerfile), which the empty
+  Volume mounted at `/workspace` hides, and the image's `/start.sh` (SSH, FileBrowser with its
+  database on the Volume, Jupyter, copying ComfyUI and building a venv on the Volume, all under
+  `set -e`) does more than a sandbox needs. Modal now runs `COMFY_BOOT_MODAL`: the agent, then
+  ComfyUI straight from `/opt/comfyui-baked` with the image's Python (`python3.12 main.py
+  --listen 127.0.0.1 --port 8188`), its `models` folder a link to
+  `/workspace/runpod-slim/ComfyUI/models` on the Volume (the same path as on RunPod, so the
+  agent's downloads and LoRAs work unchanged and stay for the next start). Which of these
+  stopped the real sandbox is **not confirmed** (Modal could not be reached from the build
+  sandbox); when a sandbox ends, the studio now shows its exit code and last lines
+  (`sandbox.logs.tail`, Modal's own system lines included, lines with secrets left out).
 - Connections set up by older studio versions (which installed ComfyUI themselves) are not
   started again: the studio asks to delete them and rent a new GPU.
 - **Not run on a real RunPod or Modal GPU** and not against huggingface.co: verified from the
@@ -391,8 +421,21 @@ the image): the same graph in API format, on the same ComfyUI connection as Krea
   (13.0 alone if RunPod refuses the others); Modal sandboxes get `encrypted_ports`, a Secret for
   tokens and a named Volume. ComfyUI deployments: see "ComfyUI on a rented GPU" above.
 
+- **Faster runs** (Advanced, checked 2026-11-01 in ai-toolkit's `main`:
+  `jobs/process/BaseSDTrainProcess.py`, `extensions_built_in/sd_trainer/SDTrainer.py`,
+  `toolkit/config_modules.py`):
+  - "Test images only at the end": `train.skip_first_sample: true` (no baseline before
+    step 1) and `sample.sample_every: 0` (no step matches); ai-toolkit still samples once
+    after the final step unless `disable_sampling`. The images do not change the LoRA.
+  - "Protect the base model" off: no `diff_output_preservation` — SDTrainer then skips the
+    prior prediction and the preservation prediction it runs every step, so steps are
+    faster, but prompts with the class word may drift towards the character.
+  - "Save memory while computing" off: `train.gradient_checkpointing: false` (ai-toolkit's
+    default is true). Same training math, faster, much more VRAM; the studio then asks for an
+    80 GB GPU — an estimate, not measured for Krea 2 — and refuses a smaller one.
+
 Presets are the studio's starting points, not published recommendations. Progress and loss
-come from ai-toolkit's own output. **Not run on a real RunPod or Modal GPU** — verified with a
+come from ai-toolkit's own output (the run page no longer draws a loss chart). **Not run on a real RunPod or Modal GPU** — verified with a
 fake RunPod that starts the real agent locally and a fake `run.py`.
 
 # Hugging Face (token and Krea 2 license)

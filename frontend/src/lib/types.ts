@@ -143,6 +143,10 @@ export interface GenerationSettings {
   source_width?: number;
   source_height?: number;
   face_target?: string;
+  // Krea 2 image to image
+  denoise?: number;
+  // Krea 2 "18+ content" switch
+  adult?: boolean;
 }
 
 export interface StudioImage {
@@ -721,6 +725,8 @@ export interface ComfyCatalog {
     aspect_ratios: string[];
     sizes: Record<string, Record<string, [number, number]>>;
     seed_max: number;
+    img2img: { denoise_default: number; denoise_min: number; denoise_max: number };
+    content: "sfw" | "sfw+nsfw";
   };
   enhance: EnhanceCatalog;
   deploy_images: Record<string, string>;
@@ -828,6 +834,7 @@ export interface TrainingConfig {
   save_every: number;
   max_checkpoints: number;
   sample_every: number;
+  previews: "during" | "end";
   validation_prompts: string[];
   seed: number;
   save_dtype: "float16" | "bf16";
@@ -936,6 +943,7 @@ export interface LoraArchitecture {
   unavailable: Record<string, string>;
   vram_quantized_gb: number;
   vram_full_gb: number;
+  vram_no_checkpointing_gb: number;
   bucketing: string;
 }
 

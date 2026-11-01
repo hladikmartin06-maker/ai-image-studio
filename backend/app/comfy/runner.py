@@ -263,7 +263,9 @@ async def run(worker: Any, gen: Generation) -> None:
         if not images:
             raise RunFailed("generation_failed", "The workflow finished without saving an image.")
         datas = [await client.view(i["filename"], i["subfolder"], i["type"]) for i in images]
-        await worker.store_outputs(gen, task, datas, [])
+        # 18+ runs (Krea 2 switch, or an 18+ photo) are marked, so they can be blurred.
+        adult = bool((gen.comfy_meta or {}).get("adult"))
+        await worker.store_outputs(gen, task, datas, [True] * len(datas) if adult else [])
         await worker.set_task(
             task.id,
             status="completed",

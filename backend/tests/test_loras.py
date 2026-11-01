@@ -18,7 +18,7 @@ from app.comfy import runner as comfy_runner
 from app.comfy.client import ComfyClient
 from app.gpu.registry import set_gpu_adapter
 from app.lora import aitoolkit
-from app.lora.presets import TrainingConfig, preset_config
+from app.lora.presets import ARCHITECTURES, TrainingConfig, preset_config
 from app.services.gpu_runner import gpu_runner
 from tests.ai_fakes import AI_KEY, FakeAI
 from tests.conftest import Api, make_user, wait_done
@@ -110,6 +110,42 @@ def test_presets_are_architecture_aware():
     assert proc["network"] == {"type": "lora", "linear": 64, "linear_alpha": 32}
     with pytest.raises(ValueError):
         TrainingConfig.model_validate({**hq, "resolutions": [2048]})
+
+
+def test_faster_training_options():
+    """Validation images only at the end, output preservation off and gradient checkpointing
+    off reach ai-toolkit's config as its own fields."""
+
+    def build(**overrides):
+        cfg = TrainingConfig.model_validate(
+            {**preset_config("character_identity", "raw"), **overrides}
+        )
+        return aitoolkit.build(
+            dataset_dir="/d",
+            output_dir="/o",
+            architecture="krea2",
+            name="run1",
+            trigger_word="lnx",
+            class_word="woman",
+            config=cfg,
+            sample_prompts=["lnx woman portrait"],
+        )["config"]["process"][0]
+
+    default = build()
+    assert default["sample"]["sample_every"] == 250
+    assert (
+        "skip_first_sample" not in default["train"] and "disable_sampling" not in default["train"]
+    )
+    assert default["train"]["diff_output_preservation"] is True
+    assert default["train"]["gradient_checkpointing"] is True
+    fast = build(previews="end", diff_output_preservation=False, gradient_checkpointing=False)
+    assert fast["sample"]["sample_every"] == 0 and fast["train"]["skip_first_sample"] is True
+    assert "disable_sampling" not in fast["train"]  # the images after the last step stay
+    assert "diff_output_preservation" not in fast["train"]
+    assert fast["train"]["gradient_checkpointing"] is False
+    # Stored configs from before keep working (previews defaults to "during").
+    assert TrainingConfig.model_validate({"steps": 1000}).previews == "during"
+    assert ARCHITECTURES["krea2"]["vram_no_checkpointing_gb"] == 80
 
 
 async def test_project_rules_and_dataset_tools(user: Api):

@@ -40,10 +40,13 @@ export function TrainingTab({ lora, onStarted, initial }: { lora: LoraDetail; on
   const base = presets.find((p) => p.key === preset)!.config;
   const cfg: TrainingConfig = config ?? { ...base, ...(initial ?? {}), base_variant: lora.base_variant };
   const set = (patch: Partial<TrainingConfig>) => setConfig({ ...cfg, ...patch });
-  const minVram = cfg.quantize ? arch?.vram_quantized_gb : arch?.vram_full_gb;
+  // Without gradient checkpointing the activations stay in memory (an 80 GB estimate).
+  const baseVram = cfg.quantize ? arch?.vram_quantized_gb : arch?.vram_full_gb;
+  const minVram = !cfg.gradient_checkpointing && arch ? Math.max(baseVram ?? 0, arch.vram_no_checkpointing_gb) : baseVram;
+  const tooSmall = gpu.memory_gb != null && minVram != null && gpu.memory_gb < minVram;
   const gated = Boolean(arch?.variants[lora.base_variant]?.gated);
   const hfIssue = gated ? (hf.data ? hfProblem(hf.data, lora.base_variant) : catalog.data.hf_token_set ? null : "hf.needToken") : null;
-  const blocked = !lora.analysis.ready || !gpu.provider || !gpu.gpu_type || Boolean(hfIssue);
+  const blocked = !lora.analysis.ready || !gpu.provider || !gpu.gpu_type || tooSmall || Boolean(hfIssue);
 
   const submit = async () => {
     const ok = await confirm({
@@ -206,6 +209,39 @@ export function TrainingTab({ lora, onStarted, initial }: { lora: LoraDetail; on
                 <div className="hint">{t("ls.quantizeHint", { a: arch.vram_quantized_gb, b: arch.vram_full_gb })}</div>
               </div>
             </div>
+            <div className="row" style={{ gap: 10, alignItems: "flex-start" }}>
+              <Switch
+                checked={cfg.gradient_checkpointing}
+                onChange={(v) => set({ gradient_checkpointing: v })}
+                label={t("ls.checkpointing")}
+              />
+              <div>
+                <div className="small">{t("ls.checkpointing")}</div>
+                <div className="hint">{t("ls.checkpointingHint", { n: arch.vram_no_checkpointing_gb })}</div>
+              </div>
+            </div>
+            <div className="row" style={{ gap: 10, alignItems: "flex-start" }}>
+              <Switch
+                checked={cfg.diff_output_preservation}
+                onChange={(v) => set({ diff_output_preservation: v })}
+                label={t("ls.preservation")}
+              />
+              <div>
+                <div className="small">{t("ls.preservation")}</div>
+                <div className="hint">{t("ls.preservationHint", { cls: lora.class_word || "woman" })}</div>
+              </div>
+            </div>
+            <Field label={t("ls.previews")} hint={t(cfg.previews === "end" ? "ls.previewsEndHint" : "ls.previewsDuringHint", { n: cfg.sample_every })}>
+              <Segmented
+                label={t("ls.previews")}
+                value={cfg.previews ?? "during"}
+                onChange={(v) => set({ previews: v })}
+                options={[
+                  { value: "during", label: t("ls.previewsDuring") },
+                  { value: "end", label: t("ls.previewsEnd") },
+                ]}
+              />
+            </Field>
             <Field label={t("ls.validationPrompts")} hint={t("ls.validationPromptsHint", { trigger: lora.trigger_word })}>
               <textarea
                 className="textarea"

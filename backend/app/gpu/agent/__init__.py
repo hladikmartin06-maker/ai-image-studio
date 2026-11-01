@@ -51,6 +51,38 @@ exec > >(tee -a "$STUDIO_BOOT_LOG") 2>&1
 exec "${STUDIO_START_SCRIPT:-/start.sh}"
 """
 
+# Modal sandboxes (the same image, its ENTRYPOINT cleared): the image's /start.sh is not used
+# there. It starts SSH, FileBrowser (its database on the Volume) and Jupyter, copies ComfyUI
+# onto the Volume and builds a venv there, under `set -e` — any step the sandbox does not
+# allow ends the container before ComfyUI starts. Here ComfyUI runs straight from the image
+# (/opt/comfyui-baked, with the image's own Python packages); only its models folder lives on
+# the Volume, in the same place as on RunPod ($W/runpod-slim/ComfyUI/models), so downloads
+# and LoRAs are kept for the next start. Nothing is installed or downloaded at start.
+COMFY_BOOT_MODAL = r"""set -e
+cd /
+W="${STUDIO_WORKSPACE:-/workspace}"
+AGENT="$(mktemp -t studio-agent.XXXXXX)"
+STUDIO_BOOT_LOG="$(mktemp -t studio-boot.XXXXXX)"
+export STUDIO_BOOT_LOG
+printf '%s' "$STUDIO_AGENT_CODE" | base64 -d | gzip -dc > "$AGENT"
+# The agent comes back if it ever stops (its jobs are then reported as gone).
+nohup bash -c 'while :; do python3 "$0"; sleep 3; done' "$AGENT" > "$AGENT.log" 2>&1 &
+unset STUDIO_AGENT_CODE STUDIO_AGENT_TOKEN HF_TOKEN
+exec > >(tee -a "$STUDIO_BOOT_LOG") 2>&1
+B="${STUDIO_COMFY_BAKED:-/opt/comfyui-baked}"
+C="$W/runpod-slim/ComfyUI"
+echo "Preparing ComfyUI: models folder on the Modal Volume ($C/models)"
+mkdir -p "$C/models"
+# The image's model folders (placeholders); files already on the Volume are kept.
+cp -rn "$B/models/." "$C/models/" 2>/dev/null || true
+rm -rf "$B/models"
+ln -s "$C/models" "$B/models"
+cd "$B"
+PY="$(command -v python3.12 || command -v python3)"
+echo "Starting ComfyUI on 127.0.0.1:${STUDIO_COMFY_PORT:-8188}"
+exec "$PY" main.py --listen 127.0.0.1 --port "${STUDIO_COMFY_PORT:-8188}"
+"""
+
 
 def packed_source() -> str:
     return base64.b64encode(gzip.compress(SOURCE.read_bytes(), 9, mtime=0)).decode()

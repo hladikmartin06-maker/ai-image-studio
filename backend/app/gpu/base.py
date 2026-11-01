@@ -92,6 +92,8 @@ class Workload:
     can_start: bool = False
     can_stop: bool = False
     can_terminate: bool = True
+    # Modal: why a sandbox ended (exit code and its last output lines), when it has.
+    detail: str | None = None
 
     def json(self) -> dict[str, Any]:
         return asdict(self)
@@ -146,6 +148,8 @@ class WorkloadSpec:
     # Modal: CPU cores and memory (MiB) of the sandbox; None = Modal's defaults.
     cpu: float | None = None
     memory_mb: int | None = None
+    # Modal: the sandbox's working directory (None = the image's WORKDIR).
+    workdir: str | None = None
 
 
 class GPUProvider(Protocol):

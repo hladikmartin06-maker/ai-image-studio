@@ -17,8 +17,14 @@ Verified (2026-10-31):
   Qwen3-VL-4B; Qwen-Image VAE), RAW and Turbo share it; Turbo training uses the adapter
   ostris/krea2_turbo_training_adapter; LoRA keys are saved with ComfyUI's
   "diffusion_model." prefix.
-Not verified: the ComfyUI file names of the RAW checkpoint (detected by name instead),
-VRAM needs (not published), sampler settings of RAW inside ComfyUI (studio default).
+- huggingface.co/Comfy-Org/Krea-2 (file list, not gated; checked 2026-11-01): RAW files
+  diffusion_models/krea2_raw_fp8_scaled.safetensors (13,141,730,784 bytes), _int8_convrot
+  (13,492,686,496) and _bf16 (26,283,332,608); Turbo int8 13,492,686,496 bytes.
+- Image to image: the standard ComfyUI way with built-in nodes (LoadImage, ImageScale,
+  VAEEncode, RepeatLatentBatch; checked in ComfyUI v0.35.0's nodes.py) feeding KSampler with
+  denoise < 1. Krea publishes no image-to-image template or settings: the studio's defaults.
+Not verified: VRAM needs (not published), sampler settings of RAW inside ComfyUI (studio
+default euler/simple; Comfy-Org has no RAW template), image-to-image quality.
 """
 
 from __future__ import annotations
@@ -99,7 +105,7 @@ VARIANTS: dict[str, Krea2Variant] = {
                 "krea2_turbo_int8_convrot.safetensors",
                 "diffusion_models",
                 "int8 (convrot)",
-                None,
+                12.57,
                 f"{HF_BASE}/diffusion_models/krea2_turbo_int8_convrot.safetensors",
             ),
         ),
@@ -108,7 +114,8 @@ VARIANTS: dict[str, Krea2Variant] = {
         key="raw",
         model_key="krea-2-raw",
         name="Krea 2 RAW",
-        description="Undistilled base checkpoint, meant for fine-tuning and LoRA training.",
+        description="Undistilled base model, the one LoRAs are trained on. Slower (52 steps), "
+        "up to 1K, with a negative prompt.",
         steps=52,
         cfg=3.5,
         sampler="euler",
@@ -116,6 +123,29 @@ VARIANTS: dict[str, Krea2Variant] = {
         negative_prompt=True,
         tiers=("1K",),
         settings_source="steps and CFG from Krea's GitHub; sampler is the studio's default",
+        known_files=(
+            KnownFile(
+                "krea2_raw_fp8_scaled.safetensors",
+                "diffusion_models",
+                "fp8 (scaled)",
+                12.24,
+                f"{HF_BASE}/diffusion_models/krea2_raw_fp8_scaled.safetensors",
+            ),
+            KnownFile(
+                "krea2_raw_int8_convrot.safetensors",
+                "diffusion_models",
+                "int8 (convrot)",
+                12.57,
+                f"{HF_BASE}/diffusion_models/krea2_raw_int8_convrot.safetensors",
+            ),
+            KnownFile(
+                "krea2_raw_bf16.safetensors",
+                "diffusion_models",
+                "bf16",
+                24.48,
+                f"{HF_BASE}/diffusion_models/krea2_raw_bf16.safetensors",
+            ),
+        ),
     ),
 }
 
@@ -260,6 +290,31 @@ def size_for(aspect: str, tier: str) -> tuple[int, int]:
     )
 
 
+def size_for_source(src_width: int, src_height: int, tier: str) -> tuple[int, int]:
+    """Image to image: the source photo's aspect ratio (at most 4:1) at the tier's pixel
+    area, multiples of 16, long side <= 2048."""
+    if tier not in TIER_EDGE or src_width <= 0 or src_height <= 0:
+        raise ValueError("Unsupported size")
+    ratio = min(4.0, max(0.25, src_width / src_height))
+    area = TIER_EDGE[tier] ** 2
+    width = math.sqrt(area * ratio)
+    height = area / width
+    scale = min(1.0, 2048 / max(width, height))
+    return (
+        max(256, int(round(width * scale / 16)) * 16),
+        max(256, int(round(height * scale / 16)) * 16),
+    )
+
+
+# Image to image: how much of the photo is redrawn (KSampler denoise). The studio's values;
+# Krea publishes none.
+DENOISE_DEFAULT = 0.55
+DENOISE_MIN = 0.1
+DENOISE_MAX = 0.95
+IMG2IMG_NODES = ("LoadImage", "ImageScale", "VAEEncode", "RepeatLatentBatch")
+INPUT_PLACEHOLDER = "__studio_input__.png"
+
+
 def size_table() -> dict[str, dict[str, list[int]]]:
     return {tier: {a: list(size_for(a, tier)) for a in ASPECT_RATIOS} for tier in ("1K", "2K")}
 
@@ -305,8 +360,12 @@ def build_workflow(
     batch: int,
     loras: list[tuple[str, float]],
     prefix: str = "ai-image-studio",
+    image: str | None = None,
+    denoise: float = 1.0,
 ) -> dict[str, Any]:
-    """The API-format workflow (same nodes as Comfy-Org's Krea 2 template)."""
+    """The API-format workflow (same nodes as Comfy-Org's Krea 2 template). With an image
+    (image to image) the photo, scaled to width x height, is encoded instead of an empty
+    latent, repeated for the batch, and KSampler redraws `denoise` of it."""
     spec = VARIANTS[variant]
     wf: dict[str, Any] = {
         "1": {"class_type": "UNETLoader", "inputs": {"unet_name": unet, "weight_dtype": "default"}},
@@ -332,10 +391,28 @@ def build_workflow(
         }
     else:
         wf["5"] = {"class_type": "ConditioningZeroOut", "inputs": {"conditioning": ["4", 0]}}
-    wf["6"] = {
-        "class_type": "EmptyLatentImage",
-        "inputs": {"width": width, "height": height, "batch_size": batch},
-    }
+    if image is None:
+        wf["6"] = {
+            "class_type": "EmptyLatentImage",
+            "inputs": {"width": width, "height": height, "batch_size": batch},
+        }
+    else:
+        wf["10"] = {"class_type": "LoadImage", "inputs": {"image": image}}
+        wf["11"] = {
+            "class_type": "ImageScale",
+            "inputs": {
+                "image": ["10", 0],
+                "upscale_method": "lanczos",
+                "width": width,
+                "height": height,
+                "crop": "center",
+            },
+        }
+        wf["12"] = {"class_type": "VAEEncode", "inputs": {"pixels": ["11", 0], "vae": ["3", 0]}}
+        wf["6"] = {
+            "class_type": "RepeatLatentBatch",
+            "inputs": {"samples": ["12", 0], "amount": batch},
+        }
     wf["7"] = {
         "class_type": "KSampler",
         "inputs": {
@@ -348,7 +425,7 @@ def build_workflow(
             "positive": ["4", 0],
             "negative": ["5", 0],
             "latent_image": ["6", 0],
-            "denoise": 1.0,
+            "denoise": 1.0 if image is None else denoise,
         },
     }
     wf["8"] = {"class_type": "VAEDecode", "inputs": {"samples": ["7", 0], "vae": ["3", 0]}}
@@ -356,9 +433,15 @@ def build_workflow(
     return wf
 
 
+# Krea 2 renders 18+ content (the owner's own runs, 2026-11-01); the studio allows it only
+# with the "18+ content" switch on, never with minor-related terms (services/safety.py).
+CONTENT = "sfw+nsfw"
+
+
 def catalog_json() -> dict[str, Any]:
     return {
         "architecture": ARCHITECTURE,
+        "content": CONTENT,
         "variants": [
             {
                 "key": v.key,
@@ -381,4 +464,9 @@ def catalog_json() -> dict[str, Any]:
         "aspect_ratios": list(ASPECT_RATIOS),
         "sizes": size_table(),
         "seed_max": SEED_MAX,
+        "img2img": {
+            "denoise_default": DENOISE_DEFAULT,
+            "denoise_min": DENOISE_MIN,
+            "denoise_max": DENOISE_MAX,
+        },
     }

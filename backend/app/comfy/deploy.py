@@ -29,7 +29,14 @@ from app.comfy.client import ComfyError
 from app.comfy.service import agent_for, assoc, client_for, inspect
 from app.db import SessionLocal
 from app.gpu import service as gpu_service
-from app.gpu.agent import AGENT_PORT, COMFY_AGENT_PORT, COMFY_BOOT, agent_env, new_token
+from app.gpu.agent import (
+    AGENT_PORT,
+    COMFY_AGENT_PORT,
+    COMFY_BOOT,
+    COMFY_BOOT_MODAL,
+    agent_env,
+    new_token,
+)
 from app.gpu.agent_client import AgentClient, AgentError
 from app.gpu.base import GPUError, WorkloadSpec
 from app.gpu.modal_provider import SANDBOX_CPU, SANDBOX_MEMORY_MB, hourly_estimate
@@ -169,7 +176,11 @@ def spec_for(
         # RunPod: a pod volume at /workspace keeps ComfyUI and the models when it is stopped.
         volume_gb=int(d.get("volume_gb") or 80) if provider == "runpod" else 0,
         entrypoint=["/bin/bash", "-c"],
-        command=[COMFY_BOOT],
+        # Modal: ComfyUI straight from the image, models on the Volume (see COMFY_BOOT_MODAL).
+        command=[COMFY_BOOT_MODAL if provider == "modal" else COMFY_BOOT],
+        # Modal: the image's WORKDIR (/workspace/runpod-slim) is hidden by the Volume mounted
+        # at /workspace, so the sandbox starts in /.
+        workdir="/" if provider == "modal" else None,
         # Modal: the sandbox ends itself after the session (+10 min, at most 24 h).
         timeout_minutes=min(session_minutes(d) + 10, 1440),
         # Modal: one named Volume at /workspace keeps ComfyUI and every downloaded model for
@@ -449,7 +460,14 @@ async def _advance_start(db, conn: ComfyConnection, d: dict[str, Any], provider:
             await db.commit()
         return
     if workload is None or workload.status in ("terminated", "exited", "stopped", "error"):
-        await _fail(db, conn, "The GPU stopped before ComfyUI was ready.")
+        message = "The GPU stopped before ComfyUI was ready."
+        if workload is not None and workload.detail:
+            # Why (Modal: exit code and the sandbox's last lines), also in the start log.
+            d["log_tail"] = ((d.get("log_tail") or "") + "\n" + workload.detail)[-8000:]
+            conn.deploy = dict(d)
+            last = workload.detail.strip().splitlines()[-1]
+            message = f"{message} ({last[:200]})"
+        await _fail(db, conn, message)
         return
     if workload.cost_per_hour is not None:
         d["cost_per_hour"] = workload.cost_per_hour

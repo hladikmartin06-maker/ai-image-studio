@@ -32,8 +32,13 @@ from app.models import (
 )
 from app.services import personas
 from app.services.generation import GenerationRejected
-from app.services.safety import PromptRefused, check_prompt
+from app.services.safety import PromptRefused, check_prompt, is_explicit
 from app.services.worker import worker
+
+ADULT_OFF = (
+    "This prompt asks for 18+ content. Turn on “18+ content” (adults only, fictional "
+    "characters) to generate it."
+)
 
 PROVIDER = "comfyui"
 
@@ -50,6 +55,14 @@ class PersonaText(BaseModel):
     use_description: bool = True
 
 
+class SourceImage(BaseModel):
+    """A photo of the user's: "reference" = an upload or an AI model's photo, "image" = a
+    generated image."""
+
+    kind: str = Field(pattern="^(reference|image)$")
+    id: uuid.UUID
+
+
 class ComfyGenerateBody(BaseModel):
     connection_id: uuid.UUID
     variant: str = Field(pattern="^(turbo|raw)$")
@@ -64,6 +77,14 @@ class ComfyGenerateBody(BaseModel):
     cfg: float | None = Field(default=None, ge=0.0, le=20.0)
     count: int = Field(default=1, ge=1, le=4)
     lora: LoraUse | None = None
+    # Image to image (built-in Krea 2 workflow): the photo and how much of it is redrawn.
+    image: SourceImage | None = None
+    denoise: float = Field(
+        default=krea2.DENOISE_DEFAULT, ge=krea2.DENOISE_MIN, le=krea2.DENOISE_MAX
+    )
+    # 18+ content (adults only): off = explicit prompts are refused, like on the SFW models;
+    # on = allowed, and the images are marked 18+ (blurred when Settings say so).
+    adult: bool = False
     # Run without any LoRA even if the AI model has one (base-model comparisons).
     persona: PersonaText | None = None
     client_request_id: str | None = Field(default=None, max_length=64)
@@ -153,18 +174,40 @@ async def create_comfy_generation(
         raise GenerationRejected(
             "invalid_parameter", f"{variant.name} supports {', '.join(variant.tiers)}."
         )
-    try:
-        width, height = krea2.size_for(body.aspect_ratio, body.resolution)
-    except ValueError as exc:
-        raise GenerationRejected("invalid_parameter", "Unsupported aspect ratio.") from exc
+    source: dict[str, Any] | None = None
+    if body.image is not None:
+        if body.workflow_id is not None:
+            raise GenerationRejected(
+                "invalid_parameter", "Image to image works with the built-in Krea 2 workflow."
+            )
+        known_nodes = set((conn.info or {}).get("node_names") or [])
+        missing = [n for n in krea2.IMG2IMG_NODES if known_nodes and n not in known_nodes]
+        if missing:
+            raise GenerationRejected(
+                "missing_nodes",
+                f"{conn.name} is missing ComfyUI nodes: {', '.join(missing)}. Update ComfyUI.",
+                409,
+            )
+        source = await source_input(db, user, body.image)
+        width, height = krea2.size_for_source(
+            source["width"] or 1024, source["height"] or 1024, body.resolution
+        )
+    else:
+        try:
+            width, height = krea2.size_for(body.aspect_ratio, body.resolution)
+        except ValueError as exc:
+            raise GenerationRejected("invalid_parameter", "Unsupported aspect ratio.") from exc
 
     prompt = body.prompt.strip()
     try:
+        # Sexual content with minor-related terms: never, whatever the switch says.
         check_prompt(prompt, allows_mature=True)
         if body.negative_prompt:
             check_prompt(body.negative_prompt, allows_mature=True)
     except PromptRefused as exc:
         raise GenerationRejected(exc.code, exc.message, 422) from exc
+    if not body.adult and is_explicit(prompt):
+        raise GenerationRejected("adult_off", ADULT_OFF, 422)
 
     # Trained LoRA (strict compatibility) and the AI model's description.
     lora_meta: dict[str, Any] | None = None
@@ -215,6 +258,8 @@ async def create_comfy_generation(
             final = personas.compose_prompt(final, persona, 0)
             try:
                 personas.check_composed(final, persona, True)
+                if not body.adult and is_explicit(final):
+                    raise PromptRefused("adult_off", ADULT_OFF)
             except PromptRefused as exc:
                 raise GenerationRejected(exc.code, exc.message, 422) from exc
         persona.last_used_at = datetime.now(UTC)
@@ -278,10 +323,12 @@ async def create_comfy_generation(
             cfg=cfg,
             batch=body.count,
             loras=loras,
+            image=krea2.INPUT_PLACEHOLDER if source else None,
+            denoise=body.denoise,
         )
 
     settings = {
-        "aspect_ratio": body.aspect_ratio,
+        "aspect_ratio": "match" if source else body.aspect_ratio,
         "resolution": body.resolution,
         "width": width,
         "height": height,
@@ -293,18 +340,28 @@ async def create_comfy_generation(
     }
     if negative:
         settings["negative_prompt"] = negative
+    if source:
+        settings.update(
+            denoise=body.denoise,
+            source_width=source["width"],
+            source_height=source["height"],
+        )
+    # 18+: the switch, or a photo that is itself marked 18+.
+    adult = body.adult or bool(source and source.get("nsfw"))
+    if adult:
+        settings["adult"] = True
     gen = Generation(
         user_id=user.id,
         client_request_id=body.client_request_id,
         model_key=variant.model_key,
         provider=PROVIDER,
-        mode="text-to-image",
+        mode="image-edit" if source else "text-to-image",
         provider_model_id=unet,
         prompt=prompt,
         final_prompt=final if final != prompt else None,
         settings=settings,
         request_payload=workflow,
-        reference_image_ids=[],
+        reference_image_ids=[source["id"]] if source and source["kind"] == "reference" else [],
         image_count=body.count,
         status="queued",
         source_generation_id=body.source_generation_id,
@@ -326,6 +383,9 @@ async def create_comfy_generation(
             "test_label": body.test_label,
             "test_lora_id": str(body.test_lora_id) if body.test_lora_id else None,
             "test_prompt": body.test_prompt,
+            # Image to image: the photo, uploaded to ComfyUI before each run (runner).
+            **({"input": source} if source else {}),
+            "adult": adult,
         },
         tasks=[ProviderTask(index=0, images_requested=body.count)],
     )
@@ -375,9 +435,12 @@ async def repeat(
         raise GenerationRejected("not_connected", f"{conn.name} is not ready.", 409)
     workflow = dict(source.request_payload or {})
     if count and count != source.image_count:
+        workflow = {k: {**v, "inputs": dict(v.get("inputs") or {})} for k, v in workflow.items()}
         for node in workflow.values():
-            if isinstance(node, dict) and "batch_size" in node.get("inputs", {}):
+            if "batch_size" in node["inputs"]:
                 node["inputs"]["batch_size"] = count
+            if node.get("class_type") == "RepeatLatentBatch":
+                node["inputs"]["amount"] = count
     gen = Generation(
         user_id=user.id,
         client_request_id=rid,
@@ -413,10 +476,7 @@ async def repeat(
 # --- Enhance photo (PGUpscaler) -------------------------------------------------------------
 
 
-class EnhanceInput(BaseModel):
-    # "reference": an uploaded photo or an AI model's photo; "image": a generated image.
-    kind: str = Field(pattern="^(reference|image)$")
-    id: uuid.UUID
+EnhanceInput = SourceImage
 
 
 class EnhanceBody(BaseModel):
@@ -433,7 +493,7 @@ class EnhanceBody(BaseModel):
     client_request_id: str | None = Field(default=None, max_length=64)
 
 
-async def _enhance_input(db: AsyncSession, user: User, ref: EnhanceInput) -> dict[str, Any]:
+async def source_input(db: AsyncSession, user: User, ref: SourceImage) -> dict[str, Any]:
     """The user's own photo (never another user's): its file and a thumbnail URL."""
     if ref.kind == "reference":
         row = await db.scalar(
@@ -456,6 +516,8 @@ async def _enhance_input(db: AsyncSession, user: User, ref: EnhanceInput) -> dic
         "height": row.height,
         "thumb_url": f"{base}/thumb",
         "url": f"{base}/file",
+        # A generated image may be marked 18+; the result is then marked too.
+        "nsfw": getattr(row, "nsfw", None),
     }
 
 
@@ -507,7 +569,7 @@ async def create_enhance_generation(db: AsyncSession, user: User, body: EnhanceB
             + ", ".join(detection.get("missing_files") or []),
             409,
         )
-    source = await _enhance_input(db, user, body.image)
+    source = await source_input(db, user, body.image)
     seed = body.seed if body.seed is not None else secrets.randbelow(krea2.SEED_MAX)
     workflow = enhance.build_workflow(
         image=enhance.INPUT_PLACEHOLDER,
@@ -551,6 +613,7 @@ async def create_enhance_generation(db: AsyncSession, user: User, body: EnhanceB
             "family": enhance.FAMILY,
             "workflow": {"id": None, "name": f"{enhance.NAME} (built-in)"},
             "input": source,
+            "adult": bool(source.get("nsfw")),
         },
         tasks=[ProviderTask(index=0, images_requested=1)],
     )

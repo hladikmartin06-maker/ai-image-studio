@@ -9,7 +9,6 @@ import {
   formatMoney,
   GpuMeter,
   isActive,
-  LossChart,
   Progress,
   StatusPill,
 } from "@/components/studio/common";
@@ -125,7 +124,6 @@ export function VersionCard({
           ) : null}
         </div>
         {active ? <GpuMeter gpu={version.gpu} /> : null}
-        {version.loss.length > 1 ? <LossChart points={version.loss} /> : null}
         {version.samples.length ? (
           <div>
             <div className="eyebrow" style={{ marginBottom: 6 }}>{t("ls.samples")}</div>

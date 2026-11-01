@@ -44,10 +44,15 @@ Integrations and Settings.
     on your RunPod or Modal account with RunPod's ready-made ComfyUI image, so it is ready in
     about 1–2 minutes; it is reached only through a token-protected agent, shows the progress
     and stops when idle) or **This Mac** (your own ComfyUI on port 8188);
-    **2** when it is connected, install the model with one click (Krea 2 Turbo, ≈ 17 GB,
-    downloaded from Hugging Face straight to the GPU, with progress);
-    **3** pick an AI model and LoRA, write the prompt and generate. Seed, steps and CFG under
-    "More settings"; model files, logs and custom workflows under "Manage".
+    **2** when it is connected, install the model with one click (Krea 2 Turbo or RAW, each
+    ≈ 17 GB, downloaded from Hugging Face straight to the GPU, with progress);
+    **3** pick an AI model and LoRA, start from text or **from a photo** (image to image: your
+    upload or a library image, and how much changes, 0.1–0.95), write the prompt and generate.
+    Krea 2 is SFW + NSFW: the **"18+ content"** switch (off by default) allows adult content
+    for fictional adult characters and marks those images 18+ (blurred if Settings say so).
+    Seed, steps and CFG under "More settings"; model files, logs and custom workflows under
+    "Manage". The image viewer compares a photo-based result with its photo (slider or side
+    by side).
   - **Enhance photo** — fixes plastic-looking AI skin, then upscales and sharpens a photo
     (PGUpscaler, the workflow of the free RunPod template "PG - Free Upscaler"). It runs on the
     same GPU or Mac as Krea 2: install its models once with one click (≈ 21 GB from Hugging
@@ -66,7 +71,9 @@ Integrations and Settings.
 - **LoRA** — one page for everything: create a character LoRA for a fictional adult, add
   photos (upload, library or AI model import, duplicates, resolution check, crop on a copy),
   captions (templates, trigger word, AI captions), choose a training type and a GPU, train on
-  your RunPod or Modal account with live progress, loss, test images, logs and cost. The LoRA
+  your RunPod or Modal account with live progress, test images, logs and cost (Advanced:
+  test images only at the end, base-model protection and memory saving can be switched off
+  for faster runs). The LoRA
   is saved to this Mac and the GPU is always removed afterwards. Versions, preferred version,
   download, copy to a ComfyUI, base-vs-LoRA tests with a comparison slider, import of existing
   Krea 2 LoRA files and the training history with time and cost.

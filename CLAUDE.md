@@ -56,7 +56,9 @@ repositories.
   `x-studio-client: web` header (CSRF guard).
 - No fake results or fabricated statistics; empty, loading and error states everywhere.
 - Prompts with sexual content and minor-related terms are always refused; explicit prompts
-  are refused on the SFW-only models (`services/safety.py`).
+  are refused on the SFW-only models (`services/safety.py`) and on Krea 2 unless its
+  "18+ content" switch is on (off by default; `adult` in the request). 18+ Krea 2 runs, and
+  runs that start from an 18+ image, mark their images `nsfw` (blurred per Settings).
 - AI Models (`personas`, page `/ai-models`) are saved fictional adult characters, not image
   models. Creating one needs the adult confirmation; profile text with minor-related terms is
   refused; age ≥ 18. Their description is appended to the prompt only when the user keeps it
@@ -87,7 +89,9 @@ repositories.
 - GPU lists show only NVIDIA GPUs with 24 GB or more (and at least what the task needs),
   smallest first (`MIN_GPU_GB` in `components/studio/common.tsx`).
 - Krea 2 on Generate goes in steps: 1 choose and connect the GPU (progress, "Try again"),
-  2 install the model with one click once ComfyUI answers, 3 AI model, LoRA, prompt and
+  2 install the model with one click once ComfyUI answers (Turbo or RAW, files from
+  `huggingface.co/Comfy-Org/Krea-2`), 3 AI model, LoRA, start from text or a photo (image to
+  image: built-in nodes, `denoise` 0.1–0.95, size from the photo's aspect ratio), prompt and
   generate.
 - RunPod through its REST API v2 (`api.runpod.io/v2`; v1 is retired 2026-11-15). GPU lists
   and CUDA versions come from its catalog (`/v2/catalog/gpus?include=AVAILABILITY&product=
@@ -103,9 +107,11 @@ repositories.
   on 127.0.0.1. Poll ~10 s; "Ready" only when ComfyUI answers through the agent; no answer in
   30 minutes (Modal 45) stops the GPU. Models: the agent downloads them on the GPU from
   huggingface.co only, as .part then renamed, into `/workspace/runpod-slim/ComfyUI/models/…`,
-  only after ComfyUI answers. Modal: the same image with `.entrypoint([])`, command, agent,
-  `cpu=4, memory=32768`, one Volume "ais-comfyui" at /workspace, `timeout` = session + 10 min;
-  created in the background and found again by its tag, never twice.
+  only after ComfyUI answers. Modal: the same image with `.entrypoint([])`, agent,
+  `cpu=4, memory=32768`, one Volume "ais-comfyui" at /workspace, `workdir="/"`, `timeout` =
+  session + 10 min; created in the background and found again by its tag, never twice. Its
+  start command (`COMFY_BOOT_MODAL`) runs ComfyUI from the image (not `/start.sh`) with only
+  `models` on the Volume; an ended sandbox's exit code and last lines are shown.
 - Prices before anything starts: RunPod live from the catalog; Modal from a fixed table of its
   list prices, always labelled an estimate with a link to modal.com/pricing (no price API).
   The confirmation shows the hourly price, the session's maximum (hourly × session length,

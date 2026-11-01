@@ -2,7 +2,8 @@
 
 - Sexual content involving minors is always refused, for every model.
 - Explicit prompts are refused for the SFW-only models (Nano Banana Pro, Seedream), with a
-  hint to use Wan 2.7 / Wan 2.7 Pro, which allow mature content for adults.
+  hint to use Wan 2.7 / Wan 2.7 Pro, which allow mature content for adults, and for Krea 2
+  unless its "18+ content" switch is on.
 The providers apply their own moderation on top of this.
 """
 
@@ -88,6 +89,11 @@ class PromptRefused(ValueError):
         super().__init__(message)
         self.code = code
         self.message = message
+
+
+def is_explicit(text: str) -> bool:
+    """True when the text asks for sexual content or nudity."""
+    return bool(_EXPLICIT_RE.search(text))
 
 
 def check_prompt(prompt: str, *, allows_mature: bool) -> None:

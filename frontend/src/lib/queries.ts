@@ -813,6 +813,11 @@ export interface ComfyGenerateBody {
   count: number;
   lora?: { version_id: string; strength: number; insert_trigger: boolean } | null;
   persona?: { id: string; use_description: boolean } | null;
+  // Image to image (built-in workflow): the photo and how much of it is redrawn.
+  image?: { kind: "reference" | "image"; id: string } | null;
+  denoise?: number;
+  // 18+ content (adults only): explicit prompts are refused when off.
+  adult?: boolean;
   client_request_id: string;
 }
 

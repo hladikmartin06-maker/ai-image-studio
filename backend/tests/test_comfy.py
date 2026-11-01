@@ -14,14 +14,21 @@ from app.comfy import krea2, workflows
 from app.comfy import runner as comfy_runner
 from app.comfy.client import ComfyClient
 from app.db import SessionLocal
-from app.gpu.agent import COMFY_BOOT
+from app.gpu.agent import COMFY_BOOT, COMFY_BOOT_MODAL
 from app.gpu.registry import set_gpu_adapter
 from app.models import ComfyConnection, Generation, ProviderTask
 from app.services.gpu_runner import gpu_runner
 from app.services.worker import worker
 from tests.conftest import Api, make_user, wait_done
 from tests.fake_comfy_server import FakeComfy
-from tests.gpu_fakes import LocalRunPodProvider, SpawningRunPod, comfy_env, make_comfy_dir
+from tests.gpu_fakes import (
+    LocalRunPodProvider,
+    SpawningModalSDK,
+    SpawningRunPod,
+    comfy_env,
+    free_port,
+    make_comfy_dir,
+)
 from tests.test_gpu import RUNPOD_KEY
 
 
@@ -664,10 +671,6 @@ async def test_deploy_on_runpod_through_the_agent(user: Api, tmp_path: Path, no_
         assert "First time setup" in log_tail and "--listen 127.0.0.1" in log_tail
         assert "fake-ssh-secret" not in log_tail  # passwords in the start log are hidden
         # Model download after connecting: files already on the volume are skipped.
-        raw = await user.post(
-            f"/api/comfy/connections/{conn['id']}/models/install", json={"variant": "raw"}
-        )
-        assert raw.status_code == 400  # no verified download for RAW
         inst = await user.post(
             f"/api/comfy/connections/{conn['id']}/models/install", json={"variant": "turbo"}
         )
@@ -751,8 +754,9 @@ async def test_deploy_on_runpod_through_the_agent(user: Api, tmp_path: Path, no_
 
 
 async def test_deploy_on_modal_uses_the_same_image_and_start(user: Api, no_poll_wait):
-    """Modal: RunPod's ComfyUI image with its ENTRYPOINT cleared, the same start command and
-    agent, a Volume at /workspace, and a 45-minute limit for the first start."""
+    """Modal: RunPod's ComfyUI image with its ENTRYPOINT cleared, the agent, a Volume at
+    /workspace, a start in / (the image's WORKDIR is under the Volume) and a 45-minute limit
+    for the first start."""
     from app.comfy import deploy
     from app.gpu.modal_provider import ModalProvider
     from tests.test_gpu import FakeModalSDK
@@ -791,7 +795,8 @@ async def test_deploy_on_modal_uses_the_same_image_and_start(user: Api, no_poll_
         assert (
             spec.image == "runpod/comfyui:1.4.1-comfyuiv0.35.0-cuda12.8" and spec.clear_entrypoint
         )
-        assert [*spec.entrypoint, *spec.command] == ["/bin/bash", "-c", COMFY_BOOT]
+        assert [*spec.entrypoint, *spec.command] == ["/bin/bash", "-c", COMFY_BOOT_MODAL]
+        assert spec.workdir == "/"
         assert spec.ports == [8189] and spec.volume_name and spec.volume_gb == 0
         assert "STUDIO_AGENT_TOKEN" in spec.secret_env and "STUDIO_AGENT_TOKEN" not in spec.env
         assert deploy.BOOT_LIMIT["modal"] == deploy.timedelta(minutes=45)
@@ -812,6 +817,105 @@ async def test_deploy_on_modal_uses_the_same_image_and_start(user: Api, no_poll_
         async with SessionLocal() as db:
             await db.execute(ComfyConnection.__table__.delete())
             await db.commit()
+
+
+async def test_modal_runs_comfyui_through_the_agent(user: Api, tmp_path: Path, no_poll_wait):
+    """A (fake) Modal sandbox really runs the Modal start command: the agent starts, ComfyUI
+    runs from the image with its models folder on the Volume, the studio reaches it only
+    through the agent, and the next GPU finds the files already on the Volume."""
+    from app.gpu.modal_provider import ModalProvider
+
+    baked = make_comfy_dir(tmp_path / "image", enhance=True)
+    sdk = SpawningModalSDK(tmp_path / "modal", baked, free_port())
+    set_gpu_adapter("modal", ModalProvider(sdk=sdk))
+    try:
+        r = await user.put(
+            "/api/gpu/providers/modal",
+            json={"token_id": "ak-123456", "token_secret": "as-secret-123456"},
+        )
+        assert r.status_code == 200, r.text
+        body = {"name": "Modal", "provider": "modal", "gpu_type": "L40S", "confirm_billing": True}
+        assert (await user.post("/api/comfy/deployments", json=body)).status_code == 201
+        conn = await _wait_conn(user, lambda c: c["status"] in ("ready", "error"))
+        assert conn["status"] == "ready", (conn["last_error"], conn["deploy"].get("log_tail"))
+        assert conn["info"]["krea2"]["ready"] and conn["info"]["enhance"]["ready"]
+        assert conn["info"]["agent"]["comfyui_dir"]
+        # The models live on the Volume; ComfyUI itself is not copied there.
+        volume = tmp_path / "modal" / "volumes" / "ais-comfyui"
+        models = volume / "runpod-slim" / "ComfyUI" / "models"
+        assert (models / "diffusion_models" / "krea2_turbo_fp8_scaled.safetensors").is_file()
+        assert not (volume / "runpod-slim" / "ComfyUI" / "main.py").exists()
+        image_models = tmp_path / "modal" / conn["workload_id"] / "opt-comfyui-baked" / "models"
+        assert image_models.is_symlink() and image_models.resolve() == models.resolve()
+        assert "Starting ComfyUI on 127.0.0.1" in conn["deploy"]["log_tail"]
+        # A generation goes through the agent.
+        g = await user.post(
+            "/api/comfy/generate",
+            json={"connection_id": conn["id"], "variant": "turbo", "prompt": "on Modal"},
+        )
+        assert g.status_code == 201, g.text
+        assert (await wait_done(user, g.json()["id"]))["status"] == "completed"
+        # A file on the Volume is kept for the next sandbox (not overwritten).
+        (models / "loras").mkdir(exist_ok=True)
+        (models / "loras" / "mine.safetensors").write_bytes(b"lora")
+        r = await user.post(f"/api/comfy/connections/{conn['id']}/stop")
+        assert r.status_code == 200, r.text
+        r = await user.post(
+            f"/api/comfy/connections/{conn['id']}/start", json={"confirm_billing": True}
+        )
+        assert r.status_code == 200, r.text
+        conn = await _wait_conn(user, lambda c: c["status"] in ("ready", "error"))
+        assert conn["status"] == "ready", (conn["last_error"], conn["deploy"].get("log_tail"))
+        assert (models / "loras" / "mine.safetensors").read_bytes() == b"lora"
+        assert len(sdk.created) == 2
+    finally:
+        sdk.close_all()
+        set_gpu_adapter("modal", None)
+        async with SessionLocal() as db:
+            await db.execute(ComfyConnection.__table__.delete())
+            await db.execute(Generation.__table__.delete().where(Generation.provider == "comfyui"))
+            await db.commit()
+
+
+async def test_modal_sandbox_that_ends_explains_why(
+    user: Api, tmp_path: Path, monkeypatch, no_poll_wait
+):
+    """When the sandbox ends before ComfyUI answers, the error and the start log say why
+    (exit code and the sandbox's last lines; lines with secrets are left out). Here: the old
+    start in the image's WORKDIR, which the Volume at /workspace hides."""
+    from app.comfy import deploy
+    from app.gpu.modal_provider import ModalProvider, _clean_output
+
+    real_spec = deploy.spec_for
+
+    def old_spec(*args, **kwargs):
+        spec = real_spec(*args, **kwargs)
+        spec.workdir = None
+        return spec
+
+    monkeypatch.setattr(deploy, "spec_for", old_spec)
+    sdk = SpawningModalSDK(tmp_path / "modal", make_comfy_dir(tmp_path / "image"), free_port())
+    set_gpu_adapter("modal", ModalProvider(sdk=sdk))
+    try:
+        await user.put(
+            "/api/gpu/providers/modal",
+            json={"token_id": "ak-123456", "token_secret": "as-secret-123456"},
+        )
+        body = {"name": "Modal", "provider": "modal", "gpu_type": "L40S", "confirm_billing": True}
+        assert (await user.post("/api/comfy/deployments", json=body)).status_code == 201
+        conn = await _wait_conn(user, lambda c: c["status"] in ("ready", "error"))
+        assert conn["status"] == "error"
+        assert conn["last_error"].startswith("The GPU stopped before ComfyUI was ready. (")
+        assert "no such file or directory" in conn["last_error"]
+        assert "exit code 128" in conn["deploy"]["log_tail"]
+    finally:
+        sdk.close_all()
+        set_gpu_adapter("modal", None)
+        async with SessionLocal() as db:
+            await db.execute(ComfyConnection.__table__.delete())
+            await db.commit()
+    text = "ok line\nGenerated random SSH password for root: x\nHF_TOKEN=hf_abc\nlast line"
+    assert _clean_output(text) == "ok line\nlast line"
 
 
 def test_modal_image_clears_the_entrypoint():
@@ -1010,6 +1114,172 @@ async def test_enhance_photo_on_a_comfyui(user: Api):
         other = await make_user("enhance-other@example.com")
         foreign = await other.post("/api/comfy/enhance", json={**body, "connection_id": conn["id"]})
         assert foreign.status_code == 404
+    finally:
+        ComfyClient.transport = None
+        async with SessionLocal() as db:
+            await db.execute(ComfyConnection.__table__.delete())
+            await db.execute(Generation.__table__.delete().where(Generation.provider == "comfyui"))
+            await db.commit()
+
+
+def test_krea2_raw_download_and_image_to_image_workflow():
+    """RAW has verified files now (Comfy-Org/Krea-2); image to image swaps the empty latent
+    for the encoded photo (built-in nodes) and redraws `denoise` of it."""
+    from app.comfy import deploy
+
+    raw = krea2.VARIANTS["raw"]
+    assert [f.filename for f in raw.known_files] == [
+        "krea2_raw_fp8_scaled.safetensors",
+        "krea2_raw_int8_convrot.safetensors",
+        "krea2_raw_bf16.safetensors",
+    ]
+    files = deploy.model_downloads(["raw"])
+    assert [f["filename"] for f in files] == [
+        "qwen3vl_4b_fp8_scaled.safetensors",
+        "qwen_image_vae.safetensors",
+        "krea2_raw_fp8_scaled.safetensors",
+    ]
+    assert files[-1]["url"] == (
+        "https://huggingface.co/Comfy-Org/Krea-2/resolve/main/diffusion_models/"
+        "krea2_raw_fp8_scaled.safetensors"
+    )
+    # The photo's aspect ratio at the tier's area, multiples of 16.
+    assert krea2.size_for_source(3000, 4000, "1K") == (880, 1184)
+    assert krea2.size_for_source(4000, 1000, "2K") == (2048, 512)
+    common = dict(
+        variant="raw",
+        unet="krea2_raw_fp8_scaled.safetensors",
+        text_encoder="te",
+        vae="vae",
+        prompt="p",
+        negative_prompt="",
+        width=880,
+        height=1184,
+        seed=1,
+        steps=52,
+        cfg=3.5,
+        batch=2,
+        loras=[("mine.safetensors", 1.0)],
+    )
+    t2i = krea2.build_workflow(**common)
+    i2i = krea2.build_workflow(**common, image="photo.png", denoise=0.4)
+    assert t2i["6"]["class_type"] == "EmptyLatentImage" and t2i["7"]["inputs"]["denoise"] == 1.0
+    kinds = {n["class_type"] for n in i2i.values()}
+    assert "EmptyLatentImage" not in kinds and set(krea2.IMG2IMG_NODES) <= kinds
+    assert i2i["10"]["inputs"]["image"] == "photo.png"
+    assert (i2i["11"]["inputs"]["width"], i2i["11"]["inputs"]["height"]) == (880, 1184)
+    assert i2i["12"]["inputs"]["vae"] == ["3", 0] and i2i["6"]["inputs"]["amount"] == 2
+    assert i2i["7"]["inputs"]["latent_image"] == ["6", 0] and i2i["7"]["inputs"]["denoise"] == 0.4
+    assert i2i["7"]["inputs"]["model"] == ["20", 0]  # the LoRA stays in the chain
+
+
+async def test_krea2_image_to_image_on_a_comfyui(user: Api):
+    """Image to image: the user's photo is uploaded to ComfyUI and encoded; the size follows
+    its aspect ratio; repeat keeps the photo; only the built-in workflow takes a photo."""
+    from tests.fakes import png_bytes
+
+    fake = FakeComfy()
+    ComfyClient.transport = fake.transport()
+    comfy_runner.POLL_INITIAL = 0.01
+    comfy_runner.POLL_MAX = 0.02
+    try:
+        conn = await add_local(user)
+        assert conn["status"] == "ready", conn["last_error"]
+        ref = (
+            await user.post(
+                "/api/reference-images",
+                files={"file": ("me.png", png_bytes(300, 400), "image/png")},
+            )
+        ).json()
+        body = {
+            "connection_id": conn["id"],
+            "variant": "turbo",
+            "prompt": "the same woman with platinum blonde hair",
+            "image": {"kind": "reference", "id": ref["id"]},
+            "denoise": 0.45,
+            "count": 2,
+        }
+        assert (
+            await user.post("/api/comfy/generate", json={**body, "denoise": 0.99})
+        ).status_code == 422
+        r = await user.post("/api/comfy/generate", json=body)
+        assert r.status_code == 201, r.text
+        gen = await wait_done(user, r.json()["id"])
+        assert gen["status"] == "completed" and len(gen["images"]) == 2, gen
+        assert gen["mode"] == "image-edit" and gen["settings"]["denoise"] == 0.45
+        assert (gen["settings"]["width"], gen["settings"]["height"]) == (880, 1184)
+        assert gen["comfy"]["input"]["kind"] == "reference"
+        assert "file_path" not in gen["comfy"]["input"]
+        sent = list(fake.prompts.values())[-1]["prompt"]
+        assert sent["10"]["inputs"]["image"] in fake.uploads
+        assert sent["7"]["inputs"]["denoise"] == 0.45 and sent["6"]["inputs"]["amount"] == 2
+        # Again with one image: the photo is uploaded again; the stored run is unchanged.
+        again = await user.post(f"/api/generations/{gen['id']}/regenerate", json={"count": 1})
+        assert again.status_code == 201, again.text
+        assert (await wait_done(user, again.json()["id"]))["status"] == "completed"
+        assert list(fake.prompts.values())[-1]["prompt"]["6"]["inputs"]["amount"] == 1
+        # RAW renders at 1K only; a generated image can be the photo too.
+        raw = {**body, "variant": "raw", "image": {"kind": "image", "id": gen["images"][0]["id"]}}
+        assert (
+            await user.post("/api/comfy/generate", json={**raw, "resolution": "2K"})
+        ).status_code == 400
+        r = await user.post("/api/comfy/generate", json={**raw, "count": 1})
+        assert r.status_code == 201, r.text
+        done = await wait_done(user, r.json()["id"])
+        assert done["status"] == "completed", done
+        sent = list(fake.prompts.values())[-1]["prompt"]
+        assert sent["1"]["inputs"]["unet_name"] == "krea2_raw_bf16.safetensors"
+        assert sent["7"]["inputs"]["steps"] == 52 and sent["7"]["inputs"]["cfg"] == 3.5
+        # Never another user's photo.
+        other = await make_user("i2i-other@example.com")
+        assert (await other.post("/api/comfy/generate", json=body)).status_code == 404
+    finally:
+        ComfyClient.transport = None
+        async with SessionLocal() as db:
+            await db.execute(ComfyConnection.__table__.delete())
+            await db.execute(Generation.__table__.delete().where(Generation.provider == "comfyui"))
+            await db.commit()
+
+
+async def test_krea2_adult_switch(user: Api):
+    """Krea 2 renders 18+ content only with the switch on; its images are then marked 18+
+    (and so are runs that start from an 18+ photo). Minor-related terms: never."""
+    fake = FakeComfy()
+    ComfyClient.transport = fake.transport()
+    comfy_runner.POLL_INITIAL = 0.01
+    comfy_runner.POLL_MAX = 0.02
+    try:
+        conn = await add_local(user)
+        body = {"connection_id": conn["id"], "variant": "turbo", "prompt": "nude woman, artistic"}
+        off = await user.post("/api/comfy/generate", json=body)
+        assert off.status_code == 422 and off.json()["error"]["code"] == "adult_off"
+        never = await user.post(
+            "/api/comfy/generate", json={**body, "prompt": "nude teen girl", "adult": True}
+        )
+        assert never.status_code == 422 and never.json()["error"]["code"] == "content_blocked"
+        r = await user.post("/api/comfy/generate", json={**body, "adult": True})
+        assert r.status_code == 201, r.text
+        gen = await wait_done(user, r.json()["id"])
+        assert gen["status"] == "completed" and gen["settings"]["adult"] is True
+        assert all(img["nsfw"] is True for img in gen["images"])
+        # SFW prompts stay unmarked with the switch off.
+        r = await user.post("/api/comfy/generate", json={**body, "prompt": "a woman reading"})
+        sfw = await wait_done(user, r.json()["id"])
+        assert sfw["status"] == "completed" and "adult" not in sfw["settings"]
+        assert all(img["nsfw"] is None for img in sfw["images"])
+        # Starting from an 18+ image marks the result 18+ too.
+        r = await user.post(
+            "/api/comfy/generate",
+            json={
+                **body,
+                "prompt": "same scene at night",
+                "image": {"kind": "image", "id": gen["images"][0]["id"]},
+            },
+        )
+        assert r.status_code == 201, r.text
+        i2i = await wait_done(user, r.json()["id"])
+        assert i2i["status"] == "completed" and i2i["settings"]["adult"] is True
+        assert all(img["nsfw"] is True for img in i2i["images"])
     finally:
         ComfyClient.transport = None
         async with SessionLocal() as db:

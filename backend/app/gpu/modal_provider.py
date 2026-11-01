@@ -9,12 +9,15 @@ Workloads are Modal Sandboxes created in one app ("ai-image-studio-gpu") and tag
                        timeout=…, encrypted_ports=[…], tags=…, client=…)
   modal.Sandbox.list(app_id=…, tags=…, client=…), Sandbox.from_id(…).poll()/.terminate()
   sandbox.tunnels() -> {port: Tunnel(url)} for exposed ports (the workload's endpoints)
+  sandbox.logs.tail(n) -> the last stdout / stderr / system log entries (also after it ended)
 Sandboxes cannot be paused: they run until they finish, time out or are terminated.
 Modal has no balance API; usage is shown from the workloads started here.
 """
 
 from __future__ import annotations
 
+import asyncio
+import re
 from typing import Any
 
 from app.gpu.base import Endpoint, GPUError, GpuType, Workload, WorkloadSpec
@@ -54,6 +57,15 @@ def hourly_estimate(gpu: str) -> float | None:
     """GPU + CPU + memory of the studio's sandbox, USD per hour (estimate), or None."""
     price = next((p for i, _, _, p in GPU_TYPES if i == gpu), None)
     return round(price + SANDBOX_EXTRA_PER_HOUR, 4) if price is not None else None
+
+
+# Lines that could carry a secret are left out of what the studio shows.
+_SECRET_LINE = re.compile(r"password|token|secret|authorization|api[_-]?key", re.IGNORECASE)
+
+
+def _clean_output(text: str, limit: int = 1500) -> str:
+    lines = [ln.rstrip() for ln in text.splitlines() if ln.strip() and not _SECRET_LINE.search(ln)]
+    return "\n".join(lines)[-limit:]
 
 
 def _error(exc: Exception) -> GPUError:
@@ -121,6 +133,8 @@ class ModalSDK:
             extra["cpu"] = spec.cpu
         if spec.memory_mb:
             extra["memory"] = spec.memory_mb
+        if spec.workdir:
+            extra["workdir"] = spec.workdir
         return await modal.Sandbox.create.aio(
             *command,
             **extra,
@@ -151,6 +165,15 @@ class ModalSDK:
     async def tunnels(self, sandbox: Any) -> dict[int, str]:
         tunnels = await sandbox.tunnels.aio(timeout=5)
         return {port: t.url for port, t in tunnels.items()}
+
+    async def output(self, sandbox: Any, entries: int = 40) -> str:
+        """The sandbox's last log lines (its own output and Modal's system messages, e.g. why
+        the container could not start)."""
+        lines = []
+        async for entry in sandbox.logs.tail.aio(entries):
+            text = str(entry.message).rstrip()
+            lines.append(f"[modal] {text}" if entry.source == "system" else text)
+        return "\n".join(lines)
 
     async def close(self, client: Any) -> None:
         await client.__aexit__(None, None, None)
@@ -304,16 +327,18 @@ class ModalProvider:
     async def workload(self, creds: dict[str, str], workload_id: str) -> Workload | None:
         client = await self._client(creds)
         try:
-            sandbox = await self.sdk.from_id(client, workload_id)
-            code = await self.sdk.poll(sandbox)
-        except Exception as exc:  # noqa: BLE001
-            error = exc if isinstance(exc, GPUError) else _error(exc)
-            if error.code == "not_found":
-                return None
-            raise error from exc
+            try:
+                sandbox = await self.sdk.from_id(client, workload_id)
+                code = await self.sdk.poll(sandbox)
+            except Exception as exc:  # noqa: BLE001
+                error = exc if isinstance(exc, GPUError) else _error(exc)
+                if error.code == "not_found":
+                    return None
+                raise error from exc
+            running = code is None
+            detail = None if running else await self._exit_detail(sandbox, code)
         finally:
             await self.sdk.close(client)
-        running = code is None
         return Workload(
             id=workload_id,
             name=workload_id,
@@ -321,7 +346,17 @@ class ModalProvider:
             status="running" if running else "exited",
             dashboard_url="https://modal.com/apps",
             can_terminate=running,
+            detail=detail,
         )
+
+    async def _exit_detail(self, sandbox: Any, code: int | None) -> str:
+        """Exit code and last output of an ended sandbox (best effort, a few seconds)."""
+        try:
+            text = await asyncio.wait_for(self.sdk.output(sandbox), timeout=10)
+        except Exception:  # noqa: BLE001 - the logs are only an explanation
+            text = ""
+        out = _clean_output(text)
+        return f"exit code {code}" + (f"\n{out}" if out else "")
 
     async def port_url(self, creds: dict[str, str], workload_id: str, port: int) -> str | None:
         client = await self._client(creds)

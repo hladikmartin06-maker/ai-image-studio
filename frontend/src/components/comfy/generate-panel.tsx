@@ -6,6 +6,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 
 import { ComfyConnectionBar } from "@/components/comfy/connection-bar";
+import { type PickedPhoto, PhotoPicker } from "@/components/comfy/photo-picker";
 import { PromptEditor } from "@/components/generate/controls";
 import { newPersonaDraft, type PersonaDraft, PersonaSection } from "@/components/personas/persona-picker";
 import { newRequestId, Progress } from "@/components/studio/common";
@@ -40,6 +41,12 @@ export interface ComfyDraft {
   strength: number;
   insertTrigger: boolean;
   persona: PersonaDraft | null;
+  // Image to image: start from a photo and redraw `denoise` of it.
+  start: "text" | "image";
+  photo: PickedPhoto | null;
+  denoise: number;
+  // 18+ content (adults only); off by default.
+  adult: boolean;
 }
 
 const EMPTY: ComfyDraft = {
@@ -59,7 +66,16 @@ const EMPTY: ComfyDraft = {
   strength: 1,
   insertTrigger: true,
   persona: null,
+  start: "text",
+  photo: null,
+  denoise: 0.55,
+  adult: false,
 };
+
+/** Image to image: what a denoise value does (the studio's wording; Krea publishes none). */
+function denoiseHint(d: number) {
+  return d <= 0.35 ? "k2.denoise.low" : d < 0.65 ? "k2.denoise.mid" : "k2.denoise.high";
+}
 
 /** Krea 2 compatibility, as the backend enforces it: RAW LoRAs work on RAW and Turbo,
  * Turbo LoRAs (trained with the adapter) only on Turbo. */
@@ -77,7 +93,8 @@ function fromGeneration(gen: Generation): Partial<ComfyDraft> {
     workflowId: c?.workflow?.id ?? "",
     prompt: gen.prompt,
     negative: gen.settings.negative_prompt ?? "",
-    aspect: gen.settings.aspect_ratio ?? "3:4",
+    // A photo-based run has the photo's ratio ("match"); text runs keep a ratio of their own.
+    aspect: gen.settings.aspect_ratio && gen.settings.aspect_ratio !== "match" ? gen.settings.aspect_ratio : "3:4",
     resolution: gen.settings.resolution ?? "1K",
     seed: gen.settings.seed !== undefined ? String(gen.settings.seed) : "",
     count: gen.image_count,
@@ -86,6 +103,10 @@ function fromGeneration(gen: Generation): Partial<ComfyDraft> {
     persona: gen.persona?.id
       ? { ...newPersonaDraft(gen.persona.id), useRefs: false, useDescription: gen.persona.description_used }
       : null,
+    start: c?.input ? "image" : "text",
+    photo: c?.input ? { kind: c.input.kind, id: c.input.id, thumb_url: c.input.thumb_url } : null,
+    ...(typeof gen.settings.denoise === "number" ? { denoise: gen.settings.denoise } : {}),
+    adult: gen.settings.adult === true,
   };
 }
 
@@ -147,7 +168,9 @@ export function ComfyPanel({
   const modelFile = files.find((f) => f.filename === draft.modelFile)?.filename ?? files[0]?.filename ?? "";
   const tiers = variantSpec?.tiers ?? ["1K"];
   const resolution = tiers.includes(draft.resolution) ? draft.resolution : tiers[0];
-  const size = catalog.data?.krea2.sizes[resolution]?.[draft.aspect];
+  const ratios = catalog.data?.krea2.aspect_ratios ?? [];
+  const aspect = ratios.includes(draft.aspect) ? draft.aspect : "3:4";
+  const size = catalog.data?.krea2.sizes[resolution]?.[aspect];
   const runnable = (workflows.data?.items ?? []).filter((w) => w.runnable && (!w.family || w.family === "krea2"));
   // A model is usable when its file, the text encoder and the VAE are all on the ComfyUI.
   const variantReady = (key: "turbo" | "raw") =>
@@ -206,7 +229,11 @@ export function ComfyPanel({
   else if (!files.length) problems.push(t("k2.variantMissing", { name: variantSpec?.name ?? "" }));
   else if (!detection.text_encoders.length || !detection.vaes.length) problems.push(detection.missing.join(" · "));
   if (loraProblem) problems.push(loraProblem);
+  const fromImage = draft.start === "image";
+  if (fromImage && !draft.photo) problems.push(t("k2.photoFirst"));
+  if (fromImage && draft.workflowId) problems.push(t("k2.imageBuiltinOnly"));
   if (draft.seed && !/^\d+$/.test(draft.seed)) problems.push(t("gen.problemSeed"));
+  const img2img = catalog.data?.krea2.img2img;
 
   const submit = async () => {
     if (submitting.current) return;
@@ -227,7 +254,7 @@ export function ComfyPanel({
         workflow_id: draft.workflowId || null,
         prompt: draft.prompt.trim(),
         negative_prompt: variantSpec?.negative_prompt ? draft.negative : "",
-        aspect_ratio: draft.aspect,
+        aspect_ratio: aspect,
         resolution,
         seed: draft.seed ? Number(draft.seed) : null,
         steps: draft.steps ? Number(draft.steps) : null,
@@ -237,6 +264,10 @@ export function ComfyPanel({
           ? { version_id: draft.loraVersionId, strength: draft.strength, insert_trigger: draft.insertTrigger }
           : null,
         persona: persona && draft.persona ? { id: persona.id, use_description: draft.persona.useDescription } : null,
+        ...(fromImage && draft.photo
+          ? { image: { kind: draft.photo.kind, id: draft.photo.id }, denoise: draft.denoise }
+          : {}),
+        adult: draft.adult,
         client_request_id: newRequestId(),
       });
     } catch (e) {
@@ -285,7 +316,10 @@ export function ComfyPanel({
                       onClick={() => set({ variant: v.key, modelFile: "" })}
                     >
                       <span className="name">{v.name}</span>
-                      <div>
+                      <div className="row" style={{ gap: 6 }}>
+                        {catalog.data?.krea2.content === "sfw+nsfw" ? (
+                          <Badge tone="accent" title={t("content.sfw+nsfw.hint")}>{t("content.sfw+nsfw")}</Badge>
+                        ) : null}
                         {ready ? (
                           <Badge tone="success">{t("k2.installed")}</Badge>
                         ) : busy ? (
@@ -416,11 +450,51 @@ export function ComfyPanel({
               ) : null}
             </div>
 
+            <div className="col gap-12">
+              <div className="section-title">
+                <span className="eyebrow grow">{t("k2.startFrom")}</span>
+              </div>
+              <Segmented
+                label={t("k2.startFrom")}
+                value={draft.start}
+                block
+                onChange={(v) => set({ start: v })}
+                options={[
+                  { value: "text", label: t("k2.fromText") },
+                  { value: "image", label: t("k2.fromImage") },
+                ]}
+              />
+              {fromImage ? (
+                <>
+                  <div className="hint">{t("k2.fromImageHint")}</div>
+                  <PhotoPicker title={t("k2.photo")} value={draft.photo} onChange={(photo) => set({ photo })} />
+                  <Field label={t("k2.denoise", { n: draft.denoise.toFixed(2) })} hint={t(denoiseHint(draft.denoise))}>
+                    <input
+                      type="range"
+                      aria-label={t("k2.denoise", { n: draft.denoise.toFixed(2) })}
+                      min={img2img?.denoise_min ?? 0.1}
+                      max={img2img?.denoise_max ?? 0.95}
+                      step={0.05}
+                      value={draft.denoise}
+                      onChange={(e) => set({ denoise: Number(e.target.value) })}
+                    />
+                  </Field>
+                </>
+              ) : null}
+            </div>
+
             <div>
               <div className="section-title">
                 <span className="eyebrow grow">{t("gen.prompt")}</span>
               </div>
               <PromptEditor value={draft.prompt} onChange={(p) => set({ prompt: p })} max={4000} onSubmit={submit} />
+              <div className="row" style={{ gap: 10, alignItems: "flex-start", marginTop: 12 }}>
+                <Switch checked={draft.adult} onChange={(v) => set({ adult: v })} label={t("k2.adult")} />
+                <div>
+                  <div className="small">{t("k2.adult")}</div>
+                  <div className="hint">{t(draft.adult ? "k2.adultOnHint" : "k2.adultOffHint")}</div>
+                </div>
+              </div>
             </div>
             {variantSpec?.negative_prompt ? (
               <Field label={t("k2.negative")}>
@@ -433,16 +507,20 @@ export function ComfyPanel({
             <div>
               <div className="section-title">
                 <span className="eyebrow grow">{t("gen.settings")}</span>
-                {size ? <span className="tiny subtle">{size[0]}×{size[1]}</span> : null}
+                {size && !fromImage ? <span className="tiny subtle">{size[0]}×{size[1]}</span> : null}
               </div>
               <div className="col gap-12">
-                <div className="chips">
-                  {(catalog.data?.krea2.aspect_ratios ?? []).map((a) => (
-                    <button key={a} type="button" className="chip" aria-pressed={draft.aspect === a} onClick={() => set({ aspect: a })}>
-                      {a}
-                    </button>
-                  ))}
-                </div>
+                {fromImage ? (
+                  <div className="hint">{t("k2.aspectFromPhoto")}</div>
+                ) : (
+                  <div className="chips">
+                    {(catalog.data?.krea2.aspect_ratios ?? []).map((a) => (
+                      <button key={a} type="button" className="chip" aria-pressed={aspect === a} onClick={() => set({ aspect: a })}>
+                        {a}
+                      </button>
+                    ))}
+                  </div>
+                )}
                 <div className="row wrap" style={{ gap: 10 }}>
                   <Segmented label={t("gen.resolution")} value={resolution} onChange={(r) => set({ resolution: r })} options={tiers.map((r) => ({ value: r, label: r }))} />
                   <Segmented label={t("gen.imageCount")} value={draft.count} onChange={(n) => set({ count: n })} options={[1, 2, 3, 4].map((n) => ({ value: n, label: String(n) }))} />

@@ -72,43 +72,6 @@ export function formatMoney(value: number | null | undefined, locale: string) {
   return format(value, value < 1 ? 3 : 2);
 }
 
-// --- loss chart -------------------------------------------------------------------------
-
-/** Training loss as reported by the trainer (not a measure of identity or image quality). */
-export function LossChart({ points, height = 120 }: { points: [number, number][]; height?: number }) {
-  const t = useT();
-  if (points.length < 2) {
-    return <div className="hint">{t("ls.noLossYet")}</div>;
-  }
-  const width = 520;
-  const xs = points.map((p) => p[0]);
-  const ys = points.map((p) => p[1]);
-  const [x0, x1] = [Math.min(...xs), Math.max(...xs)];
-  const [y0, y1] = [Math.min(...ys), Math.max(...ys)];
-  const px = (x: number) => ((x - x0) / Math.max(1, x1 - x0)) * (width - 8) + 4;
-  const py = (y: number) => height - 6 - ((y - y0) / Math.max(1e-9, y1 - y0)) * (height - 12);
-  // A light moving average makes the trend readable without hiding the raw values.
-  const smooth = points.map((_, i) => {
-    const slice = points.slice(Math.max(0, i - 4), i + 1);
-    return [points[i][0], slice.reduce((a, p) => a + p[1], 0) / slice.length] as [number, number];
-  });
-  const line = (pts: [number, number][]) => pts.map((p, i) => `${i ? "L" : "M"}${px(p[0]).toFixed(1)},${py(p[1]).toFixed(1)}`).join(" ");
-  return (
-    <figure className="loss-chart">
-      <svg viewBox={`0 0 ${width} ${height}`} role="img" aria-label={t("ls.lossChart")}>
-        <path d={line(points)} className="loss-raw" />
-        <path d={line(smooth)} className="loss-smooth" />
-      </svg>
-      <figcaption className="row tiny subtle">
-        <span className="grow">
-          {t("ls.lossRange", { from: y1.toPrecision(3), to: ys[ys.length - 1].toPrecision(3) })}
-        </span>
-        <span>{t("ls.lossNote")}</span>
-      </figcaption>
-    </figure>
-  );
-}
-
 // --- GPU usage --------------------------------------------------------------------------
 
 export function GpuMeter({ gpu }: { gpu: AgentGpu | null | undefined }) {
@@ -157,6 +120,8 @@ export interface GpuChoice {
   price_per_hour?: number | null;
   price_extra?: number | null;
   price_estimate?: boolean;
+  // GPU memory of the chosen type, to refuse a GPU that is too small for the task.
+  memory_gb?: number | null;
 }
 
 /** Hourly price of a GPU choice (GPU + Modal's CPU/memory), or null when unknown. */
@@ -281,6 +246,7 @@ export function GpuPicker({
                   price_per_hour: offer.price,
                   price_extra: offer.gpu.price_extra ?? null,
                   price_estimate: Boolean(offer.gpu.price_estimate),
+                  memory_gb: offer.gpu.memory_gb ?? null,
                 });
               }}
               options={[...offers, ...busy].map((o) => ({

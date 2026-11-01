@@ -1,22 +1,21 @@
 "use client";
 
-import { ChevronDown, Dices, Download, ImageIcon, Images, Sparkles, X } from "lucide-react";
+import { ChevronDown, Dices, Download, Sparkles } from "lucide-react";
 import { useRef, useState } from "react";
 import { toast } from "sonner";
 
 import { ComfyConnectionBar } from "@/components/comfy/connection-bar";
-import { ReferenceImages } from "@/components/generate/controls";
+import { type PickedPhoto, PhotoPicker } from "@/components/comfy/photo-picker";
 import { Progress, newRequestId } from "@/components/studio/common";
-import { Badge, Button, EmptyState, Field, IconButton, Modal, Notice, Segmented, Skeleton, Spinner, Switch } from "@/components/ui";
+import { Badge, Button, Field, IconButton, Notice, Segmented, Skeleton, Switch } from "@/components/ui";
 import { ApiError } from "@/lib/api";
 import { formatBytes } from "@/lib/format";
 import { useI18n } from "@/lib/i18n";
-import { useComfyCatalog, useComfyConnections, useEnhancePhoto, useImages, useInstallKrea2Model } from "@/lib/queries";
-import type { EnhanceRequest } from "@/lib/studio-bridge";
-import type { Generation, ReferenceImage } from "@/lib/types";
+import { useComfyCatalog, useComfyConnections, useEnhancePhoto, useInstallKrea2Model } from "@/lib/queries";
+import type { Generation } from "@/lib/types";
 
 /** The photo to enhance: an upload (or an AI model's photo) or a generated image. */
-export type EnhancePhoto = EnhanceRequest;
+export type EnhancePhoto = PickedPhoto;
 
 /** The prompt of an earlier run. Runs made before the prompt was editable stored a label
  * ("PGUpscaler: strength …") instead; those used the template's text. */
@@ -64,7 +63,6 @@ export function EnhancePanel({
   const [prompt, setPrompt] = useState<string | null>(() => promptOf(initial));
   const [faceTarget, setFaceTarget] = useState(before.face_target ?? "");
   const [more, setMore] = useState(Boolean(seed));
-  const [picking, setPicking] = useState(false);
 
   const all = conns.data?.items ?? [];
   const conn = all.find((c) => c.id === connectionId) ?? all.find((c) => c.status === "ready") ?? all[0];
@@ -209,34 +207,7 @@ export function EnhancePanel({
 
             {!modelsReady ? null : (
               <>
-                <div>
-                  <div className="section-title">
-                    <span className="eyebrow grow">{t("en.stepPhoto")}</span>
-                    <Button size="sm" variant="ghost" icon={<Images />} onClick={() => setPicking(true)}>
-                      {t("en.fromLibrary")}
-                    </Button>
-                  </div>
-                  {photo ? (
-                    <div className="refs">
-                      <div className="ref">
-                        <img src={photo.thumb_url} alt={t("en.photo")} />
-                        <div className="ref-actions">
-                          <IconButton label={t("refs.remove")} onMedia onClick={() => setPhoto(null)}>
-                            <X />
-                          </IconButton>
-                        </div>
-                      </div>
-                    </div>
-                  ) : (
-                    <ReferenceImages
-                      refs={[]}
-                      max={1}
-                      onChange={(refs: ReferenceImage[]) =>
-                        refs[0] ? setPhoto({ kind: "reference", id: refs[0].id, thumb_url: refs[0].thumb_url }) : setPhoto(null)
-                      }
-                    />
-                  )}
-                </div>
+                <PhotoPicker title={t("en.stepPhoto")} value={photo} onChange={setPhoto} />
 
                 <div>
                   <div className="section-title">
@@ -352,50 +323,6 @@ export function EnhancePanel({
           {t("en.run")}
         </Button>
       </div>
-      {picking ? (
-        <LibraryPicker
-          onClose={() => setPicking(false)}
-          onPick={(p) => {
-            setPhoto(p);
-            setPicking(false);
-          }}
-        />
-      ) : null}
     </section>
-  );
-}
-
-/** Pick one of the user's generated images. */
-function LibraryPicker({ onClose, onPick }: { onClose: () => void; onPick: (p: EnhancePhoto) => void }) {
-  const { t } = useI18n();
-  const images = useImages({});
-  const items = (images.data?.pages ?? []).flatMap((p) => p.items);
-  return (
-    <Modal open wide onClose={onClose} title={t("en.fromLibrary")} description={t("en.fromLibraryHint")}>
-      {images.isLoading ? (
-        <Spinner />
-      ) : !items.length ? (
-        <EmptyState icon={<ImageIcon />} title={t("en.libraryEmpty")} description={t("en.libraryEmptyBody")} />
-      ) : (
-        <div className="pick-grid">
-          {items.map((img) => (
-            <button
-              key={img.id}
-              type="button"
-              className="pick-tile"
-              aria-label={img.model_name}
-              onClick={() => onPick({ kind: "image", id: img.id, thumb_url: img.thumb_url })}
-            >
-              <img src={img.thumb_url} alt="" loading="lazy" />
-            </button>
-          ))}
-          {images.hasNextPage ? (
-            <Button size="sm" loading={images.isFetchingNextPage} onClick={() => void images.fetchNextPage()}>
-              {t("common.loadMore")}
-            </Button>
-          ) : null}
-        </div>
-      )}
-    </Modal>
   );
 }
