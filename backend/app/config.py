@@ -9,6 +9,13 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 BACKEND_DIR = Path(__file__).resolve().parent.parent
 
 
+# Sent with the studio's own HTTP requests. RunPod's api.runpod.io and its pod proxy
+# (*.proxy.runpod.net) sit behind Cloudflare, which refuses common library User-Agents such as
+# Python-urllib (Cloudflare error 1010; noted in RunPod's own pod tests,
+# runpod-workers/comfyui-base tests/runpod_smoke/instances.py).
+USER_AGENT = "ai-image-studio/1.0 (+https://github.com/hladikmartin06-maker/ai-image-studio)"
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_file=BACKEND_DIR / ".env", env_file_encoding="utf-8", extra="ignore"

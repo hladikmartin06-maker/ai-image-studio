@@ -57,6 +57,7 @@ class GpuType:
     price_secure: float | None = None
     price_community: float | None = None
     available: bool | None = None
+    manufacturer: str | None = None
 
     def json(self) -> dict[str, Any]:
         return asdict(self)

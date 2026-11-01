@@ -53,6 +53,8 @@ async def test_auth_and_health(agent):
     assert health["ok"] and health["aitoolkit"] is True
     assert "gpus" in health and "ram_total" in health
     assert health["agent_version"] == "2"
+    # RunPod's proxy sits behind Cloudflare: the studio's own User-Agent, not httpx's.
+    assert client.headers["User-Agent"].startswith("ai-image-studio/")
     # Model downloads only from huggingface.co.
     with pytest.raises(AgentError) as bad:
         await client.start_job(

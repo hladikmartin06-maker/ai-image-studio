@@ -1,9 +1,10 @@
 "use client";
 
-import { ArrowRight, Cpu } from "lucide-react";
+import { ArrowRight, Cpu, RotateCcw } from "lucide-react";
 import Link from "next/link";
 
-import { Badge, Field, Notice, Select, Spinner } from "@/components/ui";
+import { Badge, Button, Field, Notice, Select, Spinner } from "@/components/ui";
+import { ApiError } from "@/lib/api";
 import { formatBytes } from "@/lib/format";
 import { useI18n, useT } from "@/lib/i18n";
 import type { MessageKey } from "@/lib/i18n";
@@ -151,6 +152,8 @@ export interface GpuChoice {
   gpu_type: string;
   gpu_count: number;
   cloud_type: "SECURE" | "COMMUNITY";
+  // The provider's hourly price of the chosen GPU, when its API reports one.
+  price_per_hour?: number | null;
 }
 
 /** GPUs with less memory are never offered (the owner's rule). */
@@ -179,10 +182,12 @@ export function GpuPicker({
   const priced = all.some((g) => g.price_secure != null || g.price_community != null);
   const usable = all
     .filter((g) => !g.memory_gb || g.memory_gb >= floor)
-    .filter((g) => !/^amd\b/i.test(g.id) && !/^amd\b/i.test(g.name))
-    .filter((g) => !priced || price(g) != null)
+    .filter((g) => (g.manufacturer ?? "").toLowerCase() !== "amd" && !/^amd\b/i.test(g.id) && !/^amd\b/i.test(g.name))
+    .filter((g) => !priced || (price(g) ?? 0) > 0)
     .sort((a, b) => (a.memory_gb ?? 999) - (b.memory_gb ?? 999) || (price(a) ?? 999) - (price(b) ?? 999));
   const selected = types.data?.items.find((g) => g.id === value.gpu_type);
+  const providerName = connected.find((p) => p.key === value.provider)?.name ?? value.provider;
+  const selectedPrice = selected ? price(selected) : null;
 
   if (providers.isLoading) return <Spinner />;
   if (!connected.length) {
@@ -215,7 +220,10 @@ export function GpuPicker({
               label={t("gpu.gpuType")}
               value={value.gpu_type || null}
               placeholder={t("gpu.chooseGpu")}
-              onChange={(g) => onChange({ ...value, gpu_type: String(g) })}
+              onChange={(g) => {
+                const found = all.find((x) => x.id === String(g));
+                onChange({ ...value, gpu_type: String(g), price_per_hour: found ? (price(found) ?? null) : null });
+              }}
               options={usable.map((g) => ({
                 value: g.id,
                 label: `${g.name}${g.memory_gb ? ` · ${g.memory_gb} GB` : ""}${
@@ -226,15 +234,30 @@ export function GpuPicker({
           )}
         </Field>
       </div>
+      {value.provider && types.isError ? (
+        <Notice tone="danger">
+          <div>{t("gpu.typesFailed", { provider: providerName })}</div>
+          {types.error instanceof ApiError ? <div className="tiny" style={{ marginTop: 4 }}>{types.error.message}</div> : null}
+          <Button size="sm" icon={<RotateCcw />} loading={types.isFetching} onClick={() => void types.refetch()} style={{ marginTop: 10 }}>
+            {t("cf.tryAgain")}
+          </Button>
+        </Notice>
+      ) : value.provider && types.data && !usable.length ? (
+        <Notice tone="warning">{t("gpu.noGpus", { provider: providerName, n: floor })}</Notice>
+      ) : null}
       {selected && minMemoryGb && selected.memory_gb && selected.memory_gb < minMemoryGb ? (
         <div className="error-text">{t("gpu.tooSmall", { n: minMemoryGb })}</div>
       ) : null}
       {selected ? (
-        <div className="hint">
-          {price(selected) !== null && price(selected) !== undefined
-            ? t("gpu.priceHint", { price: formatMoney(price(selected) ?? 0, locale) })
-            : t("gpu.noPrice")}
-        </div>
+        selectedPrice ? (
+          <div className="price-line">
+            <span className="price">{formatMoney(selectedPrice, locale)}</span>
+            <span className="small">{t("gpu.perHour")}</span>
+            <span className="hint grow">{t("gpu.priceHint", { provider: providerName })}</span>
+          </div>
+        ) : (
+          <div className="hint">{t("gpu.noPrice")}</div>
+        )
       ) : null}
     </div>
   );

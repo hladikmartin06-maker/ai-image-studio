@@ -467,6 +467,7 @@ export interface GpuType {
   price_secure: number | null;
   price_community: number | null;
   available: boolean | null;
+  manufacturer?: string | null;
 }
 
 export interface GpuWorkload {

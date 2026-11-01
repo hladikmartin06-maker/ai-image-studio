@@ -12,8 +12,9 @@ REST API (https://docs.runpod.io/api-reference), "Authorization: Bearer <key>":
   DELETE /v1/endpoints/{id}
 Serverless health: GET https://api.runpod.ai/v2/{endpoint_id}/health
 GraphQL (https://api.runpod.io/graphql): `gpuTypes {id displayName memoryInGb securePrice
-communityPrice}` for the GPU catalog; `myself {clientBalance currentSpendPerHr}` for the
-balance (shown only when the API returns it).
+communityPrice manufacturer}` for the GPU catalog (the query RunPod's own pod tests use);
+`myself {clientBalance currentSpendPerHr}` for the balance (shown only when the API returns it).
+api.runpod.io is behind Cloudflare: requests carry the studio's own User-Agent.
 Pods are reached at https://{podId}-{port}.proxy.runpod.net for HTTP ports.
 """
 
@@ -25,7 +26,7 @@ from typing import Any
 
 import httpx
 
-from app.config import get_settings
+from app.config import USER_AGENT, get_settings
 from app.gpu.base import Endpoint, GPUError, GpuType, Workload, WorkloadSpec
 
 
@@ -82,12 +83,30 @@ def refused_cuda(exc: GPUError) -> bool:
     return exc.code == "invalid_request" and "cuda" in exc.detail.lower()
 
 
+def _cloudflare(response: httpx.Response) -> bool:
+    """A block page from Cloudflare in front of RunPod (not RunPod's own answer)."""
+    return "cloudflare" in response.headers.get("server", "").lower() and "json" not in (
+        response.headers.get("content-type", "")
+    )
+
+
+def _cloudflare_code(response: httpx.Response) -> str:
+    match = re.search(r"error code:?\s*(\d{3,4})", response.text[:2000], re.IGNORECASE)
+    return f"error {match.group(1)}" if match else ""
+
+
 def _error(response: httpx.Response) -> GPUError:
     status = response.status_code
     message = _message(response)
     lowered = message.lower()
     if UNAVAILABLE_RE.search(message):
         return GPUError("unavailable", message)
+    if status in (403, 429, 503) and _cloudflare(response):
+        return GPUError(
+            "provider_error",
+            "RunPod's firewall (Cloudflare) blocked the request"
+            + (f": {_cloudflare_code(response)}" if _cloudflare_code(response) else ""),
+        )
     if status in (401, 403):
         return GPUError("invalid_credentials", message)
     if status == 402 or "balance" in lowered or "insufficient" in lowered:
@@ -118,7 +137,7 @@ class RunPodProvider:
 
     def _client(self, creds: dict[str, str]) -> httpx.AsyncClient:
         return httpx.AsyncClient(
-            headers={"Authorization": f"Bearer {creds['api_key']}"},
+            headers={"Authorization": f"Bearer {creds['api_key']}", "User-Agent": USER_AGENT},
             timeout=httpx.Timeout(60, connect=15),
             transport=self.transport,
         )
@@ -153,7 +172,8 @@ class RunPodProvider:
     async def gpu_types(self, creds: dict[str, str]) -> list[GpuType]:
         data = await self._graphql(
             creds,
-            "query GpuTypes { gpuTypes { id displayName memoryInGb securePrice communityPrice } }",
+            "query GpuTypes { gpuTypes { id displayName memoryInGb securePrice communityPrice "
+            "manufacturer } }",
         )
         out = [
             GpuType(
@@ -163,6 +183,7 @@ class RunPodProvider:
                 price_secure=_num(g.get("securePrice")),
                 price_community=_num(g.get("communityPrice")),
                 available=bool(g.get("securePrice") or g.get("communityPrice")),
+                manufacturer=str(g["manufacturer"]) if g.get("manufacturer") else None,
             )
             for g in data.get("gpuTypes") or []
             if g.get("id")

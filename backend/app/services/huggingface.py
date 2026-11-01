@@ -23,7 +23,7 @@ from typing import Any, Literal
 
 import httpx
 
-from app.config import get_settings
+from app.config import USER_AGENT, get_settings
 from app.lora.presets import ARCHITECTURES
 
 Access = Literal["granted", "needs_license", "invalid_token", "not_found", "unknown"]
@@ -60,7 +60,7 @@ class HubClient:
     def _client(self) -> httpx.AsyncClient:
         return httpx.AsyncClient(
             base_url=get_settings().huggingface_url.rstrip("/"),
-            headers={"Authorization": f"Bearer {self.token}"},
+            headers={"Authorization": f"Bearer {self.token}", "User-Agent": USER_AGENT},
             timeout=httpx.Timeout(15, connect=8),
             transport=self.transport,
         )

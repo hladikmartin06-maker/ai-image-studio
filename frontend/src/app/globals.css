@@ -3569,3 +3569,23 @@ a.job-row:hover {
   gap: 8px;
   margin-top: 10px;
 }
+
+/* Price of the chosen GPU (from the provider's API). */
+.price-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 8px;
+  padding: 10px 12px;
+  border-radius: var(--r-md);
+  border: 1px solid var(--border-strong);
+  background: var(--surface);
+}
+.price-line .price {
+  font-size: 18px;
+  font-weight: 650;
+  color: var(--text);
+}
+.price-line .hint {
+  flex-basis: 100%;
+}

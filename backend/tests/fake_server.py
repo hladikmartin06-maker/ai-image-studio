@@ -294,6 +294,15 @@ _endpoints: dict[str, dict[str, Any]] = {
 
 @app.post("/runpod/graphql")
 async def runpod_graphql(request: Request):
+    # Like Cloudflare in front of api.runpod.io: library User-Agents are refused (error 1010).
+    agent = request.headers.get("user-agent", "").lower()
+    if agent.startswith(("python-httpx", "python-urllib", "python-requests")):
+        return Response(
+            "error code: 1010",
+            status_code=403,
+            headers={"server": "cloudflare"},
+            media_type="text/plain",
+        )
     if not _authorized(request):
         return _unauthorized()
     query = (await request.json())["query"]
@@ -306,6 +315,7 @@ async def runpod_graphql(request: Request):
                         "displayName": "RTX 3070",
                         "memoryInGb": 8,
                         "securePrice": 0.13,
+                        "manufacturer": "Nvidia",
                         "communityPrice": 0.07,
                     },
                     {
@@ -313,6 +323,7 @@ async def runpod_graphql(request: Request):
                         "displayName": "RTX A4000",
                         "memoryInGb": 16,
                         "securePrice": 0.25,
+                        "manufacturer": "Nvidia",
                         "communityPrice": 0.17,
                     },
                     {
@@ -320,6 +331,7 @@ async def runpod_graphql(request: Request):
                         "displayName": "L4",
                         "memoryInGb": 24,
                         "securePrice": 0.43,
+                        "manufacturer": "Nvidia",
                         "communityPrice": 0.39,
                     },
                     {
@@ -327,6 +339,7 @@ async def runpod_graphql(request: Request):
                         "displayName": "RTX 4090",
                         "memoryInGb": 24,
                         "securePrice": 0.69,
+                        "manufacturer": "Nvidia",
                         "communityPrice": 0.34,
                     },
                     {
@@ -334,6 +347,7 @@ async def runpod_graphql(request: Request):
                         "displayName": "H100 SXM",
                         "memoryInGb": 80,
                         "securePrice": 2.99,
+                        "manufacturer": "Nvidia",
                         "communityPrice": None,
                     },
                     {
@@ -341,6 +355,7 @@ async def runpod_graphql(request: Request):
                         "displayName": "MI300X",
                         "memoryInGb": 192,
                         "securePrice": 2.49,
+                        "manufacturer": "AMD",
                         "communityPrice": None,
                     },
                     {
@@ -348,6 +363,7 @@ async def runpod_graphql(request: Request):
                         "displayName": "A40",
                         "memoryInGb": 48,
                         "securePrice": None,
+                        "manufacturer": "Nvidia",
                         "communityPrice": 0.35,
                     },
                 ]

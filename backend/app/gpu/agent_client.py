@@ -10,6 +10,8 @@ from typing import Any
 
 import httpx
 
+from app.config import USER_AGENT
+
 UPLOAD_CHUNK = 16 * 1024 * 1024
 DOWNLOAD_CHUNK = 32 * 1024 * 1024
 
@@ -28,7 +30,7 @@ class AgentClient:
 
     def __init__(self, base_url: str, token: str):
         self.base_url = base_url.rstrip("/")
-        self.headers = {"Authorization": f"Bearer {token}"}
+        self.headers = {"Authorization": f"Bearer {token}", "User-Agent": USER_AGENT}
 
     def _client(self, wait: float = 60) -> httpx.AsyncClient:
         return httpx.AsyncClient(

@@ -19,6 +19,8 @@ from typing import Any
 
 import httpx
 
+from app.config import USER_AGENT
+
 
 class ComfyError(Exception):
     """code: unreachable | unauthorized | invalid_workflow | not_found | server_error |
@@ -57,7 +59,7 @@ class ComfyClient:
     def _client(self, wait: float = 30) -> httpx.AsyncClient:
         return httpx.AsyncClient(
             base_url=self.base_url,
-            headers=self.headers,
+            headers={"User-Agent": USER_AGENT, **self.headers},
             timeout=httpx.Timeout(wait, connect=10),
             transport=self.transport,
         )

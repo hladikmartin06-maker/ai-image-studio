@@ -263,7 +263,7 @@ export function ConnectForm({
   onDone?: () => void;
   onCancel?: () => void;
 }) {
-  const t = useT();
+  const { t, locale } = useI18n();
   const confirm = useConfirm();
   const add = useAddComfy();
   const deploy = useDeployComfy();
@@ -284,7 +284,12 @@ export function ConnectForm({
         }
         const ok = await confirm({
           title: t("gpu.billingTitle"),
-          description: t("cf.deployBilling", { provider: gpu.provider === "modal" ? "Modal" : "RunPod" }),
+          description: gpu.price_per_hour
+            ? t("cf.deployBillingPrice", {
+                provider: gpu.provider === "modal" ? "Modal" : "RunPod",
+                price: formatMoney(gpu.price_per_hour, locale),
+              })
+            : t("cf.deployBilling", { provider: gpu.provider === "modal" ? "Modal" : "RunPod" }),
           confirmLabel: t("cf.deploy"),
         });
         if (!ok) return;

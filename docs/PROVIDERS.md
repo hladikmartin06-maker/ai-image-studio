@@ -264,6 +264,14 @@ are installed afterwards with one click. Code: `backend/app/comfy/deploy.py`,
   `/workspace` (sandbox mounts use background commits, `allow_background_commits=True` in the
   SDK). The first start pulls the image and copies ComfyUI onto the Volume; later starts reuse
   it.
+- **GPU list and price**: GraphQL `gpuTypes { id displayName memoryInGb securePrice
+  communityPrice manufacturer }` — the query RunPod's own pod tests use
+  (`tests/runpod_smoke/instances.py` in comfyui-base). `api.runpod.io` (and the pod proxy)
+  sit behind Cloudflare, which refuses library User-Agents such as Python-urllib (error 1010,
+  noted in the same file), so every request carries `User-Agent: ai-image-studio/1.0 (+…)`;
+  a Cloudflare block page is reported as such, not as a wrong key. The chosen GPU's hourly
+  price is the API's `securePrice` (Secure Cloud) and is shown before renting and in the
+  confirmation; disk storage is billed by RunPod separately (no price API is used for it).
 - Connections set up by older studio versions (which installed ComfyUI themselves) are not
   started again: the studio asks to delete them and rent a new GPU.
 - **Not run on a real RunPod or Modal GPU** and not against huggingface.co: verified from the

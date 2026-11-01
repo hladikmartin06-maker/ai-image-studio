@@ -12,7 +12,7 @@ import pytest
 from sqlalchemy import select
 
 from app.db import SessionLocal
-from app.gpu.base import WorkloadSpec
+from app.gpu.base import GPUError, WorkloadSpec
 from app.gpu.modal_provider import ModalProvider
 from app.gpu.registry import set_gpu_adapter
 from app.gpu.runpod import RunPodProvider
@@ -319,3 +319,48 @@ async def test_gpu_is_private(user: Api, runpod: FakeRunPod):
     r = await other.get("/api/gpu/runpod/workloads")
     assert r.status_code == 409 and r.json()["error"]["code"] == "not_connected"
     await other.client.aclose()
+
+
+async def test_runpod_requests_get_through_cloudflare():
+    """RunPod's GraphQL API sits behind Cloudflare, which refuses library User-Agents: the
+    studio sends its own, and a Cloudflare block page is reported as such (not as a wrong
+    key)."""
+    seen: list[httpx.Request] = []
+
+    def answer(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(
+            200,
+            json={
+                "data": {
+                    "gpuTypes": [
+                        {
+                            "id": "NVIDIA L4",
+                            "displayName": "L4",
+                            "memoryInGb": 24,
+                            "securePrice": 0.43,
+                            "communityPrice": None,
+                            "manufacturer": "Nvidia",
+                        }
+                    ]
+                }
+            },
+        )
+
+    creds = {"api_key": RUNPOD_KEY}
+    types = await RunPodProvider(transport=httpx.MockTransport(answer)).gpu_types(creds)
+    assert seen[0].headers["user-agent"].startswith("ai-image-studio/")
+    assert "manufacturer" in json.loads(seen[0].content)["query"]
+    assert types[0].manufacturer == "Nvidia" and types[0].price_secure == 0.43
+
+    def blocked(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            403,
+            headers={"server": "cloudflare", "content-type": "text/plain; charset=UTF-8"},
+            text="error code: 1010",
+        )
+
+    with pytest.raises(GPUError) as err:
+        await RunPodProvider(transport=httpx.MockTransport(blocked)).gpu_types(creds)
+    assert err.value.code == "provider_error"
+    assert "Cloudflare" in err.value.message and "1010" in err.value.message
