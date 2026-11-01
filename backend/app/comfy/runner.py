@@ -19,6 +19,7 @@ from typing import Any
 
 from sqlalchemy import select, update
 
+from app.comfy import enhance
 from app.comfy.client import (
     ComfyClient,
     ComfyError,
@@ -30,6 +31,7 @@ from app.comfy.service import client_for, file_capability, place_lora
 from app.config import get_settings
 from app.db import SessionLocal
 from app.models import ComfyConnection, Generation, Lora, LoraVersion
+from app.services import storage
 from app.services.events import broker
 from app.services.serializers import generation_json
 
@@ -91,6 +93,23 @@ async def _ensure_lora(gen: Generation, conn: ComfyConnection) -> None:
             raise RunFailed("lora_upload_failed", exc.message) from exc
     if name != lora_meta.get("file"):
         raise RunFailed("lora_upload_failed", "The LoRA file name changed; start the run again.")
+
+
+async def _with_input(client: ComfyClient, gen: Generation) -> dict[str, Any]:
+    """Enhance photo: uploads the user's photo to ComfyUI's input folder (POST /upload/image,
+    through the agent on a rented GPU) and puts its name into the LoadImage node."""
+    source = (gen.comfy_meta or {}).get("input")
+    if not source:
+        return gen.request_payload
+    try:
+        data = await asyncio.to_thread(storage.absolute(source["file_path"]).read_bytes)
+    except OSError as exc:
+        raise RunFailed("not_found", "The photo to enhance is no longer on this Mac.") from exc
+    ext = {"image/png": "png", "image/webp": "webp"}.get(source.get("mime_type"), "jpg")
+    name = await client.upload_image(
+        data, f"studio-{gen.id.hex[:12]}.{ext}", source.get("mime_type") or "image/jpeg"
+    )
+    return enhance.set_input(gen.request_payload, name)
 
 
 async def _known(client: ComfyClient, prompt_id: str) -> bool:
@@ -223,10 +242,11 @@ async def run(worker: Any, gen: Generation) -> None:
             await worker.set_task(task.id, status="processing")
         elif task.status == "pending":
             await _ensure_lora(gen, conn)
+            workflow = await _with_input(client, gen)
             prompt_id = str(uuid.uuid4())
             await worker.set_task(task.id, status="submitting", provider_task_id=prompt_id)
             try:
-                returned = await client.submit(gen.request_payload, prompt_id, str(gen.id))
+                returned = await client.submit(workflow, prompt_id, str(gen.id))
             except ComfyError as exc:
                 if exc.code == "unreachable" and await _known(client, prompt_id):
                     returned = prompt_id

@@ -6,6 +6,7 @@ from datetime import datetime
 from typing import Any
 
 from app.catalog import MODELS, PROVIDERS, get_model, resolve_variant, size_label
+from app.comfy import enhance
 from app.comfy.krea2 import MODEL_KEYS
 from app.models import Generation, Image, ProviderTask, ReferenceImage
 
@@ -19,7 +20,9 @@ def model_name(key: str) -> str:
     if model:
         return model.name
     comfy = MODEL_KEYS.get(key)
-    return comfy.name if comfy else key
+    if comfy:
+        return comfy.name
+    return enhance.NAME if key == enhance.MODEL_KEY else key
 
 
 def provider_name(key: str) -> str:
@@ -89,6 +92,9 @@ def comfy_summary(gen: Generation) -> dict[str, Any] | None:
         "model_file": meta.get("model_file"),
         "workflow": meta.get("workflow"),
         "lora": meta.get("lora"),
+        "family": meta.get("family"),
+        # Enhance photo: the photo it started from (thumbnail URL, no file path).
+        "input": {k: v for k, v in (meta.get("input") or {}).items() if k != "file_path"} or None,
         "test_group": meta.get("test_group"),
         "test_label": meta.get("test_label"),
         "test_prompt": meta.get("test_prompt"),

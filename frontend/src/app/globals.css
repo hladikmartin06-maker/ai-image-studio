@@ -3569,3 +3569,29 @@ a.job-row:hover {
   gap: 8px;
   margin-top: 10px;
 }
+
+/* Enhance photo: pick one of your generated images. */
+.pick-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(110px, 1fr));
+  gap: 8px;
+}
+.pick-tile {
+  aspect-ratio: 1;
+  padding: 0;
+  border-radius: var(--r-md);
+  border: 1px solid var(--border);
+  background: var(--surface);
+  overflow: hidden;
+  cursor: pointer;
+}
+.pick-tile:hover,
+.pick-tile:focus-visible {
+  border-color: var(--accent);
+}
+.pick-tile img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}

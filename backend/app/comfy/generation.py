@@ -17,15 +17,17 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.catalog import MAX_PROMPT_CHARS
-from app.comfy import krea2, workflows
+from app.comfy import enhance, krea2, workflows
 from app.comfy.service import file_capability, lora_filename, owned
 from app.models import (
     ComfyConnection,
     ComfyWorkflow,
     Generation,
+    Image,
     Lora,
     LoraVersion,
     ProviderTask,
+    ReferenceImage,
     User,
 )
 from app.services import personas
@@ -406,3 +408,145 @@ async def repeat(
         .options(selectinload(Generation.tasks), selectinload(Generation.images))
         .execution_options(populate_existing=True)
     )
+
+
+# --- Enhance photo (PGUpscaler) -------------------------------------------------------------
+
+
+class EnhanceInput(BaseModel):
+    # "reference": an uploaded photo or an AI model's photo; "image": a generated image.
+    kind: str = Field(pattern="^(reference|image)$")
+    id: uuid.UUID
+
+
+class EnhanceBody(BaseModel):
+    connection_id: uuid.UUID
+    image: EnhanceInput
+    strength: float = Field(default=enhance.DEFAULT_STRENGTH)
+    face_only: bool = False
+    upscale: float = Field(default=enhance.DEFAULT_UPSCALE)
+    seed: int | None = Field(default=None, ge=0, le=krea2.SEED_MAX)
+    client_request_id: str | None = Field(default=None, max_length=64)
+
+
+async def _enhance_input(db: AsyncSession, user: User, ref: EnhanceInput) -> dict[str, Any]:
+    """The user's own photo (never another user's): its file and a thumbnail URL."""
+    if ref.kind == "reference":
+        row = await db.scalar(
+            select(ReferenceImage).where(
+                ReferenceImage.id == ref.id, ReferenceImage.user_id == user.id
+            )
+        )
+        base = f"/api/reference-images/{ref.id}"
+    else:
+        row = await db.scalar(select(Image).where(Image.id == ref.id, Image.user_id == user.id))
+        base = f"/api/images/{ref.id}"
+    if row is None:
+        raise GenerationRejected("not_found", "That photo no longer exists.", 404)
+    return {
+        "kind": ref.kind,
+        "id": str(ref.id),
+        "file_path": row.file_path,
+        "mime_type": row.mime_type,
+        "width": row.width,
+        "height": row.height,
+        "thumb_url": f"{base}/thumb",
+        "url": f"{base}/file",
+    }
+
+
+async def create_enhance_generation(db: AsyncSession, user: User, body: EnhanceBody) -> Generation:
+    """Enhance photo on a ComfyUI connection: fixes plastic AI skin and upscales (see
+    comfy/enhance.py). An ordinary Generation row, so Library and History show it."""
+    if body.client_request_id:
+        existing = await db.scalar(
+            select(Generation)
+            .where(
+                Generation.user_id == user.id,
+                Generation.client_request_id == body.client_request_id,
+            )
+            .options(selectinload(Generation.tasks), selectinload(Generation.images))
+        )
+        if existing is not None:
+            return existing
+    if body.strength not in enhance.STRENGTHS:
+        raise GenerationRejected("invalid_parameter", "Strength is 0.2, 0.3 or 0.4.")
+    if body.upscale not in enhance.UPSCALES:
+        raise GenerationRejected("invalid_parameter", "Upscale is 1.5, 2 or 3.")
+    conn: ComfyConnection | None = await owned(db, user.id, body.connection_id)
+    if conn is None:
+        raise GenerationRejected("not_found", "That ComfyUI connection no longer exists.", 404)
+    if conn.status != "ready":
+        raise GenerationRejected("not_connected", f"{conn.name} is not ready yet.", 409)
+    detection = (conn.info or {}).get("enhance") or {}
+    if detection.get("missing_nodes"):
+        raise GenerationRejected(
+            "missing_nodes",
+            f"{conn.name} is missing ComfyUI nodes: {', '.join(detection['missing_nodes'])}. "
+            "Update ComfyUI.",
+            409,
+        )
+    if not detection.get("ready"):
+        raise GenerationRejected(
+            "missing_models",
+            f"The {enhance.NAME} models are not installed on {conn.name}: "
+            + ", ".join(detection.get("missing_files") or []),
+            409,
+        )
+    source = await _enhance_input(db, user, body.image)
+    seed = body.seed if body.seed is not None else secrets.randbelow(krea2.SEED_MAX)
+    workflow = enhance.build_workflow(
+        image=enhance.INPUT_PLACEHOLDER,
+        strength=body.strength,
+        face_only=body.face_only,
+        upscale=body.upscale,
+        seed=seed,
+    )
+    label = f"{enhance.NAME}: strength {body.strength:g}, {body.upscale:g}× upscale, " + (
+        "face only" if body.face_only else "whole photo"
+    )
+    gen = Generation(
+        user_id=user.id,
+        client_request_id=body.client_request_id,
+        model_key=enhance.MODEL_KEY,
+        provider=PROVIDER,
+        mode="image-edit",
+        provider_model_id=enhance.NAME,
+        prompt=label,
+        settings={
+            "strength": body.strength,
+            "face_only": body.face_only,
+            "upscale": body.upscale,
+            "seed": seed,
+            "source_width": source["width"],
+            "source_height": source["height"],
+        },
+        request_payload=workflow,
+        reference_image_ids=[source["id"]] if body.image.kind == "reference" else [],
+        image_count=1,
+        status="queued",
+        comfy_meta={
+            "connection_id": str(conn.id),
+            "connection_name": conn.name,
+            "connection_kind": conn.kind,
+            "family": enhance.FAMILY,
+            "workflow": {"id": None, "name": f"{enhance.NAME} (built-in)"},
+            "input": source,
+        },
+        tasks=[ProviderTask(index=0, images_requested=1)],
+    )
+    db.add(gen)
+    try:
+        await db.commit()
+    except IntegrityError:
+        await db.rollback()
+        raise
+    worker.enqueue(gen.id)
+    loaded = await db.scalar(
+        select(Generation)
+        .where(Generation.id == gen.id)
+        .options(selectinload(Generation.tasks), selectinload(Generation.images))
+        .execution_options(populate_existing=True)
+    )
+    assert loaded is not None
+    return loaded

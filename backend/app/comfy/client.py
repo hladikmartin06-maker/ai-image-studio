@@ -130,6 +130,21 @@ class ComfyClient:
         # Older ComfyUI versions ignore a client prompt_id and return their own.
         return str(data.get("prompt_id") or prompt_id)
 
+    async def upload_image(self, data: bytes, filename: str, mime: str) -> str:
+        """POST /upload/image (ComfyUI's input folder); returns the name ComfyUI stored."""
+        response = await self._request(
+            "POST",
+            "/upload/image",
+            files={"image": (filename, data, mime)},
+            data={"type": "input", "overwrite": "true"},
+            wait=120,
+        )
+        payload = self._json(response)
+        if response.status_code >= 400 or not isinstance(payload, dict) or not payload.get("name"):
+            raise ComfyError("server_error", "ComfyUI did not accept the photo.")
+        sub = str(payload.get("subfolder") or "")
+        return f"{sub}/{payload['name']}" if sub else str(payload["name"])
+
     async def history(self, prompt_id: str) -> dict[str, Any] | None:
         data = self._json(await self._request("GET", f"/history/{prompt_id}"))
         if isinstance(data, dict) and isinstance(data.get(prompt_id), dict):

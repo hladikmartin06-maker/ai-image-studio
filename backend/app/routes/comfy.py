@@ -18,9 +18,14 @@ from pydantic import BaseModel, Field
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.comfy import deploy, krea2, workflows
+from app.comfy import deploy, enhance, krea2, workflows
 from app.comfy.client import ComfyError
-from app.comfy.generation import ComfyGenerateBody, create_comfy_generation
+from app.comfy.generation import (
+    ComfyGenerateBody,
+    EnhanceBody,
+    create_comfy_generation,
+    create_enhance_generation,
+)
 from app.comfy.service import (
     agent_for,
     assoc,
@@ -116,6 +121,7 @@ async def _test(db: AsyncSession, conn: ComfyConnection) -> None:
 async def catalog(_: User = Depends(current_user)):
     return {
         "krea2": krea2.catalog_json(),
+        "enhance": enhance.catalog_json(),
         "deploy_images": deploy.DEFAULT_IMAGES,
         "model_folders": list(MODEL_FOLDERS),
     }
@@ -443,7 +449,8 @@ async def download_model(
 
 
 class InstallBody(BaseModel):
-    variant: Literal["turbo", "raw"]
+    # A Krea 2 variant, or "pgupscaler" for Enhance photo.
+    variant: Literal["turbo", "raw", "pgupscaler"]
     # One of the variant's verified files (e.g. fp8 or int8); default the first.
     filename: str | None = Field(default=None, max_length=200)
 
@@ -697,6 +704,19 @@ async def generate(
 ):
     try:
         gen = await create_comfy_generation(db, user, body)
+    except GenerationRejected as exc:
+        raise api_error(exc.status_code, exc.code, exc.message) from exc
+    return generation_json(gen)
+
+
+@router.post("/enhance", status_code=201)
+async def enhance_photo(
+    body: EnhanceBody, user: User = Depends(current_user), db: AsyncSession = Depends(get_db)
+):
+    """Enhance photo (PGUpscaler): fixes plastic AI skin and upscales one of the user's own
+    photos on a ComfyUI connection."""
+    try:
+        gen = await create_enhance_generation(db, user, body)
     except GenerationRejected as exc:
         raise api_error(exc.status_code, exc.code, exc.message) from exc
     return generation_json(gen)

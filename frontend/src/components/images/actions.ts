@@ -8,6 +8,7 @@ import { useConfirm } from "@/components/ui";
 import { ApiError, downloadUrl } from "@/lib/api";
 import { useT } from "@/lib/i18n";
 import { useDeleteImage, useRegenerate, useSaveToLibrary } from "@/lib/queries";
+import { enhanceInStudio } from "@/lib/studio-bridge";
 import type { StudioImage } from "@/lib/types";
 
 export async function copyText(text: string) {
@@ -101,8 +102,17 @@ export function useImageActions() {
     [router],
   );
 
+  // Generate › Enhance photo with this image (switches there when that page is open).
+  const enhanceImage = useCallback(
+    (img: StudioImage) => {
+      if (enhanceInStudio({ kind: "image", id: img.id, thumb_url: img.thumb_url }) === "pending") router.push("/generate");
+    },
+    [router],
+  );
+
   return {
     download,
+    enhanceImage,
     copyPrompt,
     deleteImage,
     regenerateImage,

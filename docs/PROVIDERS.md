@@ -261,14 +261,17 @@ are installed afterwards with one click. Code: `backend/app/comfy/deploy.py`,
 - **Image**: RunPod's official ComfyUI image, which already holds ComfyUI and PyTorch —
   source `github.com/runpod-workers/comfyui-base` (main, commit 33dfcd6 of 2026-08-27:
   `Dockerfile`, `start.sh`, `docker-bake.hcl`, `README.md`, `README_CUDA13.md`), tags on
-  Docker Hub (`hub.docker.com/v2/repositories/runpod/comfyui/tags`, checked 2026-10-31):
-  - `runpod/comfyui:cuda12.8` (= `latest`; ComfyUI v0.30.0, PyTorch 2.10.0+cu128, Ubuntu
-    24.04, Python 3.12) with `allowedCudaVersions` `["12.8", "12.9"]`;
-  - `runpod/comfyui:cuda13.0` (PyTorch 2.10.0+cu130; "Blackwell / RTX 5090+") with
+  Docker Hub (`hub.docker.com/v2/repositories/runpod/comfyui/tags`, checked 2026-10-31 and
+  2026-11-01). Pinned since 2026-11-01 to release 1.4.1 with ComfyUI v0.35.0 (pushed
+  2026-10-19), the image the "PG - Free Upscaler" template was made for (its setup.sh):
+  - `runpod/comfyui:1.4.1-comfyuiv0.35.0-cuda12.8` with `allowedCudaVersions`
+    `["12.8", "12.9"]`;
+  - `runpod/comfyui:1.4.1-comfyuiv0.35.0-cuda13.0` ("Blackwell / RTX 5090+") with
     `["13.0", "13.1", "13.2", "13.3"]` — used for Blackwell GPUs (the CUDA 12.8 template "does
     not support CUDA 13 (Blackwell / RTX 5090)", its README) and when RunPod has no free host
     with a 12.8/12.9 driver for the chosen GPU.
-  - ComfyUI v0.30.0 ≥ 0.24.1, the minimum of Comfy-Org's Krea 2 template.
+  - ComfyUI v0.35.0 ≥ 0.24.1, the minimum of Comfy-Org's Krea 2 template. The 1.4.1
+    `start.sh` uses the same paths and args file as before (checked in its source).
 - **What the image's `/start.sh` does** (read from its source): SSH (random root password in
   the log unless `PUBLIC_KEY`), FileBrowser on 8080 (`FILEBROWSER_PASSWORD`), JupyterLab on
   8888 (`JUPYTER_PASSWORD`), on the first start copies `/opt/comfyui-baked` to
@@ -304,7 +307,7 @@ are installed afterwards with one click. Code: `backend/app/comfy/deploy.py`,
   is a Blackwell GPU). When a machine is taken at create time (capacity 400/409), the next
   image is tried — same GPU and cloud, so the same price. "No GPU of this type is free right
   now" when nothing fits.
-- **Modal**: `modal.Image.from_registry("runpod/comfyui:cuda12.8").entrypoint([])`
+- **Modal**: `modal.Image.from_registry("runpod/comfyui:1.4.1-comfyuiv0.35.0-cuda12.8").entrypoint([])`
   (`Image.entrypoint`, modal 1.6.3), the same command and agent, a named Volume at
   `/workspace` (sandbox mounts use background commits, `allow_background_commits=True` in the
   SDK). The first start pulls the image and copies ComfyUI onto the Volume; later starts reuse
@@ -315,6 +318,47 @@ are installed afterwards with one click. Code: `backend/app/comfy/deploy.py`,
   sources above and with a fake RunPod that runs the real start command and agent with a fake
   `start.sh` (first-start copy, args file) and a fake ComfyUI, and a local file server for the
   downloader (resume, rename, skip, token only to huggingface.co).
+
+# Enhance photo (PGUpscaler)
+
+Generate › "Enhance photo" runs the workflow of the free RunPod template **"PG - Free
+Upscaler"** (`console.runpod.io/hub/template/okugktg6fs`, video "Celý ComfyUI Workflow, ktorý
+používam ÚPLNE ZADARMO" by Tomáš Ižvolt). Code: `backend/app/comfy/enhance.py`. Checked
+2026-11-01 from:
+
+- the template page (its `__NEXT_DATA__`: name, image, disks, readme) and its start command,
+  which downloads `setup.sh` from the public Hugging Face repository
+  `huggingface.co/AIPRIVATEGROUP/pgupscaler` (the owner also pasted it);
+- the repository's file tree (`/api/models/AIPRIVATEGROUP/pgupscaler/tree/main`, sizes) and
+  `workflows/PGUpscaler - EN.json` (nodes, links, widget values) and `README.md` (settings);
+- ComfyUI's own source at v0.30.0 and v0.35.0: every node of the workflow is built in
+  (`SAM3_Detect`, `SeedVR2Preprocess`, `SeedVR2Conditioning`, `SeedVR2PostProcessing`,
+  `ModelSamplingAuraFlow`, `ImageScaleToTotalPixels`, `ImageCompositeMasked`, …). The
+  template's custom nodes (Pixaroma, rgthree) only draw its controls and previews.
+
+What the studio does (not the template's `setup.sh`, which installs custom nodes and changes
+the image): the same graph in API format, on the same ComfyUI connection as Krea 2.
+
+- **Files** (6, ≈ 22.7 GB; from `…/resolve/main/models/<folder>/<file>`, through the agent,
+  huggingface.co only): `diffusion_models/z_image_turbo_int8_convrot.safetensors`,
+  `text_encoders/qwen_3_4b_fp8_mixed.safetensors`, `vae/ae.safetensors`,
+  `checkpoints/sam3.1_multiplex_fp16.safetensors`,
+  `diffusion_models/seedvr2_7b_int8_convrot.safetensors`,
+  `vae/seedvr2_ema_vae_fp16.safetensors`. "Installed" only when ComfyUI lists all six.
+- **Graph**: LoadImage → ImageScaleToTotalPixels (2 MP, lanczos) → Z-Image Turbo img2img
+  (UNETLoader, CLIPLoader type `lumina2`, ModelSamplingAuraFlow shift 3, the template's skin
+  prompt, ConditioningZeroOut negative, KSampler 5 steps, CFG 1, dpmpp_2m_sde / beta,
+  denoise = strength 0.2 / 0.3 / 0.4) → optional face only (CheckpointLoaderSimple SAM 3.1,
+  "face" prompt, SAM3_Detect threshold 0.5, GrowMask 16, blur 31 / σ 10, ImageCompositeMasked)
+  → ImageScaleBy 1.5 / 2 / 3 → SeedVR2 7B (tiled VAE 512 / 128, KSampler 1 step euler /
+  simple) → SeedVR2PostProcessing color correction `lab` → SaveImage.
+- **Photo**: an upload, an AI model photo or a generated image of the same user, uploaded to
+  that ComfyUI with `POST /upload/image` for the run (again on "Repeat").
+- **GPU**: 24 GB or more like every GPU list; 3× is "very slow" and the README recommends
+  48 GB, so the studio warns below that.
+- **Not run on a real GPU** and not against huggingface.co (its CDN is blocked in the build
+  sandbox, so the files were not downloaded): verified with the fake ComfyUI, which checks
+  the nodes, the file names per loader and the uploaded photo, and with the real agent.
 
 # LoRA training (ai-toolkit)
 

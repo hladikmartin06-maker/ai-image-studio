@@ -77,3 +77,45 @@ export function takePendingApply(): StudioPatch | null {
     return null;
   }
 }
+
+// "Enhance photo" from an image viewer: opens Generate › Enhance photo with that image.
+export interface EnhanceRequest {
+  kind: "reference" | "image";
+  id: string;
+  thumb_url: string;
+}
+
+const ENHANCE_KEY = "studio:pending-enhance";
+let enhanceHandler: ((photo: EnhanceRequest) => void) | null = null;
+
+export function registerEnhanceHandler(handler: (photo: EnhanceRequest) => void) {
+  enhanceHandler = handler;
+  return () => {
+    if (enhanceHandler === handler) enhanceHandler = null;
+  };
+}
+
+/** At once when the Generate page is open; otherwise when it opens. */
+export function enhanceInStudio(photo: EnhanceRequest): "applied" | "pending" {
+  if (enhanceHandler) {
+    enhanceHandler(photo);
+    return "applied";
+  }
+  try {
+    sessionStorage.setItem(ENHANCE_KEY, JSON.stringify(photo));
+  } catch {
+    /* storage blocked */
+  }
+  return "pending";
+}
+
+export function takePendingEnhance(): EnhanceRequest | null {
+  try {
+    const raw = sessionStorage.getItem(ENHANCE_KEY);
+    if (!raw) return null;
+    sessionStorage.removeItem(ENHANCE_KEY);
+    return JSON.parse(raw) as EnhanceRequest;
+  } catch {
+    return null;
+  }
+}

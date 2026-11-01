@@ -383,14 +383,16 @@ def test_boot_script_images_and_download_progress():
     assert 'exec "${STUDIO_START_SCRIPT:-/start.sh}"' in COMFY_BOOT
     assert "--listen 127.0.0.1" in COMFY_BOOT and "base64 -d" in COMFY_BOOT
     assert deploy.image_plan("runpod", "NVIDIA L4") == [
-        ("runpod/comfyui:cuda12.8", ["12.8", "12.9"]),
-        ("runpod/comfyui:cuda13.0", ["13.0", "13.1", "13.2", "13.3"]),
+        ("runpod/comfyui:1.4.1-comfyuiv0.35.0-cuda12.8", ["12.8", "12.9"]),
+        ("runpod/comfyui:1.4.1-comfyuiv0.35.0-cuda13.0", ["13.0", "13.1", "13.2", "13.3"]),
     ]
     # The CUDA 12 image does not support Blackwell GPUs (its README).
     assert deploy.image_plan("runpod", "NVIDIA GeForce RTX 5090")[0][0] == (
-        "runpod/comfyui:cuda13.0"
+        "runpod/comfyui:1.4.1-comfyuiv0.35.0-cuda13.0"
     )
-    assert deploy.image_plan("modal", "L40S") == [("runpod/comfyui:cuda12.8", [])]
+    assert deploy.image_plan("modal", "L40S") == [
+        ("runpod/comfyui:1.4.1-comfyuiv0.35.0-cuda12.8", [])
+    ]
     assert deploy.model_downloads([]) == []
     files = deploy.model_downloads(["turbo"])
     assert [f["folder"] for f in files] == ["text_encoders", "vae", "diffusion_models"]
@@ -452,8 +454,8 @@ async def test_runpod_picks_free_cuda_and_stops_when_comfyui_never_answers(
         assert r.status_code == 201, r.text
         sent = [b for m, path, b in fake.calls if m == "POST" and path == "/v2/pods"]
         assert [(b["image"], b["gpu"]["allowedCudaVersions"]) for b in sent] == [
-            ("runpod/comfyui:cuda12.8", ["12.8"]),
-            ("runpod/comfyui:cuda13.0", ["13.0"]),
+            ("runpod/comfyui:1.4.1-comfyuiv0.35.0-cuda12.8", ["12.8"]),
+            ("runpod/comfyui:1.4.1-comfyuiv0.35.0-cuda13.0", ["13.0"]),
         ]
         # No needless constraints: no data centers, vCPU or RAM minimums; small disks.
         assert set(sent[-1]) == {"name", "image", "gpu", "cloud", "disk", "ports", "env",
@@ -461,7 +463,7 @@ async def test_runpod_picks_free_cuda_and_stops_when_comfyui_never_answers(
         assert sent[-1]["disk"] == 30 and sent[-1]["mounts"]["persistent"]["size"] == 80
         assert len(fake.pods) == 1  # the refused request created no pod
         conn = r.json()
-        assert conn["deploy"]["image"] == "runpod/comfyui:cuda13.0"
+        assert conn["deploy"]["image"] == "runpod/comfyui:1.4.1-comfyuiv0.35.0-cuda13.0"
         assert conn["deploy"]["cuda"] == ["13.0"]
         await gpu_runner.tick()
         conn = (await user.get("/api/comfy/connections")).json()["items"][0]
@@ -628,7 +630,7 @@ async def test_deploy_on_runpod_through_the_agent(user: Api, tmp_path: Path, no_
     """The studio rents a (fake) RunPod pod with RunPod's ComfyUI image: the start command
     starts the real agent and hands over to the image's start script; the studio reaches
     ComfyUI only through the agent, installs the model, generates, then stops the pod."""
-    comfy_dir = make_comfy_dir(tmp_path / "gpu")
+    comfy_dir = make_comfy_dir(tmp_path / "gpu", enhance=True)
     fake = SpawningRunPod(tmp_path / "pods", comfy_env(comfy_dir))
     set_gpu_adapter("runpod", LocalRunPodProvider(fake))
     comfy_runner.POLL_INITIAL = 0.05
@@ -647,7 +649,7 @@ async def test_deploy_on_runpod_through_the_agent(user: Api, tmp_path: Path, no_
         assert pod["cmd"] == [COMFY_BOOT]
         assert pod["mounts"] == {"persistent": {"size": 80, "path": "/workspace"}}
         # RunPod's ComfyUI image (ComfyUI and PyTorch inside), on free CUDA 12.8 / 12.9 hosts.
-        assert pod["image"] == "runpod/comfyui:cuda12.8"
+        assert pod["image"] == "runpod/comfyui:1.4.1-comfyuiv0.35.0-cuda12.8"
         assert pod["gpu"]["allowedCudaVersions"] == ["12.8", "12.9"]
         conn = await _wait_conn(user, lambda c: c["status"] in ("ready", "error"))
         assert conn["status"] == "ready", (conn["deploy"], conn["last_error"])
@@ -696,6 +698,33 @@ async def test_deploy_on_runpod_through_the_agent(user: Api, tmp_path: Path, no_
         assert g.status_code == 201, g.text
         gen = await wait_done(user, g.json()["id"])
         assert gen["status"] == "completed", gen
+        # Enhance photo on the same GPU: its models (already on this volume), then the photo
+        # goes to ComfyUI through the agent (multipart upload) and the graph runs.
+        inst = await user.post(
+            f"/api/comfy/connections/{conn['id']}/models/install", json={"variant": "pgupscaler"}
+        )
+        assert inst.status_code == 200, inst.text
+        assert len(inst.json()["deploy"]["model_job"]["files"]) == 6
+        conn = await _wait_conn(user, lambda c: c["deploy"]["model_job"]["status"] != "running")
+        assert conn["deploy"]["model_job"]["status"] == "completed", (
+            conn["deploy"]["model_job"],
+            conn["info"].get("enhance"),
+        )
+        assert conn["info"]["enhance"]["ready"]
+        from tests.fakes import png_bytes
+
+        ref = (
+            await user.post(
+                "/api/reference-images", files={"file": ("me.png", png_bytes(64, 80), "image/png")}
+            )
+        ).json()
+        e = await user.post(
+            "/api/comfy/enhance",
+            json={"connection_id": conn["id"], "image": {"kind": "reference", "id": ref["id"]}},
+        )
+        assert e.status_code == 201, e.text
+        enhanced = await wait_done(user, e.json()["id"])
+        assert enhanced["status"] == "completed", enhanced
         jobs = (await user.get("/api/jobs", params={"type": "deployment"})).json()
         assert jobs["items"][0]["status"] == "running" and jobs["items"][0]["cost"] is not None
         stop = await user.post(f"/api/comfy/connections/{conn['id']}/stop")
@@ -759,7 +788,9 @@ async def test_deploy_on_modal_uses_the_same_image_and_start(user: Api, no_poll_
         l40s = next(g for g in types if g["id"] == "L40S")
         assert l40s["price_secure"] == 1.95 and l40s["price_estimate"]
         assert l40s["price_extra"] == 0.4448
-        assert spec.image == "runpod/comfyui:cuda12.8" and spec.clear_entrypoint
+        assert (
+            spec.image == "runpod/comfyui:1.4.1-comfyuiv0.35.0-cuda12.8" and spec.clear_entrypoint
+        )
         assert [*spec.entrypoint, *spec.command] == ["/bin/bash", "-c", COMFY_BOOT]
         assert spec.ports == [8189] and spec.volume_name and spec.volume_gb == 0
         assert "STUDIO_AGENT_TOKEN" in spec.secret_env and "STUDIO_AGENT_TOKEN" not in spec.env
@@ -787,7 +818,7 @@ def test_modal_image_clears_the_entrypoint():
     """The real SDK call path builds modal.Image.from_registry(...).entrypoint([])."""
     import modal
 
-    image = modal.Image.from_registry("runpod/comfyui:cuda12.8").entrypoint([])
+    image = modal.Image.from_registry("runpod/comfyui:1.4.1-comfyuiv0.35.0-cuda12.8").entrypoint([])
     assert isinstance(image, modal.Image)
 
 
@@ -856,3 +887,115 @@ async def test_session_time_and_spending_limits_stop_the_gpu(user: Api, no_poll_
         async with SessionLocal() as db:
             await db.execute(ComfyConnection.__table__.delete())
             await db.commit()
+
+
+# --- Enhance photo (PGUpscaler) ---------------------------------------------------------------
+
+
+def test_enhance_workflow_matches_the_template():
+    """The template's graph in API format: only built-in nodes; the face branch only with
+    face_only; strength, upscale and seed where the template's controls put them."""
+    from app.comfy import enhance
+
+    whole = enhance.build_workflow(
+        image="in.png", strength=0.3, face_only=False, upscale=2.0, seed=7
+    )
+    face = enhance.build_workflow(image="in.png", strength=0.4, face_only=True, upscale=3.0, seed=7)
+    assert "SAM3_Detect" not in {n["class_type"] for n in whole.values()}
+    assert {n["class_type"] for n in face.values()} <= set(enhance.REQUIRED_NODES)
+    assert whole["24"]["inputs"]["denoise"] == 0.3 and face["24"]["inputs"]["denoise"] == 0.4
+    assert whole["5"]["inputs"]["image"] == ["25", 0] and face["5"]["inputs"]["image"] == ["36", 0]
+    assert face["5"]["inputs"]["scale_by"] == 3.0 and face["45"]["inputs"]["steps"] == 1
+    assert face["11"]["inputs"]["type"] == "lumina2" and face["13"]["inputs"]["shift"] == 3
+    assert [n for n in face.values() if n["class_type"] == "SaveImage"][0]["inputs"]["images"] == [
+        "47",
+        0,
+    ]
+    assert enhance.set_input(face, "photo.png")["1"]["inputs"]["image"] == "photo.png"
+    assert face["1"]["inputs"]["image"] == "in.png"  # the stored workflow is not changed
+    # Files only from the template's Hugging Face repository (~22.7 GB).
+    assert all(
+        d["url"].startswith("https://huggingface.co/AIPRIVATEGROUP/pgupscaler/resolve/main/models/")
+        for d in enhance.downloads()
+    )
+    assert 22.7e9 < enhance.TOTAL_BYTES < 22.8e9
+    detection = enhance.detect(FakeComfy().object_info())
+    assert not detection["ready"] and len(detection["missing_files"]) == 6
+    assert not detection["missing_nodes"]
+
+
+async def test_enhance_photo_on_a_comfyui(user: Api):
+    """The user's photo is uploaded to ComfyUI and the template's graph runs on it; the
+    result lands in the library like any generation."""
+    from tests.fake_comfy_server import ENHANCE_FILES, KREA_FILES
+    from tests.fakes import png_bytes
+
+    files = {k: list(KREA_FILES.get(k, [])) + ENHANCE_FILES.get(k, []) for k in KREA_FILES}
+    fake = FakeComfy(files=files)
+    ComfyClient.transport = fake.transport()
+    comfy_runner.POLL_INITIAL = 0.01
+    comfy_runner.POLL_MAX = 0.02
+    try:
+        conn = await add_local(user)
+        assert conn["info"]["enhance"]["ready"], conn["info"]["enhance"]
+        photo = png_bytes(64, 80)
+        ref = (
+            await user.post("/api/reference-images", files={"file": ("me.png", photo, "image/png")})
+        ).json()
+        body = {
+            "connection_id": conn["id"],
+            "image": {"kind": "reference", "id": ref["id"]},
+            "strength": 0.3,
+            "face_only": True,
+            "upscale": 2,
+        }
+        assert (
+            await user.post("/api/comfy/enhance", json={**body, "strength": 0.25})
+        ).status_code == 400
+        r = await user.post("/api/comfy/enhance", json=body)
+        assert r.status_code == 201, r.text
+        gen = await wait_done(user, r.json()["id"])
+        assert gen["status"] == "completed" and len(gen["images"]) == 1, gen
+        assert gen["model_name"] == "PGUpscaler" and gen["comfy"]["family"] == "pgupscaler"
+        assert gen["comfy"]["input"]["thumb_url"].endswith("/thumb")
+        assert "file_path" not in gen["comfy"]["input"]
+        sent = list(fake.prompts.values())[-1]["prompt"]
+        uploaded = sent["1"]["inputs"]["image"]
+        assert uploaded in fake.uploads and len(fake.uploads[uploaded]) >= len(photo) - 4
+        assert sent["24"]["inputs"]["denoise"] == 0.3 and "31" in sent
+        # A generated image can be enhanced too.
+        again = await user.post(
+            "/api/comfy/enhance",
+            json={**body, "image": {"kind": "image", "id": gen["images"][0]["id"]}},
+        )
+        assert again.status_code == 201, again.text
+        assert (await wait_done(user, again.json()["id"]))["status"] == "completed"
+        # Never another user's photo.
+        other = await make_user("enhance-other@example.com")
+        foreign = await other.post("/api/comfy/enhance", json={**body, "connection_id": conn["id"]})
+        assert foreign.status_code == 404
+    finally:
+        ComfyClient.transport = None
+        async with SessionLocal() as db:
+            await db.execute(ComfyConnection.__table__.delete())
+            await db.execute(Generation.__table__.delete().where(Generation.provider == "comfyui"))
+            await db.commit()
+
+
+async def test_enhance_needs_its_models(user: Api, comfy):
+    """Without the PGUpscaler files nothing is sent to ComfyUI."""
+    from tests.fakes import png_bytes
+
+    conn = await add_local(user)
+    ref = (
+        await user.post(
+            "/api/reference-images", files={"file": ("me.png", png_bytes(64, 80), "image/png")}
+        )
+    ).json()
+    r = await user.post(
+        "/api/comfy/enhance",
+        json={"connection_id": conn["id"], "image": {"kind": "reference", "id": ref["id"]}},
+    )
+    assert r.status_code == 409 and r.json()["error"]["code"] == "missing_models"
+    assert "z_image_turbo_int8_convrot.safetensors" in r.json()["error"]["message"]
+    assert comfy.prompts == {}

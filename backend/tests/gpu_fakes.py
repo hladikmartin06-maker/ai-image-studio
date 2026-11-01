@@ -100,9 +100,10 @@ exec python3 main.py --port "$STUDIO_COMFY_PORT" $ARGS
 """
 
 
-def make_comfy_dir(root: Path, models: bool = True) -> Path:
+def make_comfy_dir(root: Path, models: bool = True, enhance: bool = False) -> Path:
     """A fake runpod/comfyui image: the baked ComfyUI (main.py is the fake ComfyUI server,
-    with the Krea 2 files unless models=False) and its start.sh."""
+    with the Krea 2 files unless models=False, and the Enhance photo files with enhance=True,
+    so nothing is downloaded) and its start.sh."""
     folder = root / "comfyui-baked"
     folder.mkdir(parents=True, exist_ok=True)
     shutil.copy(TESTS / "fake_comfy_server.py", folder / "main.py")
@@ -114,6 +115,12 @@ def make_comfy_dir(root: Path, models: bool = True) -> Path:
         ):
             (folder / "models" / sub).mkdir(parents=True, exist_ok=True)
             (folder / "models" / sub / name).write_bytes(b"weights")
+    if enhance:
+        from app.comfy import enhance as pg
+
+        for f in pg.FILES:
+            (folder / "models" / f.folder).mkdir(parents=True, exist_ok=True)
+            (folder / "models" / f.folder / f.filename).write_bytes(b"weights")
     start = root / "start.sh"
     start.write_text(FAKE_START_SH)
     start.chmod(0o755)

@@ -24,7 +24,7 @@ from typing import Any
 
 from sqlalchemy import func, select
 
-from app.comfy import krea2
+from app.comfy import enhance, krea2
 from app.comfy.client import ComfyError
 from app.comfy.service import agent_for, assoc, client_for, inspect
 from app.db import SessionLocal
@@ -43,9 +43,11 @@ log = logging.getLogger("studio.deploy")
 # cuda12.8 = PyTorch for CUDA 12.8, the default; cuda13.0 = PyTorch for CUDA 13.0, for GPUs
 # the CUDA 12 image does not support (Blackwell, RTX 5090) and GPUs that are only offered on
 # hosts with a CUDA 13 driver right now. allowedCudaVersions keeps each image on hosts whose
-# driver fits it.
-IMAGE_CUDA12 = "runpod/comfyui:cuda12.8"
-IMAGE_CUDA13 = "runpod/comfyui:cuda13.0"
+# driver fits it. Pinned to release 1.4.1 with ComfyUI 0.35.0 (tags of 2026-10-19), the image
+# the "PG - Free Upscaler" template runs its models on; the floating cuda12.8 tag still had
+# ComfyUI 0.30.0.
+IMAGE_CUDA12 = "runpod/comfyui:1.4.1-comfyuiv0.35.0-cuda12.8"
+IMAGE_CUDA13 = "runpod/comfyui:1.4.1-comfyuiv0.35.0-cuda13.0"
 BLACKWELL = re.compile(r"5090|5080|blackwell|\bB200\b|\bB300\b", re.IGNORECASE)
 DEFAULT_IMAGES = {"runpod": IMAGE_CUDA12, "modal": IMAGE_CUDA12}
 # Where the image keeps ComfyUI, relative to /workspace.
@@ -556,23 +558,29 @@ def model_progress(job: dict[str, Any], sizes_gb: list[float | None]) -> int:
 
 
 async def install_model(db, conn: ComfyConnection, variant: str, filename: str | None) -> None:
-    """Starts downloading a Krea 2 model (and its text encoder and VAE) on the GPU, straight
-    from Hugging Face. Only once ComfyUI answers (its first-start copy is done by then)."""
+    """Starts downloading a Krea 2 model (and its text encoder and VAE), or the Enhance photo
+    models ("pgupscaler"), on the GPU, straight from Hugging Face. Only once ComfyUI answers
+    (its first-start copy is done by then)."""
     if conn.auth_type != "agent" or conn.status != "ready":
         raise ComfyError("unsupported", "Connect the GPU first.")
     d = dict(conn.deploy or {})
     if (d.get("model_job") or {}).get("status") == "running":
         raise ComfyError("in_progress", "A download is already running.")
-    spec = krea2.VARIANTS.get(variant)
-    if spec is None or not spec.known_files:
-        raise ComfyError(
-            "unsupported",
-            "There is no verified download for this model yet. Add its file under Manage.",
-        )
-    files = model_downloads([variant], filename)
-    sizes = {k.filename: k.size_gb for k in spec.known_files}
-    sizes[krea2.TEXT_ENCODER.filename] = krea2.TEXT_ENCODER.size_gb
-    sizes[krea2.VAE.filename] = krea2.VAE.size_gb
+    if variant == enhance.FAMILY:
+        # Enhance photo: the six PGUpscaler files from its Hugging Face repository.
+        files = enhance.downloads()
+        sizes = {f.filename: f.size / 1e9 for f in enhance.FILES}
+    else:
+        spec = krea2.VARIANTS.get(variant)
+        if spec is None or not spec.known_files:
+            raise ComfyError(
+                "unsupported",
+                "There is no verified download for this model yet. Add its file under Manage.",
+            )
+        files = model_downloads([variant], filename)
+        sizes = {k.filename: k.size_gb for k in spec.known_files}
+        sizes[krea2.TEXT_ENCODER.filename] = krea2.TEXT_ENCODER.size_gb
+        sizes[krea2.VAE.filename] = krea2.VAE.size_gb
     agent = agent_for(conn)
     if agent is None:
         raise ComfyError("unreachable", "The agent address is missing.")
@@ -623,8 +631,14 @@ async def _advance_model_job(db, conn: ComfyConnection, d: dict[str, Any]) -> No
             conn.last_checked_at = now()
         except ComfyError as exc:
             job_info["error"] = exc.message
-        seen = ((conn.info or {}).get("krea2") or {}).get("variants", {}).get(job_info["variant"])
-        if not (seen or {}).get("installed"):
+        info = conn.info or {}
+        if job_info["variant"] == enhance.FAMILY:
+            seen = info.get("enhance") or {}
+            installed = bool(seen) and not seen.get("missing_files")
+        else:
+            seen = (info.get("krea2") or {}).get("variants", {}).get(job_info["variant"])
+            installed = bool((seen or {}).get("installed"))
+        if not installed:
             job_info.update(
                 status="failed",
                 progress=0,

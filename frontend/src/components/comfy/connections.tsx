@@ -341,7 +341,7 @@ export function ConnectForm({
         if (!ok) return;
         try {
           await deploy.mutateAsync({
-            name: `Krea 2 · ${providerName} · ${gpu.gpu_type}`.slice(0, 80),
+            name: `${providerName} · ${gpu.gpu_type}`.slice(0, 80),
             provider: gpu.provider,
             gpu_type: gpu.gpu_type,
             gpu_count: 1,

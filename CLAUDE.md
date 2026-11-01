@@ -34,7 +34,8 @@ repositories.
 
 - Image generation only. Hosted models: Nano Banana Pro (SFW), Seedream (SFW), Wan 2.7 and
   Wan 2.7 Pro (SFW + NSFW). Plus Krea 2 (RAW, Turbo) on the user's own ComfyUI
-  (`backend/app/comfy/krea2.py` holds the verified facts). No other models or modes.
+  (`backend/app/comfy/krea2.py` holds the verified facts) and "Enhance photo" (below).
+  No other models or modes.
 - Providers: WaveSpeed and Atlas Cloud only, through `backend/app/providers/` (one adapter
   each, shared contract in `base.py`). The model catalog is `backend/app/catalog.py`: one
   `Variant` per provider endpoint. A UI control exists only when the provider documents that
@@ -94,9 +95,9 @@ repositories.
   only when Secure has none); `allowedCudaVersions` match exactly, so only free versions are
   sent; no data center, vCPU/RAM minimums or network volume.
 - Rented ComfyUI GPUs (the owner's design, `comfy/deploy.py`, sources in `docs/PROVIDERS.md`):
-  ready in about 1–2 minutes, nothing installed at start. RunPod's image `runpod/comfyui:cuda12.8`
-  (free 12.8/12.9 machines), `runpod/comfyui:cuda13.0` (free 13.x) only for GPUs that
-  offer CUDA 13 only. Start command `/bin/bash -c`: write the agent file (base64 env),
+  ready in about 1–2 minutes, nothing installed at start. RunPod's image pinned to
+  `runpod/comfyui:1.4.1-comfyuiv0.35.0-cuda12.8` (free 12.8/12.9 machines),
+  `…-cuda13.0` (free 13.x) only for GPUs that offer CUDA 13 only. Start command `/bin/bash -c`: write the agent file (base64 env),
   start it in the background, `exec /start.sh`. Volume at /workspace. Only the agent's port
   8189/http is exposed (Bearer token per deployment); ComfyUI's 8188 stays private and listens
   on 127.0.0.1. Poll ~10 s; "Ready" only when ComfyUI answers through the agent; no answer in
@@ -111,6 +112,14 @@ repositories.
   capped by the spending limit) and storage; the confirmed price is sent and a changed price
   refuses the start (`price_changed`). While running: "spent so far" and "time left"
   (estimates); the GPU stops at the session limit, the spending limit or after inactivity.
+- Enhance photo (Generate › "Vylepšiť fotku", `comfy/enhance.py`): the workflow of the free
+  RunPod template "PG - Free Upscaler" (PGUpscaler: Z-Image Turbo skin fix, optional SAM 3.1
+  face mask, SeedVR2 7B upscale 1.5/2/3×) rebuilt in API format from built-in ComfyUI nodes
+  only — the template's setup.sh and custom nodes are not used. Runs on the same ComfyUI
+  connection as Krea 2. Its 6 model files come only from `huggingface.co/AIPRIVATEGROUP/
+  pgupscaler` through the agent (one click). The photo is the user's upload, an AI model photo
+  or a generated image; it is uploaded to that ComfyUI only for the run. Image viewers have an
+  "Enhance photo" action.
 - Hugging Face: token in Integrations › Hugging Face, checked with `whoami-v2` and the Krea 2
   repositories' `auth-check` (`services/huggingface.py`). Accepting the license is the user's
   own click on huggingface.co (no API exists); the studio links there and checks again, and

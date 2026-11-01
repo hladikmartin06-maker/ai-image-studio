@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import struct
 import sys
 import threading
@@ -28,7 +29,7 @@ KREA_FILES = {
     "loras": ["krea2_darkbrush.safetensors"],
     "checkpoints": [],
 }
-CLIP_TYPES = ["stable_diffusion", "flux", "qwen_image", "krea2", "wan"]
+CLIP_TYPES = ["stable_diffusion", "flux", "qwen_image", "krea2", "wan", "lumina2"]
 NODES = [
     "UNETLoader",
     "CLIPLoader",
@@ -41,7 +42,34 @@ NODES = [
     "SaveImage",
     "LoraLoaderModelOnly",
     "CheckpointLoaderSimple",
+    # Built-in nodes of the Enhance photo workflow (PGUpscaler; ComfyUI >= 0.30).
+    "LoadImage",
+    "ImageScaleToTotalPixels",
+    "ModelSamplingAuraFlow",
+    "VAEEncode",
+    "SAM3_Detect",
+    "GrowMask",
+    "MaskToImage",
+    "ImageBlur",
+    "ImageToMask",
+    "ImageCompositeMasked",
+    "ImageScaleBy",
+    "SeedVR2Preprocess",
+    "VAEEncodeTiled",
+    "SeedVR2Conditioning",
+    "VAEDecodeTiled",
+    "SeedVR2PostProcessing",
 ]
+# The Enhance photo (PGUpscaler) model files, by ComfyUI models folder.
+ENHANCE_FILES = {
+    "diffusion_models": [
+        "z_image_turbo_int8_convrot.safetensors",
+        "seedvr2_7b_int8_convrot.safetensors",
+    ],
+    "text_encoders": ["qwen_3_4b_fp8_mixed.safetensors"],
+    "vae": ["ae.safetensors", "seedvr2_ema_vae_fp16.safetensors"],
+    "checkpoints": ["sam3.1_multiplex_fp16.safetensors"],
+}
 
 
 def png(width: int, height: int, color: tuple[int, int, int]) -> bytes:
@@ -85,6 +113,8 @@ class FakeComfy:
         self.interrupted: list[str] = []
         self.fail_with: str | None = None
         self.require_token: str | None = None
+        # Photos uploaded through POST /upload/image: name -> bytes.
+        self.uploads: dict[str, bytes] = {}
         self.lock = threading.Lock()
 
     def listed(self, folder: str) -> list[str]:
@@ -125,7 +155,7 @@ class FakeComfy:
             "strength_model": ["FLOAT", {"default": 1.0}],
         }
         info["CheckpointLoaderSimple"]["input"]["required"] = {
-            "ckpt_name": combo(self.files["checkpoints"])
+            "ckpt_name": combo(self.listed("checkpoints"))
         }
         info["FaceDetailer"] = {"input": {"required": {}}, "python_module": "custom_nodes.impact"}
         return info
@@ -168,6 +198,16 @@ class FakeComfy:
             if folder not in self.files:
                 return 404, "text/plain", b""
             return self._json(self.listed(folder))
+        if method == "POST" and path == "/upload/image":
+            # multipart/form-data with the file in "image"; ComfyUI answers with its name.
+            match = re.search(rb'name="image"; filename="([^"]+)"\r\n[^\r]*\r\n\r\n', body)
+            if not match:
+                return self._json({"error": "no image"}, 400)
+            name = match.group(1).decode()
+            data = body[match.end() :].rsplit(b"\r\n--", 1)[0]
+            with self.lock:
+                self.uploads[name] = data
+            return self._json({"name": name, "subfolder": "", "type": "input"})
         if method == "POST" and path == "/prompt":
             data = json.loads(body or b"{}")
             prompt = data.get("prompt") or {}
@@ -180,6 +220,26 @@ class FakeComfy:
                         "class_type": kind,
                         "errors": [{"message": "missing", "details": f"Node {kind} not found"}],
                     }
+                if kind == "LoadImage" and node["inputs"].get("image") not in self.uploads:
+                    errors[node_id] = {
+                        "class_type": kind,
+                        "errors": [
+                            {"details": f"Invalid image file: {node['inputs'].get('image')}"}
+                        ],
+                    }
+                for name in ("unet_name", "vae_name", "clip_name", "ckpt_name"):
+                    value = node.get("inputs", {}).get(name)
+                    folder = {
+                        "unet_name": "diffusion_models",
+                        "vae_name": "vae",
+                        "clip_name": "text_encoders",
+                        "ckpt_name": "checkpoints",
+                    }[name]
+                    if value is not None and value not in self.listed(folder):
+                        errors[node_id] = {
+                            "class_type": kind,
+                            "errors": [{"details": f"Value not in list: {name}: '{value}'"}],
+                        }
                 if kind == "LoraLoaderModelOnly":
                     lora = node["inputs"].get("lora_name")
                     if lora not in self.loras():

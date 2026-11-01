@@ -136,6 +136,12 @@ export interface GenerationSettings {
   sampler?: string;
   scheduler?: string;
   negative_prompt?: string;
+  // Enhance photo (PGUpscaler)
+  strength?: number;
+  face_only?: boolean;
+  upscale?: number;
+  source_width?: number;
+  source_height?: number;
 }
 
 export interface StudioImage {
@@ -578,6 +584,7 @@ export interface ComfyInfo {
   custom_node_packs?: string[];
   files?: Record<string, string[]>;
   krea2?: Krea2Detection;
+  enhance?: EnhanceDetection;
   agent?: AgentHealth | null;
   checked_at?: string;
 }
@@ -609,7 +616,8 @@ export interface ComfyDeploy {
   // Krea 2 model download on the GPU (after connecting).
   model_job?: {
     id: string;
-    variant: "turbo" | "raw";
+    // A Krea 2 variant, or "pgupscaler" (Enhance photo).
+    variant: "turbo" | "raw" | "pgupscaler";
     filename: string;
     files: string[];
     status: "running" | "completed" | "failed";
@@ -664,6 +672,39 @@ export interface Krea2Variant {
   known_files: { filename: string; folder: string; precision: string; size_gb: number | null; url: string }[];
 }
 
+/** Enhance photo (PGUpscaler) files and nodes on a ComfyUI. */
+export interface EnhanceDetection {
+  files: { folder: string; filename: string; size: number; installed: boolean }[];
+  missing_files: string[];
+  missing_nodes: string[];
+  ready: boolean;
+}
+
+export interface EnhanceCatalog {
+  name: string;
+  model_key: string;
+  repo: string;
+  template: string;
+  files: { folder: string; filename: string; size: number }[];
+  total_bytes: number;
+  strengths: number[];
+  upscales: number[];
+  default_strength: number;
+  default_upscale: number;
+  min_vram_gb: number;
+  min_vram_gb_3x: number;
+}
+
+export interface EnhanceBody {
+  connection_id: string;
+  image: { kind: "reference" | "image"; id: string };
+  strength: number;
+  face_only: boolean;
+  upscale: number;
+  seed: number | null;
+  client_request_id: string;
+}
+
 export interface ComfyCatalog {
   krea2: {
     architecture: Record<string, string | string[]>;
@@ -674,6 +715,7 @@ export interface ComfyCatalog {
     sizes: Record<string, Record<string, [number, number]>>;
     seed_max: number;
   };
+  enhance: EnhanceCatalog;
   deploy_images: Record<string, string>;
   model_folders: string[];
 }
@@ -697,6 +739,9 @@ export interface GenerationComfy {
   variant: "turbo" | "raw" | null;
   model_file: string | null;
   workflow: { id: string | null; name: string } | null;
+  // "krea2", or "pgupscaler" for Enhance photo (then `input` is the photo it started from).
+  family?: string | null;
+  input?: { kind: "reference" | "image"; id: string; thumb_url: string; url: string; width: number; height: number } | null;
   lora: {
     lora_id: string;
     version_id: string;

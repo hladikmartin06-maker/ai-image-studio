@@ -8,6 +8,7 @@ import {
   LibraryBig,
   RefreshCw,
   SlidersHorizontal,
+  Sparkles,
   Trash2,
   X,
 } from "lucide-react";
@@ -73,6 +74,10 @@ export function ImageViewer({
   if (s.output_format) settingsRows.push([t("gen.outputFormat"), s.output_format.toUpperCase()]);
   if (s.thinking_mode !== undefined)
     settingsRows.push([t("gen.thinkingMode"), s.thinking_mode ? t("common.on") : t("common.off")]);
+  // Enhance photo
+  if (s.strength !== undefined) settingsRows.push([t("en.strength"), String(s.strength)]);
+  if (s.face_only !== undefined) settingsRows.push([t("en.faceOnly"), s.face_only ? t("common.on") : t("common.off")]);
+  if (s.upscale !== undefined) settingsRows.push([t("en.upscale"), `${s.upscale}×`]);
 
   const onDelete = async () => {
     const ok = await actions.deleteImage(image);
@@ -137,6 +142,9 @@ export function ImageViewer({
             >
               {t("images.regenerate")}
             </Button>
+            <Button size="sm" icon={<Sparkles />} onClick={() => actions.enhanceImage(image)}>
+              {t("images.enhance")}
+            </Button>
             {!image.in_library ? (
               <Button size="sm" icon={<LibraryBig />} onClick={() => actions.saveToLibrary(image)}>
                 {t("images.saveToLibrary")}
@@ -169,8 +177,12 @@ export function ImageViewer({
               <>
                 <dt>{t("k2.workflow")}</dt>
                 <dd>{image.comfy.workflow?.name ?? "—"}</dd>
-                <dt>{t("k2.modelFile")}</dt>
-                <dd className="mono truncate" title={image.comfy.model_file ?? ""}>{image.comfy.model_file}</dd>
+                {image.comfy.model_file ? (
+                  <>
+                    <dt>{t("k2.modelFile")}</dt>
+                    <dd className="mono truncate" title={image.comfy.model_file}>{image.comfy.model_file}</dd>
+                  </>
+                ) : null}
                 {image.comfy.lora ? (
                   <>
                     <dt>LoRA</dt>

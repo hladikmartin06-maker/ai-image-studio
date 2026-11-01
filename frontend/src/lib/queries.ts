@@ -18,6 +18,7 @@ import type {
   Catalog,
   Conversation,
   ConversationDetail,
+  EnhanceBody,
   Generation,
   GPUProvider,
   GpuEndpoint,
@@ -760,7 +761,7 @@ export function useComfyPower() {
 }
 
 export function useInstallKrea2Model() {
-  return useComfyMutation(({ id, ...body }: { id: string; variant: "turbo" | "raw"; filename?: string | null }) =>
+  return useComfyMutation(({ id, ...body }: { id: string; variant: "turbo" | "raw" | "pgupscaler"; filename?: string | null }) =>
     api<ComfyConnection>(`/api/comfy/connections/${id}/models/install`, { body }),
   );
 }
@@ -813,6 +814,20 @@ export interface ComfyGenerateBody {
   lora?: { version_id: string; strength: number; insert_trigger: boolean } | null;
   persona?: { id: string; use_description: boolean } | null;
   client_request_id: string;
+}
+
+/** Enhance photo (PGUpscaler) on a ComfyUI connection. */
+export function useEnhancePhoto() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: EnhanceBody) =>
+      api<Generation>("/api/comfy/enhance", { body: body as unknown as Record<string, unknown> }),
+    onSuccess: (gen) => {
+      upsertGeneration(qc, gen);
+      qc.invalidateQueries({ queryKey: keys.generations });
+      qc.invalidateQueries({ queryKey: ["jobs"] });
+    },
+  });
 }
 
 export function useComfyGenerate() {

@@ -14,6 +14,7 @@ import {
   SettingsControls,
 } from "@/components/generate/controls";
 import { openAssistant } from "@/components/assistant/drawer";
+import { EnhancePanel, type EnhancePhoto } from "@/components/comfy/enhance-panel";
 import { ComfyPanel } from "@/components/comfy/generate-panel";
 import {
   attachedPersonaImages,
@@ -30,8 +31,10 @@ import { useT } from "@/lib/i18n";
 import {
   publishStudioContext,
   registerApplyHandler,
+  registerEnhanceHandler,
   type StudioPatch,
   takePendingApply,
+  takePendingEnhance,
 } from "@/lib/studio-bridge";
 import {
   useAuthState,
@@ -52,6 +55,11 @@ import type {
   StudioImage,
   Variant,
 } from "@/lib/types";
+
+type Engine = "hosted" | "comfy" | "enhance";
+
+/** Enhance photo runs are ComfyUI runs of the PGUpscaler workflow. */
+const isEnhance = (gen: Generation) => gen.provider === "comfyui" && gen.comfy?.family === "pgupscaler";
 
 interface Draft {
   model: ModelKey;
@@ -161,13 +169,16 @@ export default function GeneratePage() {
   );
 
   const [draft, setDraft] = useState<Draft | null>(null);
-  // Hosted models (WaveSpeed / Atlas) or Krea 2 on a ComfyUI connection.
-  const [engine, setEngineState] = useState<"hosted" | "comfy">(() => {
+  // Hosted models (WaveSpeed / Atlas), Krea 2 on a ComfyUI connection, or Enhance photo
+  // (PGUpscaler) on the same ComfyUI.
+  const [engine, setEngineState] = useState<Engine>(() => {
     if (typeof window === "undefined") return "hosted";
     const params = new URLSearchParams(window.location.search);
     if (params.get("lora") || params.get("engine") === "comfy") return "comfy";
+    if (params.get("engine") === "enhance") return "enhance";
     try {
-      return localStorage.getItem("studio:engine") === "comfy" ? "comfy" : "hosted";
+      const saved = localStorage.getItem("studio:engine");
+      return saved === "comfy" || saved === "enhance" ? saved : "hosted";
     } catch {
       return "hosted";
     }
@@ -176,7 +187,13 @@ export default function GeneratePage() {
     typeof window === "undefined" ? null : new URLSearchParams(window.location.search).get("lora"),
   );
   const [comfyLoad, setComfyLoad] = useState<Generation | null>(null);
-  const setEngine = useCallback((value: "hosted" | "comfy") => {
+  // What Enhance photo starts with: a photo from a viewer, or an earlier run's settings.
+  const [enhanceStart, setEnhanceStart] = useState<{ key: string; photo: EnhancePhoto | null; gen: Generation | null }>({
+    key: "draft",
+    photo: null,
+    gen: null,
+  });
+  const setEngine = useCallback((value: Engine) => {
     setEngineState(value);
     try {
       localStorage.setItem("studio:engine", value);
@@ -187,6 +204,18 @@ export default function GeneratePage() {
   const [viewer, setViewer] = useState<{ images: StudioImage[]; index: number } | null>(null);
   const [touched, setTouched] = useState(false);
   const submitting = useRef(false);
+
+  // "Enhance photo" in an image viewer, on this page or before it opened.
+  useEffect(() => {
+    const start = (photo: EnhancePhoto) => {
+      setEngine("enhance");
+      setEnhanceStart({ key: `${photo.kind}:${photo.id}:${Date.now()}`, photo, gen: null });
+      setViewer(null);
+    };
+    const pending = takePendingEnhance();
+    if (pending) start(pending);
+    return registerEnhanceHandler(start);
+  }, [setEngine]);
 
   // Initial draft: ?from=<generation id>, else the saved draft, else the defaults.
   useEffect(() => {
@@ -207,6 +236,13 @@ export default function GeneratePage() {
     if (from) {
       api<Generation>(`/api/generations/${from}`)
         .then((gen) => {
+          if (isEnhance(gen)) {
+            setEnhanceStart({ key: gen.id, photo: null, gen });
+            setEngine("enhance");
+            setDraft(defaults);
+            router.replace("/generate");
+            return;
+          }
           if (gen.provider === "comfyui") {
             setComfyLoad(gen);
             setEngine("comfy");
@@ -416,6 +452,12 @@ export default function GeneratePage() {
   };
 
   const loadFrom = (gen: Generation) => {
+    if (isEnhance(gen)) {
+      setEnhanceStart({ key: `${gen.id}:${Date.now()}`, photo: null, gen });
+      setEngine("enhance");
+      toast.success(t("gen.loaded"));
+      return;
+    }
     if (gen.provider === "comfyui") {
       setComfyLoad(gen);
       setEngine("comfy");
@@ -521,6 +563,7 @@ export default function GeneratePage() {
       options={[
         { value: "hosted", label: t("k2.engineHosted") },
         { value: "comfy", label: t("k2.engineComfy") },
+        { value: "enhance", label: t("k2.engineEnhance") },
       ]}
     />
   );
@@ -533,6 +576,30 @@ export default function GeneratePage() {
     />
   ) : null;
 
+  const comfyHeader = (
+    <div className="col gap-12">
+      <div className="row">
+        <h1 className="h2 grow">{t("gen.title")}</h1>
+      </div>
+      {engineSwitch}
+    </div>
+  );
+
+  if (engine === "enhance") {
+    return (
+      <div className="studio">
+        <EnhancePanel
+          key={enhanceStart.key}
+          header={comfyHeader}
+          initialPhoto={enhanceStart.photo}
+          initial={enhanceStart.gen}
+        />
+        {resultsSection}
+        {viewerNode}
+      </div>
+    );
+  }
+
   if (engine === "comfy") {
     return (
       <div className="studio">
@@ -541,14 +608,7 @@ export default function GeneratePage() {
           storageKey={userId ? `studio:comfy-draft:${userId}` : null}
           initial={comfyLoad}
           loraFromUrl={loraFromUrl}
-          header={
-            <div className="col gap-12">
-              <div className="row">
-                <h1 className="h2 grow">{t("gen.title")}</h1>
-              </div>
-              {engineSwitch}
-            </div>
-          }
+          header={comfyHeader}
         />
         {resultsSection}
         {viewerNode}

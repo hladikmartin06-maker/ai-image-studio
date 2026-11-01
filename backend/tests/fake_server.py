@@ -430,7 +430,7 @@ def _spawn(pod_id: str) -> None:
         "STUDIO_AITK_DIR": str(make_toolkit(_root / "image")),
         "STUDIO_PYTHON": sys.executable,
         "TMPDIR": str(base),
-        **comfy_env(make_comfy_dir(base / "gpu")),
+        **comfy_env(make_comfy_dir(base / "gpu", enhance=True)),
         "FAKE_TRAIN_SLEEP": "0.4",
         # The first start copies ComfyUI onto the volume (seconds), like the real image.
         "FAKE_COPY_SLEEP": "8",

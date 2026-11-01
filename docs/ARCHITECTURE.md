@@ -125,9 +125,15 @@ LoRA run: queued ─▶ create pod/sandbox (ai-toolkit image + agent, confirm_bi
 ```
 
 ComfyUI on a GPU: POST /api/comfy/deployments (confirm_billing) ─▶ pod / sandbox with
-          runpod/comfyui (cuda12.8, else cuda13.0) and COMFY_BOOT (agent, then /start.sh)
+          runpod/comfyui:1.4.1-comfyuiv0.35.0 (cuda12.8, else cuda13.0) and COMFY_BOOT
+          (agent, then /start.sh)
           starting (agent /health) ─▶ booting (ComfyUI through the agent) ─▶ ready
           ─▶ POST …/models/install: agent job "models" downloads from huggingface.co
+          (Krea 2, or variant "pgupscaler" for Enhance photo)
+
+Enhance photo: POST /api/comfy/enhance ─▶ Generation (model pgupscaler, mode image-edit)
+          worker: upload the photo (POST /upload/image) ─▶ PGUpscaler workflow (comfy/
+          enhance.py, built-in nodes only) ─▶ /prompt ─▶ result saved like Krea 2
           (no answer within 30 min, Modal 45: the GPU is stopped)
 
 ComfyUI deployed by the studio is never exposed: only the agent port is, and every request
