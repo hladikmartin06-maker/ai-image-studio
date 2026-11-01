@@ -150,29 +150,78 @@ Separate again: `gpu_integrations` (encrypted JSON credentials), `gpu_workloads`
 `backend/app/gpu/`. Starting anything that bills requires `confirm_billing: true`, sent only
 after the user confirmed a dialog that says so.
 
-## RunPod — API key
+## RunPod — API key (REST API v2)
+
+RunPod's REST API v1 (`rest.runpod.io/v1`) is deprecated and retired on 2026-11-15
+(`runpod/docs` › `api-reference-v2/migrate-from-v1.mdx`); the studio uses v2 at
+`https://api.runpod.io/v2` (OpenAPI `api-reference-v2/openapi.json`, docs commit f2481a7 of
+2026-10-30; also how `runpod/runpodctl` 5b85fc4 calls it). Code: `backend/app/gpu/runpod.py`.
 
 | What | Request |
 |---|---|
-| List / create pods | `GET` / `POST https://rest.runpod.io/v1/pods` (`name, imageName, gpuTypeIds, gpuCount, cloudType, containerDiskInGb, volumeInGb, ports, env`) |
-| Start / stop / terminate | `POST /v1/pods/{id}/start`, `POST /v1/pods/{id}/stop`, `DELETE /v1/pods/{id}` |
-| Serverless endpoints | `GET /v1/endpoints`, `PATCH /v1/endpoints/{id}` (`workersMin, workersMax`), `DELETE`; health `GET https://api.runpod.ai/v2/{id}/health` |
-| GPU catalog | GraphQL `https://api.runpod.io/graphql`: `gpuTypes { id displayName memoryInGb securePrice communityPrice }` |
-| Balance | GraphQL `myself { clientBalance currentSpendPerHr }` (shown only when returned; otherwise spend = sum of running pods' `costPerHr`) |
+| GPU catalog | `GET /v2/catalog/gpus?include=AVAILABILITY&product=POD&cloud=SECURE|COMMUNITY` → per GPU: `id, name, manufacturer, memory, secure, community, price {secure, community}` (USD per GPU per hour), `availability` (NONE/LOW/MEDIUM/HIGH), `dataCenters`, `cudaVersions [{version, available}]`; one GPU: `GET /v2/catalog/gpus/{id}?…` |
+| List / create pods | `GET /v2/pods` (`{pods, pagination}`), `POST /v2/pods` (`CreatePodRequest`: `name, image, gpu {id, count, allowedCudaVersions}, cloud, disk, ports, env, entrypoint, cmd, mounts {persistent {size, path}}`; closed schema) |
+| One pod | `GET /v2/pods/{id}`: `status` PROVISIONING/STARTING/RUNNING/EXITED/ERROR/TERMINATED, `cost` (the pod's USD/h), `gpu`, `cudaVersion`, `ports` |
+| Start / stop / terminate | `POST /v2/pods/{id}/action {"action": "start"|"stop"}`, `DELETE /v2/pods/{id}` |
+| Serverless endpoints | `GET /v2/serverless`, `PATCH /v2/serverless/{id} {workers: {min, max}}`, `DELETE`; health `GET https://api.runpod.ai/v2/{id}/health` |
+| Balance | GraphQL `https://api.runpod.io/graphql` `myself { clientBalance currentSpendPerHr }` (shown only when returned) |
 
-HTTP ports are reachable at `https://{podId}-{port}.proxy.runpod.net`. Field names of the REST
-responses are read defensively. Unverified against the live API (sandbox).
+- **Errors** are RFC 9457 objects `{title, status, detail, errors}`. A capacity refusal is a
+  400 or 409 and creates no pod (runpodctl's `pods create` moves to the next GPU type on
+  exactly those); a 422 is a malformed body; a 5xx or no answer may have created a pod and is
+  never retried.
+- **Why "everything was out of stock"** (2026-11-01): `gpu.allowedCudaVersions` "matching
+  is exact, so a version no machine reports yields a capacity error rather than a fallback —
+  discover valid values per GPU type via `GET /v2/catalog/gpus?include=AVAILABILITY&product=
+  POD` (`cudaVersions`)". The studio now asks only for CUDA versions the catalog lists as
+  free for that GPU and cloud, sends no data center, vCPU or RAM minimums and no network
+  volume, and uses small disks (ComfyUI: 30 GB container disk, 80 GB pod volume).
+- **GPU lists** show NVIDIA GPUs with 24 GB or more: those with a free machine whose driver
+  fits the task (ComfyUI: CUDA 12.8/12.9 or 13.x; training: 13.x), Secure Cloud first;
+  Community Cloud (its own price) only when Secure has none; fully booked GPUs are listed but
+  cannot be picked. The list refreshes every minute.
+- **Price confirmation**: the confirmed hourly price is sent with the request; if the
+  catalog price differs at start, nothing is created (`price_changed`) and the owner confirms
+  again. Storage (docs `accounts-billing/billing.mdx`): container disk and volume 0.10 USD per
+  GB per month while running, volume 0.20 while stopped; network volumes 0.07 (not used).
+
+HTTP ports are reachable at `https://{podId}-{port}.proxy.runpod.net`. api.runpod.io and the
+proxy are behind Cloudflare: requests carry the studio's own User-Agent. **Not run against the
+live API** (the build sandbox cannot reach api.runpod.io); verified with a fake that follows
+the v2 schema (closed create body, catalog with cudaVersions, capacity 409).
 
 ## Modal — token id + token secret
 
 Through the official `modal` SDK (`modal.Client.from_credentials`, documented for managing
 Modal on behalf of users). Workloads are **Sandboxes** in the app `ai-image-studio-gpu`,
-tagged `created-by=ai-image-studio`: `Sandbox.create(..., gpu="H100:2", image=Image.from_registry(...),
-timeout, encrypted_ports)`, `Sandbox.list(app_id, tags)`, `Sandbox.from_id(...).terminate()`,
-`sandbox.tunnels()` for the HTTPS URLs of exposed ports. Sandboxes cannot be paused (only
-terminated) and Modal has no balance or price API, so neither is shown. GPU names from the
-Modal GPU guide: T4, L4, A10, L40S, A100-40GB, A100-80GB, H100, H200, B200. SDK signatures
-were checked against `modal` 1.6.3; not run against Modal's servers here.
+tagged `created-by=ai-image-studio` (and `studio-connection=<id>` for ComfyUI):
+`Sandbox.create(*cmd, gpu=…, cpu=4, memory=32768, image=Image.from_registry(…).entrypoint([]),
+volumes={"/workspace": Volume "ais-comfyui"}, encrypted_ports=[8189], secrets=[…], timeout)`,
+`Sandbox.list(app_id, tags)`, `Sandbox.from_id(...).terminate()`, `sandbox.tunnels()` for the
+HTTPS URLs. Sandboxes cannot be paused: every stop ends one (the Volume stays). GPU names as in
+modal-labs/modal-examples: T4, L4, A10G, L40S, A100-40GB, A100-80GB, H100, H200, B200. SDK
+signatures checked against `modal` 1.6.3; not run against Modal's servers here.
+
+- **Created in the background**: `Sandbox.create` builds the image first (the first time it
+  pulls RunPod's ComfyUI image), which can take many minutes, so the request answers at once
+  (stage "creating") and the studio shows the progress; after a restart of the app the
+  sandbox is found again by its tag and never created twice. Start limit 45 minutes.
+- **Prices**: Modal has no price API. The studio uses a fixed table of Modal's list prices
+  (USD per hour, billed per second), the owner's last known values from
+  https://modal.com/pricing (2026-11-01; the page could not be opened from the build sandbox,
+  **not re-checked**): T4 0.59, L4 0.80, A10G 1.10, L40S 1.95, A100-40GB 2.10, A100-80GB 2.50,
+  H100 3.95, B200 6.25 (H200: none known, none shown); CPU 0.0472 per core-hour and memory
+  0.008 per GiB-hour on top (the sandbox's 4 cores and 32 GiB ≈ 0.4448 per hour). Always
+  labelled an estimate with a link to the pricing page; Volume storage is not in it.
+
+## Sessions and spending (both clouds)
+
+Before a GPU starts, the confirmation shows the hourly price, the most the session can cost
+(hourly × session length, capped by the spending limit) and the storage prices. While it runs
+the studio shows "spent so far" and "time left": billable seconds since the start request ×
+the pod's own rate (RunPod: `cost` of the pod; Modal: the estimate above) — always labelled an
+estimate (the cloud's own billing counts). The GPU is stopped at the session's time limit
+(default 2 h), at the spending limit, or after inactivity.
 
 # ComfyUI and Krea 2
 
@@ -250,33 +299,16 @@ are installed afterwards with one click. Code: `backend/app/comfy/deploy.py`,
   `/workspace/runpod-slim/ComfyUI/models/<folder>`; started only once ComfyUI answers. ComfyUI
   lists new files without a restart (its `folder_paths` file list is refreshed when a folder
   changes); the studio checks `/object_info` again after the download.
-- **Request validation** (found 2026-11-01): RunPod's REST API checks every `POST /v1/pods`
-  body against its OpenAPI spec and refuses values outside its enums ("The request body is
-  defined as an object. However, it does not meet the schema requirements of the
-  specification"). The spec (`runpod/docs`, `api-reference/openapi.json`, checked
-  2026-10-31) lists `allowedCudaVersions` up to "13.0" and 49 `gpuTypeIds`. The studio reads
-  the live spec (`GET https://rest.runpod.io/v1/openapi.json`, cached 6 h; the checked-in lists
-  in `gpu/runpod.py` when it cannot) and sends only accepted values: the CUDA 13 image asks
-  for 13.0 (13.1–13.3 when the spec lists them), training pods likewise; GPU types the pod
-  API does not accept are not offered.
-- **No free GPU**: RunPod's wording "There are no longer any instances available …" /
-  "does not have the resources" (from RunPod's own pod tests in comfyui-base,
-  `tests/runpod_smoke/pod.py`) is shown as "No GPU of this type is free right now"; then the
-  next image is tried. GPU lists offer NVIDIA GPUs with 24 GB or more, and only those RunPod
-  prices in the chosen cloud.
+- **Image and CUDA from the catalog**: the CUDA 12.8 image with the free 12.8/12.9 versions;
+  the CUDA 13 image with the free 13.x versions when the GPU is offered with CUDA 13 only (or
+  is a Blackwell GPU). When a machine is taken at create time (capacity 400/409), the next
+  image is tried — same GPU and cloud, so the same price. "No GPU of this type is free right
+  now" when nothing fits.
 - **Modal**: `modal.Image.from_registry("runpod/comfyui:cuda12.8").entrypoint([])`
   (`Image.entrypoint`, modal 1.6.3), the same command and agent, a named Volume at
   `/workspace` (sandbox mounts use background commits, `allow_background_commits=True` in the
   SDK). The first start pulls the image and copies ComfyUI onto the Volume; later starts reuse
   it.
-- **GPU list and price**: GraphQL `gpuTypes { id displayName memoryInGb securePrice
-  communityPrice manufacturer }` — the query RunPod's own pod tests use
-  (`tests/runpod_smoke/instances.py` in comfyui-base). `api.runpod.io` (and the pod proxy)
-  sit behind Cloudflare, which refuses library User-Agents such as Python-urllib (error 1010,
-  noted in the same file), so every request carries `User-Agent: ai-image-studio/1.0 (+…)`;
-  a Cloudflare block page is reported as such, not as a wrong key. The chosen GPU's hourly
-  price is the API's `securePrice` (Secure Cloud), shown in the GPU list and in the
-  confirmation (disk storage is billed by RunPod separately; no price API is used for it).
 - Connections set up by older studio versions (which installed ComfyUI themselves) are not
   started again: the studio asks to delete them and rent a new GPU.
 - **Not run on a real RunPod or Modal GPU** and not against huggingface.co: verified from the

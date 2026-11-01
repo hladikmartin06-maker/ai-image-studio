@@ -30,8 +30,8 @@ from app.gpu import service as gpu_service
 from app.gpu.agent import AGENT_PORT, BOOT, agent_env, new_token
 from app.gpu.agent_client import AgentClient, AgentError
 from app.gpu.base import GPUError, WorkloadSpec
+from app.gpu.modal_provider import SANDBOX_CPU, SANDBOX_MEMORY_MB, hourly_estimate
 from app.gpu.registry import get_gpu_adapter
-from app.gpu.runpod import CUDA13
 from app.lora.aitoolkit import run_name, run_paths
 from app.lora.presets import ARCHITECTURES
 from app.lora.serial import ACTIVE, version_json
@@ -134,15 +134,18 @@ def _spec(v: LoraVersion, lora: Lora, token: str, hf: str | None) -> WorkloadSpe
         env=env,
         secret_env=secret_env,
         cloud_type=cfg.get("cloud_type") or "SECURE",
-        container_disk_gb=80,
-        volume_gb=150 if v.gpu_provider == "runpod" else 0,
+        container_disk_gb=50,
+        volume_gb=100 if v.gpu_provider == "runpod" else 0,
         command=["bash", "-c", BOOT],
         timeout_minutes=1440,
         # Modal: one volume keeps the Hugging Face cache between runs (no re-download).
         volume_name=TRAINING_VOLUME if v.gpu_provider == "modal" else None,
-        # ai-toolkit's image is built for CUDA 13: only hosts whose driver supports it (RunPod's
-        # adapter sends the versions its API accepts).
-        allowed_cuda_versions=list(CUDA13) if v.gpu_provider == "runpod" else [],
+        # Modal's default sandbox is tiny: give the trainer the studio's 4 cores and 32 GiB.
+        cpu=SANDBOX_CPU if v.gpu_provider == "modal" else None,
+        memory_mb=SANDBOX_MEMORY_MB if v.gpu_provider == "modal" else None,
+        # ai-toolkit's image is built for CUDA 13: only machines whose driver supports it
+        # (the free ones from RunPod's catalog, see _launch).
+        allowed_cuda_versions=list(gpu_service.CUDA13) if v.gpu_provider == "runpod" else [],
     )
 
 
@@ -154,6 +157,19 @@ async def _launch(db, v: LoraVersion, lora: Lora) -> None:
     hf = await _hf_token(db, v.user_id)
     spec = _spec(v, lora, token, hf)
     try:
+        if v.gpu_provider == "runpod":
+            # RunPod matches CUDA versions exactly: ask only for free CUDA 13 machines.
+            free, _ = await gpu_service.offer(
+                db, v.user_id, "runpod", v.gpu_type or "", spec.cloud_type
+            )
+            if free is not None:
+                spec.allowed_cuda_versions = [x for x in free if x.startswith("13.")]
+                if not spec.allowed_cuda_versions:
+                    raise GPUError(
+                        "unavailable",
+                        f"RunPod has no free {v.gpu_type} with a CUDA 13 driver in "
+                        f"{spec.cloud_type.title()} Cloud right now",
+                    )
         workload = await gpu_service.launch(
             db, v.user_id, v.gpu_provider or "", spec, "lora-training"
         )
@@ -165,7 +181,12 @@ async def _launch(db, v: LoraVersion, lora: Lora) -> None:
         v,
         status="preparing",
         workload_id=workload.id,
-        cost_per_hour=workload.cost_per_hour,
+        # Modal reports no rate: its list-price estimate (GPU + CPU + memory).
+        cost_per_hour=workload.cost_per_hour
+        if workload.cost_per_hour is not None
+        else hourly_estimate(v.gpu_type or "")
+        if v.gpu_provider == "modal"
+        else None,
         gpu_started_at=now(),
         started_at=v.started_at or now(),
         stage_detail="Waiting for the container (the first start pulls a large image)",
@@ -178,7 +199,7 @@ async def _workload_alive(db, v: LoraVersion) -> bool | None:
         workload = await get_gpu_adapter(v.gpu_provider or "").workload(creds, v.workload_id or "")
     except GPUError:
         return None  # unknown right now
-    if workload is None or workload.status in ("terminated", "exited", "stopped"):
+    if workload is None or workload.status in ("terminated", "exited", "stopped", "error"):
         return False
     if workload.cost_per_hour is not None and v.cost_per_hour is None:
         v.cost_per_hour = workload.cost_per_hour

@@ -17,14 +17,16 @@ import {
   Trash2,
   Upload,
 } from "lucide-react";
+import { useQueryClient } from "@tanstack/react-query";
 import { useRef, useState } from "react";
 import { toast } from "sonner";
 
-import { formatMoney, GpuMeter, type GpuChoice, GpuPicker, MIN_GPU_GB, StatusPill } from "@/components/studio/common";
+import { formatMoney, GpuMeter, type GpuChoice, GpuPicker, hourlyPrice, MIN_GPU_GB, StatusPill } from "@/components/studio/common";
 import { Badge, Button, Field, IconButton, Modal, Notice, Select, Switch, useConfirm } from "@/components/ui";
 import { ApiError, uploadInChunks } from "@/lib/api";
 import { formatBytes, formatRelative } from "@/lib/format";
 import { useI18n, useT } from "@/lib/i18n";
+import type { MessageKey } from "@/lib/i18n";
 import {
   useAddComfy,
   useComfyCatalog,
@@ -253,6 +255,16 @@ export function AddConnectionModal({ open, onClose, mode }: { open: boolean; onC
   );
 }
 
+// The rented GPU's disks (backend defaults) and RunPod's storage prices (docs.runpod.io,
+// accounts-billing/billing: volume 0.10 USD/GB/month running, 0.20 stopped; container disk
+// 0.10 running).
+const VOLUME_GB = 80;
+const CONTAINER_GB = 30;
+
+export function formatSession(minutes: number, t: (k: MessageKey, v?: Record<string, string | number>) => string) {
+  return minutes < 60 ? t("cf.minutes", { n: minutes }) : t("cf.hours", { n: Math.round((minutes / 60) * 10) / 10 });
+}
+
 /** Where Krea 2 runs: ComfyUI on this Mac, or a GPU the studio rents and sets up. */
 export function ConnectForm({
   initialMode,
@@ -272,7 +284,10 @@ export function ConnectForm({
   const [folder, setFolder] = useState("");
   const [gpu, setGpu] = useState<GpuChoice>({ provider: "", gpu_type: "", gpu_count: 1, cloud_type: "SECURE" });
   const [autoStop, setAutoStop] = useState(30);
+  const [session, setSession] = useState(120);
+  const [limit, setLimit] = useState(0);
   const [error, setError] = useState<string | null>(null);
+  const qc = useQueryClient();
 
   const submit = async () => {
     setError(null);
@@ -282,26 +297,70 @@ export function ConnectForm({
           setError(t("gpu.chooseGpu"));
           return;
         }
+        const providerName = gpu.provider === "modal" ? "Modal" : "RunPod";
+        const hourly = hourlyPrice(gpu);
+        const max = hourly != null ? Math.min((hourly * session) / 60, limit || Infinity) : null;
         const ok = await confirm({
           title: t("gpu.billingTitle"),
-          description: gpu.price_per_hour
-            ? t("cf.deployBillingPrice", {
-                provider: gpu.provider === "modal" ? "Modal" : "RunPod",
-                price: formatMoney(gpu.price_per_hour, locale),
-              })
-            : t("cf.deployBilling", { provider: gpu.provider === "modal" ? "Modal" : "RunPod" }),
+          description: (
+            <div className="col" style={{ gap: 8 }}>
+              <div>
+                {hourly != null
+                  ? t("cf.deployBillingPrice", {
+                      provider: providerName,
+                      price: `${gpu.price_estimate ? "≈ " : ""}${formatMoney(hourly, locale)}`,
+                      cloud: gpu.provider === "modal" ? "Modal" : t(`gpu.cloud.${gpu.cloud_type}`),
+                    })
+                  : t("cf.deployBilling", { provider: providerName })}
+              </div>
+              {max != null ? (
+                <div>
+                  {t("cf.maxSession", {
+                    max: formatMoney(max, locale),
+                    hours: formatSession(session, t),
+                    limit: limit ? formatMoney(limit, locale) : t("cf.noLimit").toLowerCase(),
+                  })}
+                </div>
+              ) : null}
+              <div className="small subtle">
+                {gpu.provider === "modal"
+                  ? t("cf.storageModal")
+                  : t("cf.storageRunpod", {
+                      gb: VOLUME_GB,
+                      running: formatMoney(VOLUME_GB * 0.1, locale),
+                      stopped: formatMoney(VOLUME_GB * 0.2, locale),
+                      disk: CONTAINER_GB,
+                      diskRunning: formatMoney(CONTAINER_GB * 0.1, locale),
+                    })}
+              </div>
+              {gpu.price_estimate ? <div className="small subtle">{t("cf.estimateNote")}</div> : null}
+            </div>
+          ),
           confirmLabel: t("cf.deploy"),
         });
         if (!ok) return;
-        await deploy.mutateAsync({
-          name: `Krea 2 · ${gpu.provider === "modal" ? "Modal" : "RunPod"} · ${gpu.gpu_type}`.slice(0, 80),
-          provider: gpu.provider,
-          gpu_type: gpu.gpu_type,
-          gpu_count: 1,
-          cloud_type: "SECURE",
-          auto_stop_minutes: autoStop,
-          confirm_billing: true,
-        });
+        try {
+          await deploy.mutateAsync({
+            name: `Krea 2 · ${providerName} · ${gpu.gpu_type}`.slice(0, 80),
+            provider: gpu.provider,
+            gpu_type: gpu.gpu_type,
+            gpu_count: 1,
+            cloud_type: gpu.cloud_type,
+            auto_stop_minutes: autoStop,
+            session_minutes: session,
+            spend_limit: limit || null,
+            // Nothing starts at another price than the one just confirmed.
+            confirmed_price: gpu.provider === "runpod" ? gpu.price_per_hour ?? null : null,
+            confirm_billing: true,
+          });
+        } catch (e) {
+          if (e instanceof ApiError && (e.code === "price_changed" || e.code === "unavailable")) {
+            // Fresh prices and availability; the owner confirms again.
+            void qc.invalidateQueries({ queryKey: ["gpu"] });
+            setGpu({ ...gpu, gpu_type: "", price_per_hour: null });
+          }
+          throw e;
+        }
         toast.success(t("cf.deployStarted"));
       } else {
         const created = await add.mutateAsync({
@@ -357,8 +416,26 @@ export function ConnectForm({
         </>
       ) : (
         <>
-          <GpuPicker value={gpu} onChange={setGpu} minMemoryGb={MIN_GPU_GB} />
+          <GpuPicker value={gpu} onChange={setGpu} minMemoryGb={MIN_GPU_GB} purpose="comfyui" />
           <div className="hint">{t("cf.gpuMemoryHint")}</div>
+          <div className="form-grid">
+            <Field label={t("cf.session")} hint={t("cf.sessionHint")}>
+              <Select
+                label={t("cf.session")}
+                value={session}
+                onChange={(m) => setSession(Number(m))}
+                options={[30, 60, 120, 240, 480, 720].map((m) => ({ value: m, label: formatSession(m, t) }))}
+              />
+            </Field>
+            <Field label={t("cf.spendLimit")} hint={t("cf.spendLimitHint")}>
+              <Select
+                label={t("cf.spendLimit")}
+                value={limit}
+                onChange={(m) => setLimit(Number(m))}
+                options={[0, 2, 5, 10, 20, 50].map((m) => ({ value: m, label: m ? formatMoney(m, locale) : t("cf.noLimit") }))}
+              />
+            </Field>
+          </div>
           <Field label={t("cf.autoStop")} hint={t("cf.autoStopHint")}>
             <Select
               label={t("cf.autoStop")}

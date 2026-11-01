@@ -15,6 +15,25 @@ from app.gpu.registry import GPU_PROVIDERS, get_gpu_adapter
 from app.models import GPUIntegration, GPUWorkload
 from app.security import decrypt_secret
 
+# Driver CUDA versions the studio's images run on (allowedCudaVersions). RunPod matches them
+# exactly against free machines, so only the ones its catalog lists as free are sent; these
+# lists are used as they are only when the catalog cannot be read.
+CUDA12 = ["12.8", "12.9"]
+CUDA13 = ["13.0", "13.1", "13.2", "13.3"]
+
+
+async def offer(
+    db: AsyncSession, user_id: uuid.UUID, provider: str, gpu_type: str, cloud: str
+) -> tuple[list[str] | None, float | None]:
+    """RunPod's catalog for this GPU and cloud right now: the CUDA versions with a free
+    machine and the list price per hour; (None, None) when unknown (Modal, or the catalog
+    could not be read)."""
+    adapter = get_gpu_adapter(provider)
+    if not hasattr(adapter, "offer"):
+        return None, None
+    creds = await load_creds(db, user_id, provider)
+    return await adapter.offer(creds, gpu_type, cloud)
+
 
 def assoc(user_id: uuid.UUID, provider: str) -> str:
     return f"{user_id}:gpu:{provider}"

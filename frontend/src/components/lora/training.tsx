@@ -7,10 +7,10 @@ import { useState } from "react";
 import { toast } from "sonner";
 
 import { hfProblem } from "@/components/integrations/huggingface";
-import { type GpuChoice, GpuPicker, newRequestId } from "@/components/studio/common";
+import { formatMoney, type GpuChoice, GpuPicker, hourlyPrice, newRequestId } from "@/components/studio/common";
 import { Button, Field, Notice, Segmented, Skeleton, Switch, useConfirm } from "@/components/ui";
 import { ApiError } from "@/lib/api";
-import { useT } from "@/lib/i18n";
+import { useI18n } from "@/lib/i18n";
 import type { MessageKey } from "@/lib/i18n";
 import { useHfStatus, useLoraCatalog, useStartTraining } from "@/lib/queries";
 import type { LoraDetail, LoraPreset, TrainingConfig } from "@/lib/types";
@@ -22,7 +22,7 @@ const SPEEDS = [
 ] as const;
 
 export function TrainingTab({ lora, onStarted, initial }: { lora: LoraDetail; onStarted: () => void; initial?: Partial<TrainingConfig> | null }) {
-  const t = useT();
+  const { t, locale } = useI18n();
   const router = useRouter();
   const confirm = useConfirm();
   const catalog = useLoraCatalog();
@@ -48,11 +48,19 @@ export function TrainingTab({ lora, onStarted, initial }: { lora: LoraDetail; on
   const submit = async () => {
     const ok = await confirm({
       title: t("gpu.billingTitle"),
-      description: t("ls.billing", {
-        provider: gpu.provider === "modal" ? "Modal" : "RunPod",
-        steps: cfg.steps,
-        gpu: gpu.gpu_type,
-      }),
+      description: hourlyPrice(gpu) != null
+        ? t("ls.billingPrice", {
+            provider: gpu.provider === "modal" ? "Modal" : "RunPod",
+            steps: cfg.steps,
+            gpu: gpu.gpu_type,
+            price: `${gpu.price_estimate ? "≈ " : ""}${formatMoney(hourlyPrice(gpu), locale)}`,
+            cloud: gpu.provider === "modal" ? "Modal" : t(`gpu.cloud.${gpu.cloud_type}`),
+          })
+        : t("ls.billing", {
+            provider: gpu.provider === "modal" ? "Modal" : "RunPod",
+            steps: cfg.steps,
+            gpu: gpu.gpu_type,
+          }),
       confirmLabel: t("ls.startTraining"),
     });
     if (!ok) return;
@@ -70,7 +78,7 @@ export function TrainingTab({ lora, onStarted, initial }: { lora: LoraDetail; on
         provider: gpu.provider,
         gpu_type: gpu.gpu_type,
         gpu_count: 1,
-        cloud_type: "SECURE",
+        cloud_type: gpu.cloud_type,
         image: null,
         // The GPU is always removed after the run (or a failure), so billing stops.
         auto_cleanup: true,
@@ -129,7 +137,7 @@ export function TrainingTab({ lora, onStarted, initial }: { lora: LoraDetail; on
 
       <section className="card card-pad col gap-16">
         <div className="eyebrow">{t("ls.whereToTrain")}</div>
-        <GpuPicker value={gpu} onChange={setGpu} minMemoryGb={minVram} />
+        <GpuPicker value={gpu} onChange={setGpu} minMemoryGb={minVram} purpose="training" />
         <div className="hint">{t("ls.vramHint", { n: minVram ?? 24 })}</div>
       </section>
 

@@ -45,7 +45,8 @@ class Settings(BaseSettings):
     # Only for tests and local development against a fake provider. Never set in production.
     wavespeed_base_url: str = "https://api.wavespeed.ai"
     atlas_base_url: str = "https://api.atlascloud.ai"
-    runpod_rest_url: str = "https://rest.runpod.io/v1"
+    # RunPod REST API v2 (v1 at rest.runpod.io/v1 is retired on 2026-11-15).
+    runpod_api_url: str = "https://api.runpod.io/v2"
     runpod_graphql_url: str = "https://api.runpod.io/graphql"
     runpod_serverless_url: str = "https://api.runpod.ai/v2"
     runpod_proxy_url: str = "https://{pod_id}-{port}.proxy.runpod.net"

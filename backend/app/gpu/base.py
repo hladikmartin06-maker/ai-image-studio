@@ -8,6 +8,7 @@ from typing import Any, Literal, Protocol
 GPUErrorCode = Literal[
     "invalid_credentials",
     "unavailable",
+    "price_changed",
     "insufficient_credits",
     "rate_limited",
     "not_found",
@@ -23,6 +24,8 @@ MESSAGES = {
     "insufficient_credits": "The account has no credit left for this.",
     "unavailable": "No GPU of this type is free right now. Pick another GPU or try again in a "
     "few minutes.",
+    "price_changed": "The price of this GPU changed since you confirmed it. Check the new price "
+    "and confirm again.",
     "rate_limited": "The provider is limiting requests. Try again in a moment.",
     "not_found": "The resource no longer exists at the provider.",
     "invalid_request": "The provider rejected the request.",
@@ -58,6 +61,16 @@ class GpuType:
     price_community: float | None = None
     available: bool | None = None
     manufacturer: str | None = None
+    # RunPod catalog, per cloud: stock right now (NONE/LOW/MEDIUM/HIGH) and the CUDA versions
+    # of machines with free capacity. None when the provider reports no availability.
+    # Modal: list prices from a fixed table (no price API): price_secure is the GPU's price,
+    # price_extra the CPU and memory the studio's sandbox adds on top (USD per hour).
+    price_estimate: bool = False
+    price_extra: float | None = None
+    stock_secure: str | None = None
+    stock_community: str | None = None
+    cuda_secure: list[str] = field(default_factory=list)
+    cuda_community: list[str] = field(default_factory=list)
 
     def json(self) -> dict[str, Any]:
         return asdict(self)
@@ -128,6 +141,11 @@ class WorkloadSpec:
     image_apt: list[str] = field(default_factory=list)
     # RunPod: only hosts whose NVIDIA driver supports one of these CUDA versions.
     allowed_cuda_versions: list[str] = field(default_factory=list)
+    # Modal: extra sandbox tags (e.g. the studio connection, to find the sandbox again).
+    tags: dict[str, str] = field(default_factory=dict)
+    # Modal: CPU cores and memory (MiB) of the sandbox; None = Modal's defaults.
+    cpu: float | None = None
+    memory_mb: int | None = None
 
 
 class GPUProvider(Protocol):

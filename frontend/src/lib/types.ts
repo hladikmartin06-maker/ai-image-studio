@@ -468,6 +468,15 @@ export interface GpuType {
   price_community: number | null;
   available: boolean | null;
   manufacturer?: string | null;
+  // Modal: prices from a fixed table of its list prices (no price API), plus the CPU and
+  // memory of the studio's sandbox per hour.
+  price_estimate?: boolean;
+  price_extra?: number | null;
+  // RunPod: free machines right now per cloud (for the requested purpose), else null.
+  stock_secure?: "NONE" | "LOW" | "MEDIUM" | "HIGH" | null;
+  stock_community?: "NONE" | "LOW" | "MEDIUM" | "HIGH" | null;
+  cuda_secure?: string[];
+  cuda_community?: string[];
 }
 
 export interface GpuWorkload {
@@ -574,13 +583,17 @@ export interface ComfyInfo {
 }
 
 export interface ComfyDeploy {
-  stage?: "starting" | "booting" | "installing" | "ready" | "stopped" | "error";
+  stage?: "creating" | "starting" | "booting" | "installing" | "ready" | "stopped" | "error";
   provider?: "runpod" | "modal";
   gpu_type?: string;
   gpu_count?: number;
   cloud_type?: string;
   image?: string | null;
   volume_gb?: number;
+  session_minutes?: number;
+  spend_limit?: number | null;
+  cost_is_estimate?: boolean;
+  spent_total?: number;
   // The RunPod ComfyUI image and driver CUDA versions the GPU was rented with.
   cuda?: string[];
   setup?: number;
@@ -623,6 +636,15 @@ export interface ComfyConnection {
   last_checked_at: string | null;
   info: ComfyInfo;
   deploy: ComfyDeploy;
+  // The current session (estimate): spent so far and time left, from the start request and
+  // the GPU's hourly rate.
+  session: {
+    per_hour: number | null;
+    spent: number | null;
+    seconds: number;
+    seconds_left: number;
+    spend_limit: number | null;
+  } | null;
   file_capability: "agent" | "folder" | "none";
   created_at: string;
 }

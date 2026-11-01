@@ -88,18 +88,29 @@ repositories.
 - Krea 2 on Generate goes in steps: 1 choose and connect the GPU (progress, "Try again"),
   2 install the model with one click once ComfyUI answers, 3 AI model, LoRA, prompt and
   generate.
+- RunPod through its REST API v2 (`api.runpod.io/v2`; v1 is retired 2026-11-15). GPU lists
+  and CUDA versions come from its catalog (`/v2/catalog/gpus?include=AVAILABILITY&product=
+  POD&cloud=…`): only GPUs with a free machine are offered (Community Cloud with its own price
+  only when Secure has none); `allowedCudaVersions` match exactly, so only free versions are
+  sent; no data center, vCPU/RAM minimums or network volume.
 - Rented ComfyUI GPUs (the owner's design, `comfy/deploy.py`, sources in `docs/PROVIDERS.md`):
   ready in about 1–2 minutes, nothing installed at start. RunPod's image `runpod/comfyui:cuda12.8`
-  (`allowedCudaVersions` 12.8, 12.9), `runpod/comfyui:cuda13.0` (13.0–13.3, only the ones
-  RunPod's API spec accepts — it refuses the whole request otherwise) only for GPUs that
+  (free 12.8/12.9 machines), `runpod/comfyui:cuda13.0` (free 13.x) only for GPUs that
   offer CUDA 13 only. Start command `/bin/bash -c`: write the agent file (base64 env),
   start it in the background, `exec /start.sh`. Volume at /workspace. Only the agent's port
   8189/http is exposed (Bearer token per deployment); ComfyUI's 8188 stays private and listens
   on 127.0.0.1. Poll ~10 s; "Ready" only when ComfyUI answers through the agent; no answer in
   30 minutes (Modal 45) stops the GPU. Models: the agent downloads them on the GPU from
   huggingface.co only, as .part then renamed, into `/workspace/runpod-slim/ComfyUI/models/…`,
-  only after ComfyUI answers. Modal: the same image with `.entrypoint([])`, command, agent
-  and a Volume at /workspace.
+  only after ComfyUI answers. Modal: the same image with `.entrypoint([])`, command, agent,
+  `cpu=4, memory=32768`, one Volume "ais-comfyui" at /workspace, `timeout` = session + 10 min;
+  created in the background and found again by its tag, never twice.
+- Prices before anything starts: RunPod live from the catalog; Modal from a fixed table of its
+  list prices, always labelled an estimate with a link to modal.com/pricing (no price API).
+  The confirmation shows the hourly price, the session's maximum (hourly × session length,
+  capped by the spending limit) and storage; the confirmed price is sent and a changed price
+  refuses the start (`price_changed`). While running: "spent so far" and "time left"
+  (estimates); the GPU stops at the session limit, the spending limit or after inactivity.
 - Hugging Face: token in Integrations › Hugging Face, checked with `whoami-v2` and the Krea 2
   repositories' `auth-check` (`services/huggingface.py`). Accepting the license is the user's
   own click on huggingface.co (no API exists); the studio links there and checks again, and

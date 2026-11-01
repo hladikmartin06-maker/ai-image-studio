@@ -130,7 +130,7 @@ def comfy_env(baked: Path) -> dict[str, str]:
 
 
 class SpawningRunPod(FakeRunPod):
-    """POST /v1/pods with the studio agent in its env starts that agent locally."""
+    """POST /v2/pods with the studio agent in its env starts that agent locally."""
 
     def __init__(self, root: Path, extra_env: dict[str, str] | None = None):
         super().__init__()
@@ -158,7 +158,7 @@ class SpawningRunPod(FakeRunPod):
             "TMPDIR": str(self.root / pod_id),
             **self.extra_env,
         }
-        command = [*body["dockerEntrypoint"], *body["dockerStartCmd"]]
+        command = [*body["entrypoint"], *body["cmd"]]
         with (self.root / pod_id / "container.log").open("ab") as log:
             self.procs[pod_id] = subprocess.Popen(
                 command,
@@ -177,26 +177,29 @@ class SpawningRunPod(FakeRunPod):
 
     def handle(self, request: httpx.Request) -> httpx.Response:
         path = request.url.path
-        if request.method == "GET" and path.startswith("/v1/pods/"):
+        if request.method == "GET" and path.startswith("/v2/pods/"):
             if request.headers.get("authorization") != f"Bearer {RUNPOD_KEY}":
-                return httpx.Response(401, json={"error": "Unauthorized"})
+                return httpx.Response(401, json={"title": "Unauthorized", "status": 401})
             pod = self.pods.get(path.split("/")[3])
             if pod is None:
-                return httpx.Response(404, json={"error": "pod not found"})
+                return httpx.Response(
+                    404, json={"title": "Not Found", "status": 404, "detail": "no pod"}
+                )
             return httpx.Response(200, json={k: v for k, v in pod.items() if k != "agent_port"})
-        if request.method == "POST" and path == "/v1/pods":
+        if request.method == "POST" and path == "/v2/pods":
             response = super().handle(request)
-            if response.status_code == 200:
+            if response.status_code == 201:
                 pod_id = response.json()["id"]
                 self.bodies[pod_id] = json.loads(request.content)
                 self._spawn(pod_id)
             return response
-        pod_id = path.split("/")[3] if path.startswith("/v1/pods/") else None
+        pod_id = path.split("/")[3] if path.startswith("/v2/pods/") else None
+        action = (json.loads(request.content) or {}).get("action") if request.content else None
         response = super().handle(request)
-        if pod_id and response.status_code == 200:
-            if request.method == "DELETE" or path.endswith("/stop"):
+        if pod_id and response.status_code in (200, 204):
+            if request.method == "DELETE" or action in ("stop", "terminate"):
                 self._kill(pod_id)
-            elif path.endswith("/start"):
+            elif action == "start":
                 self._spawn(pod_id)
         return response
 

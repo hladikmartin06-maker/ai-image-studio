@@ -1,19 +1,29 @@
-"""RunPod: GPU pods and serverless endpoints.
+"""RunPod: GPU pods and serverless endpoints, through RunPod's REST API v2.
 
-REST API (https://docs.runpod.io/api-reference), "Authorization: Bearer <key>":
-  GET    /v1/pods                       list pods
-  POST   /v1/pods                       create a pod {name, imageName, gpuTypeIds, gpuCount,
-                                        cloudType, containerDiskInGb, volumeInGb, ports, env,
-                                        allowedCudaVersions (driver's CUDA, e.g. "13.0")}
-  POST   /v1/pods/{id}/start | /stop    start / stop
-  DELETE /v1/pods/{id}                  terminate
-  GET    /v1/endpoints                  serverless endpoints
-  PATCH  /v1/endpoints/{id}             {workersMin, workersMax}
-  DELETE /v1/endpoints/{id}
+REST API v2 (https://api.runpod.io/v2, docs.runpod.io/api-reference-v2; v1 at
+rest.runpod.io/v1 is retired on 2026-11-15), "Authorization: Bearer <key>":
+  GET    /v2/catalog/gpus?include=AVAILABILITY&product=POD&cloud=SECURE|COMMUNITY
+                                    GPU types: price per cloud, availability (NONE/LOW/
+                                    MEDIUM/HIGH), dataCenters, cudaVersions [{version,
+                                    available}] — what is actually free right now
+  GET    /v2/catalog/gpus/{id}?…    the same for one GPU type
+  GET    /v2/pods                   {pods: [...], pagination: {nextCursor, hasNextPage}}
+  POST   /v2/pods                   create: {name, image, gpu: {id, count,
+                                    allowedCudaVersions}, cloud, disk, ports, env,
+                                    entrypoint, cmd, mounts: {persistent: {size, path}}}
+  GET    /v2/pods/{id}              status PROVISIONING|STARTING|RUNNING|EXITED|ERROR|
+                                    TERMINATED, cost (USD/h), ports, gpu, cudaVersion
+  POST   /v2/pods/{id}/action       {"action": "start"|"stop"|"restart"|"terminate"}
+  DELETE /v2/pods/{id}
+  GET    /v2/serverless, PATCH /v2/serverless/{id} {workers: {min, max}}, DELETE …
+Errors are RFC 9457 objects {title, status, detail, errors}. A capacity refusal is a 400 or
+409 (no pod was created; runpodctl's pods create treats them the same way), a 422 is a
+malformed body, and a 5xx or no answer may have created a pod — never retried.
+allowedCudaVersions match exactly: a version no free machine reports yields a capacity
+error, so the versions are taken from the catalog's cudaVersions.
 Serverless health: GET https://api.runpod.ai/v2/{endpoint_id}/health
-GraphQL (https://api.runpod.io/graphql): `gpuTypes {id displayName memoryInGb securePrice
-communityPrice manufacturer}` for the GPU catalog (the query RunPod's own pod tests use);
-`myself {clientBalance currentSpendPerHr}` for the balance (shown only when the API returns it).
+GraphQL (https://api.runpod.io/graphql) `myself {clientBalance currentSpendPerHr}` for the
+balance (shown only when the API returns it).
 api.runpod.io is behind Cloudflare: requests carry the studio's own User-Agent.
 Pods are reached at https://{podId}-{port}.proxy.runpod.net for HTTP ports.
 """
@@ -22,17 +32,21 @@ from __future__ import annotations
 
 import json
 import re
-import time
 from typing import Any
+from urllib.parse import quote
 
 import httpx
 
 from app.config import USER_AGENT, get_settings
 from app.gpu.base import Endpoint, GPUError, GpuType, Workload, WorkloadSpec
 
+Cloud = str  # "SECURE" | "COMMUNITY"
+CLOUDS = ("SECURE", "COMMUNITY")
+STOCK = ("NONE", "LOW", "MEDIUM", "HIGH")
 
-def _rest() -> str:
-    return get_settings().runpod_rest_url.rstrip("/")
+
+def _api() -> str:
+    return get_settings().runpod_api_url.rstrip("/")
 
 
 def _graphql_url() -> str:
@@ -49,16 +63,23 @@ def _message(response: httpx.Response) -> str:
     except (json.JSONDecodeError, ValueError):
         return response.text[:300]
     if isinstance(data, dict):
-        for key in ("error", "message", "detail"):
-            if isinstance(data.get(key), str):
-                return data[key]
+        parts = [
+            str(data[key])
+            for key in ("detail", "error", "message", "title")
+            if isinstance(data.get(key), str) and data[key]
+        ][:1]
+        errors = data.get("errors")
+        if isinstance(errors, list):
+            parts += [str(e) for e in errors[:5]]
+        return "; ".join(parts)
     if isinstance(data, list) and data and isinstance(data[0], dict):
         return str(data[0].get("error") or data[0].get("message") or "")
     return ""
 
 
-# How RunPod says that no machine is free for the request (phrases from RunPod's own pod
-# tests in runpod-workers/comfyui-base, tests/runpod_smoke/pod.py).
+# How RunPod says that no machine is free for the request (v1 wording "create pod: There are
+# no instances currently available", and phrases from RunPod's own pod tests in
+# runpod-workers/comfyui-base, tests/runpod_smoke/pod.py).
 UNAVAILABLE_RE = re.compile(
     r"no\s+longer\s+any\s+instances\s+available|does\s+not\s+have\s+the\s+resources"
     r"|no\s+(?:machines|capacity|hosts|gpus|instances)\s+(?:currently\s+)?available"
@@ -68,80 +89,6 @@ UNAVAILABLE_RE = re.compile(
     r"|not\s+enough\s+free\s+gpus",
     re.IGNORECASE,
 )
-
-
-# Driver CUDA versions the studio asks for (allowedCudaVersions); only the ones RunPod's API
-# accepts are sent (see accepted_cuda).
-CUDA12 = ["12.8", "12.9"]
-CUDA13 = ["13.0", "13.1", "13.2", "13.3"]
-
-# RunPod's REST API checks every request against its OpenAPI spec and refuses values outside
-# its lists ("The request body ... does not meet the schema requirements of the
-# specification"). The lists below are PodCreateInput's enums from that spec (runpod/docs,
-# api-reference/openapi.json, checked 2026-10-31); the live spec (GET /v1/openapi.json) is
-# read when it can be, so GPUs and CUDA versions RunPod adds later work without an update.
-REST_GPU_IDS = frozenset(
-    [
-        "NVIDIA GeForce RTX 4090",
-        "NVIDIA A40",
-        "NVIDIA RTX A5000",
-        "NVIDIA GeForce RTX 5090",
-        "NVIDIA H100 80GB HBM3",
-        "NVIDIA GeForce RTX 3090",
-        "NVIDIA RTX A4500",
-        "NVIDIA L40S",
-        "NVIDIA H200",
-        "NVIDIA L4",
-        "NVIDIA RTX 6000 Ada Generation",
-        "NVIDIA A100-SXM4-80GB",
-        "NVIDIA RTX 4000 Ada Generation",
-        "NVIDIA RTX A6000",
-        "NVIDIA A100 80GB PCIe",
-        "NVIDIA RTX 2000 Ada Generation",
-        "NVIDIA RTX A4000",
-        "NVIDIA RTX PRO 6000 Blackwell Server Edition",
-        "NVIDIA H100 PCIe",
-        "NVIDIA H100 NVL",
-        "NVIDIA L40",
-        "NVIDIA B200",
-        "NVIDIA GeForce RTX 3080 Ti",
-        "NVIDIA RTX PRO 6000 Blackwell Workstation Edition",
-        "NVIDIA GeForce RTX 3080",
-        "NVIDIA GeForce RTX 3070",
-        "AMD Instinct MI300X OAM",
-        "NVIDIA GeForce RTX 4080 SUPER",
-        "Tesla V100-PCIE-16GB",
-        "Tesla V100-SXM2-32GB",
-        "NVIDIA RTX 5000 Ada Generation",
-        "NVIDIA GeForce RTX 4070 Ti",
-        "NVIDIA RTX 4000 SFF Ada Generation",
-        "NVIDIA GeForce RTX 3090 Ti",
-        "NVIDIA RTX A2000",
-        "NVIDIA GeForce RTX 4080",
-        "NVIDIA A30",
-        "NVIDIA GeForce RTX 5080",
-        "Tesla V100-FHHL-16GB",
-        "NVIDIA H200 NVL",
-        "Tesla V100-SXM2-16GB",
-        "NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition",
-        "NVIDIA A5000 Ada",
-        "Tesla V100-PCIE-32GB",
-        "NVIDIA  RTX A4500",
-        "NVIDIA  A30",
-        "NVIDIA GeForce RTX 3080TI",
-        "Tesla T4",
-        "NVIDIA RTX A30",
-    ]
-)
-REST_CUDA = frozenset(
-    ["13.0", "12.9", "12.8", "12.7", "12.6", "12.5", "12.4", "12.3", "12.2", "12.1", "12.0", "11.8"]
-)
-_SPEC_SECONDS = 6 * 3600
-_spec_cache: dict[str, tuple[float, frozenset[str], frozenset[str]]] = {}
-
-
-def clear_spec_cache() -> None:
-    _spec_cache.clear()
 
 
 def _cloudflare(response: httpx.Response) -> bool:
@@ -160,14 +107,14 @@ def _error(response: httpx.Response) -> GPUError:
     status = response.status_code
     message = _message(response)
     lowered = message.lower()
-    if UNAVAILABLE_RE.search(message):
-        return GPUError("unavailable", message)
     if status in (403, 429, 503) and _cloudflare(response):
         return GPUError(
             "provider_error",
             "RunPod's firewall (Cloudflare) blocked the request"
             + (f": {_cloudflare_code(response)}" if _cloudflare_code(response) else ""),
         )
+    if status == 409 or (status < 500 and UNAVAILABLE_RE.search(message)):
+        return GPUError("unavailable", message)
     if status in (401, 403):
         return GPUError("invalid_credentials", message)
     if status == 402 or "balance" in lowered or "insufficient" in lowered:
@@ -186,6 +133,28 @@ def _num(value: Any) -> float | None:
         return float(value) if value is not None else None
     except (TypeError, ValueError):
         return None
+
+
+def _stock(value: Any) -> str:
+    level = str(value or "NONE").upper()
+    return level if level in STOCK else "NONE"
+
+
+def free_cuda(gpu: dict[str, Any]) -> list[str]:
+    """CUDA versions of machines with this GPU that have free capacity now (catalog)."""
+    out = []
+    for item in gpu.get("cudaVersions") or []:
+        if isinstance(item, dict) and item.get("available") and item.get("version"):
+            out.append(str(item["version"]))
+    return out
+
+
+def _cuda_key(version: str) -> tuple[int, int]:
+    major, _, minor = version.partition(".")
+    try:
+        return int(major), int(minor or 0)
+    except ValueError:
+        return 0, 0
 
 
 class RunPodProvider:
@@ -227,64 +196,123 @@ class RunPodProvider:
             raise GPUError("invalid_request", str(first.get("message", "")))
         return data.get("data") or {}
 
+    async def _all_pages(self, creds: dict[str, str], path: str, key: str) -> list[Any]:
+        """Every item of a paginated v2 list (cursor pagination)."""
+        items: list[Any] = []
+        params: dict[str, Any] = {"limit": 1000}
+        seen: set[str] = set()
+        while True:
+            data = await self._call(creds, "GET", f"{_api()}{path}", params=params)
+            if isinstance(data, list):  # tolerate a bare list
+                return items + data
+            data = data or {}
+            items += list(data.get(key) or [])
+            page = data.get("pagination") or {}
+            cursor = page.get("nextCursor")
+            if not page.get("hasNextPage") or not cursor or cursor in seen:
+                return items
+            seen.add(cursor)
+            params = {"limit": 1000, "cursor": cursor}
+
     async def check(self, creds: dict[str, str]) -> None:
-        await self._call(creds, "GET", f"{_rest()}/pods")
+        await self._call(creds, "GET", f"{_api()}/pods", params={"limit": 1})
 
-    async def rest_enums(self, creds: dict[str, str]) -> tuple[frozenset[str], frozenset[str]]:
-        """GPU type ids and CUDA versions the pod API accepts: from the live spec when it
-        can be read (cached), else the lists checked into the studio."""
-        hit = _spec_cache.get(_rest())
-        if hit and time.monotonic() - hit[0] < _SPEC_SECONDS:
-            return hit[1], hit[2]
-        gpus, cuda = REST_GPU_IDS, REST_CUDA
-        try:
-            data = await self._call(creds, "GET", f"{_rest()}/openapi.json")
-            props = data["components"]["schemas"]["PodCreateInput"]["properties"]
-            live_gpus = frozenset(str(g) for g in props["gpuTypeIds"]["items"]["enum"])
-            live_cuda = frozenset(str(c) for c in props["allowedCudaVersions"]["items"]["enum"])
-            if live_gpus and live_cuda:
-                gpus, cuda = live_gpus, live_cuda
-        except (GPUError, KeyError, TypeError, AttributeError):
-            pass  # the checked-in lists
-        _spec_cache[_rest()] = (time.monotonic(), gpus, cuda)
-        return gpus, cuda
+    # --- catalog ----------------------------------------------------------------------
 
-    async def accepted_cuda(self, creds: dict[str, str], versions: list[str]) -> list[str]:
-        """The CUDA versions of this list that RunPod's API accepts (order kept)."""
-        _, cuda = await self.rest_enums(creds)
-        return [v for v in versions if v in cuda]
+    async def _catalog(self, creds: dict[str, str], cloud: Cloud) -> list[dict[str, Any]]:
+        data = await self._call(
+            creds,
+            "GET",
+            f"{_api()}/catalog/gpus",
+            params={"include": "AVAILABILITY", "product": "POD", "cloud": cloud},
+        )
+        return [g for g in (data or {}).get("gpus") or [] if isinstance(g, dict)]
 
     async def gpu_types(self, creds: dict[str, str]) -> list[GpuType]:
-        data = await self._graphql(
-            creds,
-            "query GpuTypes { gpuTypes { id displayName memoryInGb securePrice communityPrice "
-            "manufacturer } }",
-        )
-        accepted, _ = await self.rest_enums(creds)
-        out = [
-            GpuType(
-                id=str(g.get("id")),
-                name=str(g.get("displayName") or g.get("id")),
-                memory_gb=g.get("memoryInGb"),
-                price_secure=_num(g.get("securePrice")),
-                price_community=_num(g.get("communityPrice")),
-                available=bool(g.get("securePrice") or g.get("communityPrice")),
-                manufacturer=str(g["manufacturer"]) if g.get("manufacturer") else None,
-            )
-            for g in data.get("gpuTypes") or []
-            # Only GPU types the pod API accepts can be rented.
-            if g.get("id") and str(g.get("id")) in accepted
-        ]
+        """NVIDIA GPU types with each cloud's price, stock and the CUDA versions that have
+        free machines right now."""
+        per_cloud = {cloud: await self._catalog(creds, cloud) for cloud in CLOUDS}
+        merged: dict[str, GpuType] = {}
+        for cloud, gpus in per_cloud.items():
+            for g in gpus:
+                gpu_id = str(g.get("id") or "")
+                if not gpu_id or gpu_id == "unknown":
+                    continue
+                if str(g.get("manufacturer") or "").upper() not in ("NVIDIA", ""):
+                    continue
+                price = g.get("price") or {}
+                item = merged.setdefault(
+                    gpu_id,
+                    GpuType(
+                        id=gpu_id,
+                        name=str(g.get("name") or gpu_id),
+                        memory_gb=g.get("memory"),
+                        price_secure=_num(price.get("secure")) if g.get("secure") else None,
+                        price_community=(
+                            _num(price.get("community")) if g.get("community") else None
+                        ),
+                        manufacturer=str(g.get("manufacturer") or "") or None,
+                    ),
+                )
+                offered = bool(g.get("secure") if cloud == "SECURE" else g.get("community"))
+                stock = _stock(g.get("availability")) if offered else "NONE"
+                cuda = free_cuda(g) if offered else []
+                if cloud == "SECURE":
+                    item.stock_secure, item.cuda_secure = stock, cuda
+                else:
+                    item.stock_community, item.cuda_community = stock, cuda
+        out = list(merged.values())
+        for g in out:
+            g.available = (g.stock_secure or "NONE") != "NONE" or (
+                g.stock_community or "NONE"
+            ) != "NONE"
         return sorted(out, key=lambda g: (g.memory_gb or 0, g.name))
+
+    async def catalog_gpu(
+        self, creds: dict[str, str], gpu_id: str, cloud: Cloud
+    ) -> dict[str, Any] | None:
+        """One GPU type in this cloud right now (price, availability, cudaVersions), or None
+        when the catalog cannot be read."""
+        try:
+            data = await self._call(
+                creds,
+                "GET",
+                f"{_api()}/catalog/gpus/{quote(gpu_id, safe='')}",
+                params={"include": "AVAILABILITY", "product": "POD", "cloud": cloud},
+            )
+        except GPUError as exc:
+            if exc.code in ("invalid_credentials", "not_found"):
+                raise
+            return None
+        return data if isinstance(data, dict) else None
+
+    async def offer(
+        self, creds: dict[str, str], gpu_id: str, cloud: Cloud
+    ) -> tuple[list[str] | None, float | None]:
+        """(CUDA versions with a free machine, oldest first; the list price per GPU per hour)
+        for this GPU and cloud; (None, None) when the catalog cannot be read."""
+        item = await self.catalog_gpu(creds, gpu_id, cloud)
+        if item is None:
+            return None, None
+        offered = item.get("secure") if cloud == "SECURE" else item.get("community")
+        price = (item.get("price") or {}).get("secure" if cloud == "SECURE" else "community")
+        free = sorted(free_cuda(item), key=_cuda_key) if offered else []
+        return free, (_num(price) if offered else None)
+
+    # --- pods -------------------------------------------------------------------------
 
     def _workload(self, pod: dict[str, Any]) -> Workload:
         pod_id = str(pod.get("id"))
-        status = str(pod.get("desiredStatus") or pod.get("status") or "unknown").lower()
-        status = {"running": "running", "exited": "stopped", "terminated": "terminated"}.get(
-            status, status
-        )
+        raw = str(pod.get("status") or pod.get("desiredStatus") or "unknown").upper()
+        status = {
+            "RUNNING": "running",
+            "EXITED": "stopped",
+            "TERMINATED": "terminated",
+            "PROVISIONING": "starting",
+            "STARTING": "starting",
+            "ERROR": "error",
+        }.get(raw, raw.lower())
         gpu = pod.get("gpu") if isinstance(pod.get("gpu"), dict) else {}
-        machine = pod.get("machine") if isinstance(pod.get("machine"), dict) else {}
         ports = pod.get("ports") or []
         if isinstance(ports, str):
             ports = [p.strip() for p in ports.split(",") if p.strip()]
@@ -298,70 +326,62 @@ class RunPodProvider:
             name=str(pod.get("name") or pod_id),
             kind="pod",
             status=status,
-            gpu_type=str(
-                gpu.get("displayName") or gpu.get("id") or machine.get("gpuDisplayName") or ""
-            ),
-            gpu_count=int(pod.get("gpuCount") or gpu.get("count") or 1),
-            image=str(pod.get("imageName") or pod.get("image") or ""),
-            cost_per_hour=_num(pod.get("costPerHr") or pod.get("adjustedCostPerHr")),
+            gpu_type=str(gpu.get("id") or ""),
+            gpu_count=int(gpu.get("count") or 1),
+            image=str(pod.get("image") or ""),
+            cost_per_hour=_num(pod.get("cost")),
             urls=urls if status == "running" else [],
             created_at=pod.get("createdAt"),
             dashboard_url="https://console.runpod.io/pods",
-            can_start=status in ("stopped", "exited"),
+            can_start=status == "stopped",
             can_stop=status == "running",
         )
 
     async def list_workloads(self, creds: dict[str, str]) -> list[Workload]:
-        data = await self._call(creds, "GET", f"{_rest()}/pods")
-        pods = data if isinstance(data, list) else (data or {}).get("pods", [])
+        pods = await self._all_pages(creds, "/pods", "pods")
         return [self._workload(p) for p in pods if isinstance(p, dict)]
 
-    async def create_workload(self, creds: dict[str, str], spec: WorkloadSpec) -> Workload:
-        gpus, _ = await self.rest_enums(creds)
-        if spec.gpu_type not in gpus:
-            raise GPUError(
-                "invalid_request",
-                f"RunPod's API does not accept the GPU type “{spec.gpu_type}”. Pick another GPU.",
-            )
-        cuda = await self.accepted_cuda(creds, spec.allowed_cuda_versions)
-        if spec.allowed_cuda_versions and not cuda:
-            raise GPUError(
-                "invalid_request",
-                "RunPod's API accepts none of the CUDA versions "
-                + ", ".join(spec.allowed_cuda_versions),
-            )
+    @staticmethod
+    def pod_body(spec: WorkloadSpec) -> dict[str, Any]:
+        """CreatePodRequest (v2). Only what the pod needs: no data center, vCPU, RAM or
+        network volume constraints, so any free machine can take it."""
+        gpu: dict[str, Any] = {"id": spec.gpu_type, "count": spec.gpu_count}
+        if spec.allowed_cuda_versions:
+            gpu["allowedCudaVersions"] = list(spec.allowed_cuda_versions)
         body: dict[str, Any] = {
             "name": spec.name,
-            "imageName": spec.image,
-            "gpuTypeIds": [spec.gpu_type],
-            "gpuCount": spec.gpu_count,
-            "cloudType": spec.cloud_type,
-            "containerDiskInGb": spec.container_disk_gb,
-            "volumeInGb": spec.volume_gb,
+            "image": spec.image,
+            "gpu": gpu,
+            "cloud": spec.cloud_type,
+            "disk": spec.container_disk_gb,
             "ports": [f"{p}/http" for p in spec.ports],
         }
         env = {**spec.env, **spec.secret_env}
         if env:
             body["env"] = env
         if spec.entrypoint:
-            body["dockerEntrypoint"] = list(spec.entrypoint)
-            body["dockerStartCmd"] = list(spec.command)
+            body["entrypoint"] = list(spec.entrypoint)
+            body["cmd"] = list(spec.command)
         elif spec.command:
             # Entrypoint + arguments, so the image's own entrypoint does not wrap them.
-            body["dockerEntrypoint"] = spec.command[:1]
-            body["dockerStartCmd"] = spec.command[1:]
+            body["entrypoint"] = spec.command[:1]
+            body["cmd"] = spec.command[1:]
         if spec.volume_gb:
-            body["volumeMountPath"] = "/workspace"
-        if cuda:
-            body["allowedCudaVersions"] = cuda
-        data = await self._call(creds, "POST", f"{_rest()}/pods", json=body)
+            body["mounts"] = {"persistent": {"size": spec.volume_gb, "path": "/workspace"}}
+        return body
+
+    async def create_workload(self, creds: dict[str, str], spec: WorkloadSpec) -> Workload:
+        body = self.pod_body(spec)
+        data = await self._call(creds, "POST", f"{_api()}/pods", json=body)
         if not isinstance(data, dict) or not data.get("id"):
             raise GPUError("provider_error", "No pod id in the response")
-        return self._workload({**{k: v for k, v in body.items() if k != "env"}, **data})
+        return self._workload(
+            {**{k: v for k, v in body.items() if k not in ("env", "cmd")}, **data}
+        )
 
     async def workload(self, creds: dict[str, str], workload_id: str) -> Workload | None:
         try:
-            data = await self._call(creds, "GET", f"{_rest()}/pods/{workload_id}")
+            data = await self._call(creds, "GET", f"{_api()}/pods/{workload_id}")
         except GPUError as exc:
             if exc.code == "not_found":
                 return None
@@ -373,35 +393,42 @@ class RunPodProvider:
         base = get_settings().runpod_proxy_url
         return base.format(pod_id=workload_id, port=port)
 
+    async def _action(self, creds: dict[str, str], workload_id: str, action: str) -> None:
+        await self._call(
+            creds, "POST", f"{_api()}/pods/{workload_id}/action", json={"action": action}
+        )
+
     async def start(self, creds: dict[str, str], workload_id: str) -> None:
-        await self._call(creds, "POST", f"{_rest()}/pods/{workload_id}/start")
+        await self._action(creds, workload_id, "start")
 
     async def stop(self, creds: dict[str, str], workload_id: str) -> None:
-        await self._call(creds, "POST", f"{_rest()}/pods/{workload_id}/stop")
+        await self._action(creds, workload_id, "stop")
 
     async def terminate(self, creds: dict[str, str], workload_id: str) -> None:
-        await self._call(creds, "DELETE", f"{_rest()}/pods/{workload_id}")
+        await self._call(creds, "DELETE", f"{_api()}/pods/{workload_id}")
+
+    # --- serverless ---------------------------------------------------------------------
 
     async def list_endpoints(self, creds: dict[str, str]) -> list[Endpoint]:
-        data = await self._call(creds, "GET", f"{_rest()}/endpoints")
-        items = data if isinstance(data, list) else (data or {}).get("endpoints", [])
+        items = await self._all_pages(creds, "/serverless", "endpoints")
         out: list[Endpoint] = []
         for e in items:
             if not isinstance(e, dict) or not e.get("id"):
                 continue
             endpoint_id = str(e["id"])
-            health = None
             try:
                 health = await self._call(creds, "GET", f"{_serverless()}/{endpoint_id}/health")
             except GPUError:
                 health = None
+            workers = e.get("workers") or {}
+            gpu = e.get("gpu") or {}
             out.append(
                 Endpoint(
                     id=endpoint_id,
                     name=str(e.get("name") or endpoint_id),
-                    gpu_types=[str(g) for g in e.get("gpuTypeIds") or []],
-                    workers_min=int(e.get("workersMin") or 0),
-                    workers_max=int(e.get("workersMax") or 0),
+                    gpu_types=[str(g) for g in gpu.get("pools") or []],
+                    workers_min=int(workers.get("min") or 0),
+                    workers_max=int(workers.get("max") or 0),
                     url=f"{_serverless()}/{endpoint_id}",
                     health=health if isinstance(health, dict) else None,
                 )
@@ -414,12 +441,12 @@ class RunPodProvider:
         await self._call(
             creds,
             "PATCH",
-            f"{_rest()}/endpoints/{endpoint_id}",
-            json={"workersMin": workers_min, "workersMax": workers_max},
+            f"{_api()}/serverless/{endpoint_id}",
+            json={"workers": {"min": workers_min, "max": workers_max}},
         )
 
     async def delete_endpoint(self, creds: dict[str, str], endpoint_id: str) -> None:
-        await self._call(creds, "DELETE", f"{_rest()}/endpoints/{endpoint_id}")
+        await self._call(creds, "DELETE", f"{_api()}/serverless/{endpoint_id}")
 
     async def account(self, creds: dict[str, str]) -> dict[str, Any]:
         """Balance and current spend; spend falls back to the running pods' own rates."""

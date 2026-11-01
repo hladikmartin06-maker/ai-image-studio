@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import re
 from datetime import UTC, datetime
+from typing import Literal
 
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field, field_validator
@@ -199,15 +200,36 @@ async def disconnect(
     return _provider_json(provider, None)
 
 
+def _fits(purpose: str | None, gpu_id: str, free: list[str]) -> bool:
+    """Whether a free machine has a driver the task's image runs on."""
+    if purpose == "comfyui":
+        from app.comfy.deploy import image_plan
+
+        return bool(image_plan("runpod", gpu_id, free))
+    if purpose == "training":
+        return any(v.startswith("13.") for v in free)
+    return bool(free)
+
+
 @router.get("/{provider}/gpu-types")
 async def gpu_types(
-    provider: str, user: User = Depends(current_user), db: AsyncSession = Depends(get_db)
+    provider: str,
+    purpose: Literal["comfyui", "training"] | None = None,
+    user: User = Depends(current_user),
+    db: AsyncSession = Depends(get_db),
 ):
+    """GPU types with price and, where the provider reports it (RunPod's catalog), whether a
+    machine is free right now for this purpose in each cloud."""
     creds = await _creds(db, user, provider)
     try:
         items = await get_gpu_adapter(provider).gpu_types(creds)
     except GPUError as exc:
         raise _fail(exc) from exc
+    for g in items:
+        if g.stock_secure is not None and not _fits(purpose, g.id, g.cuda_secure):
+            g.stock_secure = "NONE"
+        if g.stock_community is not None and not _fits(purpose, g.id, g.cuda_community):
+            g.stock_community = "NONE"
     return {"items": [g.json() for g in items]}
 
 

@@ -22,19 +22,38 @@ from app.gpu.base import Endpoint, GPUError, GpuType, Workload, WorkloadSpec
 APP_NAME = "ai-image-studio-gpu"
 TAGS = {"created-by": "ai-image-studio"}
 
-# GPU names accepted by Modal's `gpu=` argument (modal.com/docs/guide/gpu). Prices are not
-# returned by any Modal API, so none are shown.
-GPU_TYPES: list[tuple[str, str, int]] = [
-    ("T4", "NVIDIA T4", 16),
-    ("L4", "NVIDIA L4", 24),
-    ("A10", "NVIDIA A10", 24),
-    ("L40S", "NVIDIA L40S", 48),
-    ("A100-40GB", "NVIDIA A100 40 GB", 40),
-    ("A100-80GB", "NVIDIA A100 80 GB", 80),
-    ("H100", "NVIDIA H100", 80),
-    ("H200", "NVIDIA H200", 141),
-    ("B200", "NVIDIA B200", 180),
+# GPU names accepted by Modal's `gpu=` argument (modal.com/docs/guide/gpu; the same names are
+# used in modal-labs/modal-examples), VRAM in GB, and Modal's list price in USD per hour
+# (billed per second). Modal has no price API: these are the owner's last known values from
+# https://modal.com/pricing (2026-11-01; the page could not be opened from the build sandbox),
+# always shown as an estimate with that link. H200: no known value, so none is shown.
+PRICING_URL = "https://modal.com/pricing"
+GPU_TYPES: list[tuple[str, str, int, float | None]] = [
+    ("T4", "NVIDIA T4", 16, 0.59),
+    ("L4", "NVIDIA L4", 24, 0.80),
+    ("A10G", "NVIDIA A10G", 24, 1.10),
+    ("L40S", "NVIDIA L40S", 48, 1.95),
+    ("A100-40GB", "NVIDIA A100 40 GB", 40, 2.10),
+    ("A100-80GB", "NVIDIA A100 80 GB", 80, 2.50),
+    ("H100", "NVIDIA H100", 80, 3.95),
+    ("H200", "NVIDIA H200", 141, None),
+    ("B200", "NVIDIA B200", 180, 6.25),
 ]
+# CPU and memory are billed on top (last known: per physical core-hour, per GiB-hour).
+CPU_CORE_HOUR = 0.0472
+MEMORY_GIB_HOUR = 0.008
+# The studio's sandboxes (ComfyUI, training): 4 cores and 32 GiB of memory.
+SANDBOX_CPU = 4
+SANDBOX_MEMORY_MB = 32768
+SANDBOX_EXTRA_PER_HOUR = round(
+    SANDBOX_CPU * CPU_CORE_HOUR + SANDBOX_MEMORY_MB / 1024 * MEMORY_GIB_HOUR, 4
+)
+
+
+def hourly_estimate(gpu: str) -> float | None:
+    """GPU + CPU + memory of the studio's sandbox, USD per hour (estimate), or None."""
+    price = next((p for i, _, _, p in GPU_TYPES if i == gpu), None)
+    return round(price + SANDBOX_EXTRA_PER_HOUR, 4) if price is not None else None
 
 
 def _error(exc: Exception) -> GPUError:
@@ -67,11 +86,14 @@ class ModalSDK:
 
         return await modal.App.lookup.aio(APP_NAME, create_if_missing=True, client=client)
 
-    async def list(self, client: Any, app: Any) -> list[Any]:
+    async def list(self, client: Any, app: Any, tags: dict[str, str] | None = None) -> list[Any]:
         import modal
 
         return [
-            sb async for sb in modal.Sandbox.list.aio(app_id=app.app_id, tags=TAGS, client=client)
+            sb
+            async for sb in modal.Sandbox.list.aio(
+                app_id=app.app_id, tags={**TAGS, **(tags or {})}, client=client
+            )
         ]
 
     async def create(self, client: Any, app: Any, spec: WorkloadSpec) -> Any:
@@ -94,11 +116,17 @@ class ModalSDK:
             image = image.apt_install(*spec.image_apt)
         if spec.clear_entrypoint:
             image = image.entrypoint([])
+        extra: dict[str, Any] = {}
+        if spec.cpu:
+            extra["cpu"] = spec.cpu
+        if spec.memory_mb:
+            extra["memory"] = spec.memory_mb
         return await modal.Sandbox.create.aio(
             *command,
+            **extra,
             app=app,
             name=spec.name or None,
-            tags=TAGS,
+            tags={**TAGS, **spec.tags},
             image=image,
             env=spec.env or None,
             secrets=secrets,
@@ -149,7 +177,18 @@ class ModalProvider:
         await self.sdk.close(client)
 
     async def gpu_types(self, creds: dict[str, str]) -> list[GpuType]:
-        return [GpuType(id=i, name=n, memory_gb=m) for i, n, m in GPU_TYPES]
+        return [
+            GpuType(
+                id=i,
+                name=n,
+                memory_gb=m,
+                price_secure=price,
+                price_estimate=True,
+                price_extra=SANDBOX_EXTRA_PER_HOUR,
+                manufacturer="NVIDIA",
+            )
+            for i, n, m, price in GPU_TYPES
+        ]
 
     async def _describe(self, sandbox: Any, records: dict[str, dict[str, Any]]) -> Workload:
         sandbox_id = sandbox.object_id
@@ -184,6 +223,23 @@ class ModalProvider:
             app = await self.sdk.app(client)
             sandboxes = await self.sdk.list(client, app)
             return [await self._describe(sb, records or {}) for sb in sandboxes]
+        except GPUError:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            raise _error(exc) from exc
+        finally:
+            await self.sdk.close(client)
+
+    async def find_workloads(self, creds: dict[str, str], tags: dict[str, str]) -> list[str]:
+        """Running sandboxes of the studio's app carrying these tags."""
+        client = await self._client(creds)
+        try:
+            app = await self.sdk.app(client)
+            out = []
+            for sb in await self.sdk.list(client, app, tags):
+                if await self.sdk.poll(sb) is None:
+                    out.append(sb.object_id)
+            return out
         except GPUError:
             raise
         except Exception as exc:  # noqa: BLE001

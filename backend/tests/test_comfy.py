@@ -426,12 +426,13 @@ def no_poll_wait(monkeypatch):
     monkeypatch.setattr(deploy, "POLL_EVERY", deploy.timedelta(0))
 
 
-async def test_runpod_falls_back_to_cuda13_and_stops_when_comfyui_never_answers(
+async def test_runpod_picks_free_cuda_and_stops_when_comfyui_never_answers(
     user: Api, monkeypatch, no_poll_wait
 ):
-    """No free machine with a CUDA 12.8/12.9 driver: the CUDA 13 image is tried, with only the
-    CUDA versions RunPod's API accepts (it refuses the whole request otherwise). A ComfyUI
-    that never answers stops the GPU after the time limit."""
+    """The CUDA versions come from RunPod's catalog (it matches them exactly): the CUDA 12.8
+    image on free 12.8/12.9 machines, else the CUDA 13 image; when a machine is taken at
+    create time the next image is tried (same GPU and cloud, same price). A ComfyUI that never
+    answers stops the GPU after the time limit; nothing free gives a clear message."""
     import httpx
 
     from app.comfy import deploy
@@ -439,7 +440,9 @@ async def test_runpod_falls_back_to_cuda13_and_stops_when_comfyui_never_answers(
     from app.gpu.runpod import RunPodProvider
     from tests.test_gpu import FakeRunPod
 
-    fake = FakeRunPod(no_capacity={"12.8", "12.9"})
+    fake = FakeRunPod()
+    fake.free[("NVIDIA L4", "SECURE")] = ["12.8", "13.0"]
+    fake.taken_at_create = {"12.8"}
     set_gpu_adapter("runpod", RunPodProvider(transport=fake.transport()))
     AgentClient.transport = httpx.MockTransport(lambda r: httpx.Response(502, text="booting"))
     try:
@@ -447,12 +450,16 @@ async def test_runpod_falls_back_to_cuda13_and_stops_when_comfyui_never_answers(
         body = {"name": "GPU", "provider": "runpod", "gpu_type": "NVIDIA L4"}
         r = await user.post("/api/comfy/deployments", json={**body, "confirm_billing": True})
         assert r.status_code == 201, r.text
-        sent = [b for m, path, b in fake.calls if m == "POST" and path == "/v1/pods"]
-        assert [(b["imageName"], b["allowedCudaVersions"]) for b in sent] == [
-            ("runpod/comfyui:cuda12.8", ["12.8", "12.9"]),
-            ("runpod/comfyui:cuda13.0", ["13.0"]),  # 13.1-13.3 are not in RunPod's spec
+        sent = [b for m, path, b in fake.calls if m == "POST" and path == "/v2/pods"]
+        assert [(b["image"], b["gpu"]["allowedCudaVersions"]) for b in sent] == [
+            ("runpod/comfyui:cuda12.8", ["12.8"]),
+            ("runpod/comfyui:cuda13.0", ["13.0"]),
         ]
-        assert len(fake.pods) == 1  # only the last request created a pod
+        # No needless constraints: no data centers, vCPU or RAM minimums; small disks.
+        assert set(sent[-1]) == {"name", "image", "gpu", "cloud", "disk", "ports", "env",
+                                 "entrypoint", "cmd", "mounts"}  # fmt: skip
+        assert sent[-1]["disk"] == 30 and sent[-1]["mounts"]["persistent"]["size"] == 80
+        assert len(fake.pods) == 1  # the refused request created no pod
         conn = r.json()
         assert conn["deploy"]["image"] == "runpod/comfyui:cuda13.0"
         assert conn["deploy"]["cuda"] == ["13.0"]
@@ -465,14 +472,39 @@ async def test_runpod_falls_back_to_cuda13_and_stops_when_comfyui_never_answers(
         conn = (await user.get("/api/comfy/connections")).json()["items"][0]
         assert conn["status"] == "error", conn
         assert "within 0 minutes" in conn["last_error"] and "not billed" in conn["last_error"]
-        assert next(iter(fake.pods.values()))["desiredStatus"] == "EXITED"
+        assert next(iter(fake.pods.values()))["status"] == "EXITED"
 
-        # Every host busy: a clear message, nothing created.
-        fake.no_capacity = {"12.8", "12.9", "13.0", "13.1", "13.2", "13.3"}
+        # Nothing with a fitting driver free in this cloud: a clear message, nothing created.
+        fake.free[("NVIDIA L4", "SECURE")] = ["12.4"]
         busy = await user.post("/api/comfy/deployments", json={**body, "confirm_billing": True})
         assert busy.status_code == 409 and busy.json()["error"]["code"] == "unavailable"
         assert "No GPU of this type is free" in busy.json()["error"]["message"]
         assert len(fake.pods) == 1
+        # Community Cloud has one: renting it there is the user's own choice (its price).
+        fake.free[("NVIDIA L4", "COMMUNITY")] = ["12.9"]
+        community = await user.post(
+            "/api/comfy/deployments",
+            json={**body, "cloud_type": "COMMUNITY", "confirm_billing": True},
+        )
+        assert community.status_code == 201, community.text
+        last = [b for m, path, b in fake.calls if m == "POST" and path == "/v2/pods"][-1]
+        assert last["cloud"] == "COMMUNITY" and last["gpu"]["allowedCudaVersions"] == ["12.9"]
+        assert community.json()["deploy"]["cost_per_hour"] == 0.39
+        # Nothing starts at a price the owner did not confirm.
+        fake.free[("NVIDIA L4", "SECURE")] = ["12.8"]
+        fake.taken_at_create = set()
+        changed = await user.post(
+            "/api/comfy/deployments",
+            json={**body, "confirmed_price": 0.40, "confirm_billing": True},
+        )
+        assert changed.status_code == 409 and changed.json()["error"]["code"] == "price_changed"
+        assert "0.430" in changed.json()["error"]["message"]
+        pods_before = len(fake.pods)
+        ok = await user.post(
+            "/api/comfy/deployments",
+            json={**body, "confirmed_price": 0.43, "confirm_billing": True},
+        )
+        assert ok.status_code == 201 and len(fake.pods) == pods_before + 1
     finally:
         AgentClient.transport = None
         set_gpu_adapter("runpod", None)
@@ -611,12 +643,12 @@ async def test_deploy_on_runpod_through_the_agent(user: Api, tmp_path: Path, no_
         assert conn["status"] == "deploying", conn["last_error"]
         assert conn["deploy"]["stage"] == "starting"
         pod = next(iter(fake.bodies.values()))
-        assert pod["dockerEntrypoint"] == ["/bin/bash", "-c"] and pod["ports"] == ["8189/http"]
-        assert pod["dockerStartCmd"] == [COMFY_BOOT]
-        assert pod["volumeMountPath"] == "/workspace"
-        # RunPod's ComfyUI image (ComfyUI and PyTorch inside), on CUDA 12.8 / 12.9 hosts.
-        assert pod["imageName"] == "runpod/comfyui:cuda12.8"
-        assert pod["allowedCudaVersions"] == ["12.8", "12.9"]
+        assert pod["entrypoint"] == ["/bin/bash", "-c"] and pod["ports"] == ["8189/http"]
+        assert pod["cmd"] == [COMFY_BOOT]
+        assert pod["mounts"] == {"persistent": {"size": 80, "path": "/workspace"}}
+        # RunPod's ComfyUI image (ComfyUI and PyTorch inside), on free CUDA 12.8 / 12.9 hosts.
+        assert pod["image"] == "runpod/comfyui:cuda12.8"
+        assert pod["gpu"]["allowedCudaVersions"] == ["12.8", "12.9"]
         conn = await _wait_conn(user, lambda c: c["status"] in ("ready", "error"))
         assert conn["status"] == "ready", (conn["deploy"], conn["last_error"])
         assert conn["info"]["krea2"]["ready"]
@@ -668,7 +700,7 @@ async def test_deploy_on_runpod_through_the_agent(user: Api, tmp_path: Path, no_
         assert jobs["items"][0]["status"] == "running" and jobs["items"][0]["cost"] is not None
         stop = await user.post(f"/api/comfy/connections/{conn['id']}/stop")
         assert stop.json()["status"] == "stopped"
-        assert next(iter(fake.pods.values()))["desiredStatus"] == "EXITED"
+        assert next(iter(fake.pods.values()))["status"] == "EXITED"
         # Started again: the volume keeps ComfyUI and the models, nothing is copied again.
         started = await user.post(
             f"/api/comfy/connections/{conn['id']}/start", json={"confirm_billing": True}
@@ -707,12 +739,43 @@ async def test_deploy_on_modal_uses_the_same_image_and_start(user: Api, no_poll_
         body = {"name": "Modal", "provider": "modal", "gpu_type": "L40S", "confirm_billing": True}
         r = await user.post("/api/comfy/deployments", json=body)
         assert r.status_code == 201, r.text
+        # Building the image can take many minutes on Modal: the sandbox is created in the
+        # background and the request answers at once.
+        assert r.json()["deploy"]["stage"] == "creating"
+        for _ in range(100):
+            conn = (await user.get("/api/comfy/connections")).json()["items"][0]
+            if conn["deploy"]["stage"] != "creating":
+                break
+            await asyncio.sleep(0.02)
+        assert conn["deploy"]["stage"] == "starting" and conn["workload_id"] == "sb-1"
         spec = sdk.created[-1]
+        assert spec.tags == {"studio-connection": conn["id"]}
+        # 4 cores, 32 GiB, one shared Volume, ends itself after the session + 10 min.
+        assert spec.cpu == 4 and spec.memory_mb == 32768
+        assert spec.volume_name == "ais-comfyui" and spec.timeout_minutes == 130
+        # No price API at Modal: the list price estimate (GPU + CPU + memory).
+        assert conn["deploy"]["cost_per_hour"] == 2.3948 and conn["deploy"]["cost_is_estimate"]
+        types = (await user.get("/api/gpu/modal/gpu-types")).json()["items"]
+        l40s = next(g for g in types if g["id"] == "L40S")
+        assert l40s["price_secure"] == 1.95 and l40s["price_estimate"]
+        assert l40s["price_extra"] == 0.4448
         assert spec.image == "runpod/comfyui:cuda12.8" and spec.clear_entrypoint
         assert [*spec.entrypoint, *spec.command] == ["/bin/bash", "-c", COMFY_BOOT]
         assert spec.ports == [8189] and spec.volume_name and spec.volume_gb == 0
         assert "STUDIO_AGENT_TOKEN" in spec.secret_env and "STUDIO_AGENT_TOKEN" not in spec.env
         assert deploy.BOOT_LIMIT["modal"] == deploy.timedelta(minutes=45)
+
+        # The app restarted while the sandbox was being created: it is taken over (found by
+        # its tag), not created a second time.
+        async with SessionLocal() as db:
+            row = await db.get(ComfyConnection, uuid.UUID(conn["id"]))
+            row.deploy = {**row.deploy, "stage": "creating"}
+            row.workload_id = None
+            await db.commit()
+        await gpu_runner.tick()
+        conn = (await user.get("/api/comfy/connections")).json()["items"][0]
+        assert conn["deploy"]["stage"] == "starting" and conn["workload_id"] == "sb-1"
+        assert len(sdk.created) == 1
     finally:
         set_gpu_adapter("modal", None)
         async with SessionLocal() as db:
@@ -726,3 +789,70 @@ def test_modal_image_clears_the_entrypoint():
 
     image = modal.Image.from_registry("runpod/comfyui:cuda12.8").entrypoint([])
     assert isinstance(image, modal.Image)
+
+
+async def test_session_time_and_spending_limits_stop_the_gpu(user: Api, no_poll_wait):
+    """Spent so far and time left are estimated from the start request and the pod's own
+    hourly rate; the GPU is stopped at the session's time limit or spending limit."""
+    from datetime import UTC, datetime, timedelta
+
+    import httpx
+
+    from app.gpu.agent_client import AgentClient
+    from app.gpu.runpod import RunPodProvider
+    from tests.test_gpu import FakeRunPod
+
+    fake = FakeRunPod()
+    set_gpu_adapter("runpod", RunPodProvider(transport=fake.transport()))
+    AgentClient.transport = httpx.MockTransport(lambda r: httpx.Response(502, text="booting"))
+    try:
+        await user.put("/api/gpu/providers/runpod", json={"api_key": RUNPOD_KEY})
+        body = {"name": "GPU", "provider": "runpod", "gpu_type": "NVIDIA L4"}
+        r = await user.post(
+            "/api/comfy/deployments",
+            json={**body, "session_minutes": 60, "spend_limit": 0.2, "confirm_billing": True},
+        )
+        assert r.status_code == 201, r.text
+        session = r.json()["session"]
+        assert session["per_hour"] == 0.43 and session["spent"] == 0.0
+        assert 3590 <= session["seconds_left"] <= 3600
+
+        async def started(ago: timedelta) -> None:
+            async with SessionLocal() as db:
+                row = (await db.scalars(select(ComfyConnection))).all()[-1]
+                when = (datetime.now(UTC) - ago).isoformat()
+                row.deploy = {**row.deploy, "session_started_at": when}
+                await db.commit()
+
+        # 20 minutes in: ~0.14 USD spent, under both limits.
+        await started(timedelta(minutes=20))
+        await gpu_runner.tick()
+        conn = (await user.get("/api/comfy/connections")).json()["items"][-1]
+        assert conn["status"] == "deploying" and 0.14 <= conn["session"]["spent"] <= 0.15
+        # 30 minutes in: ~0.215 USD, over the 0.20 spending limit.
+        await started(timedelta(minutes=30))
+        await gpu_runner.tick()
+        conn = (await user.get("/api/comfy/connections")).json()["items"][-1]
+        assert conn["status"] == "stopped" and conn["deploy"]["stopped_by"] == "spend_limit"
+        assert next(iter(fake.pods.values()))["status"] == "EXITED"
+        assert conn["session"] is None and conn["deploy"]["spent_total"] >= 0.2
+
+        # Started again: a new session; past its time limit the GPU is stopped.
+        r = await user.post(
+            f"/api/comfy/connections/{conn['id']}/start", json={"confirm_billing": True}
+        )
+        assert r.status_code == 200 and r.json()["session"]["spent"] == 0.0
+        await started(timedelta(minutes=61))
+        async with SessionLocal() as db:
+            row = (await db.scalars(select(ComfyConnection))).all()[-1]
+            row.deploy = {**row.deploy, "spend_limit": None}
+            await db.commit()
+        await gpu_runner.tick()
+        conn = (await user.get("/api/comfy/connections")).json()["items"][-1]
+        assert conn["status"] == "stopped" and conn["deploy"]["stopped_by"] == "time_limit"
+    finally:
+        AgentClient.transport = None
+        set_gpu_adapter("runpod", None)
+        async with SessionLocal() as db:
+            await db.execute(ComfyConnection.__table__.delete())
+            await db.commit()

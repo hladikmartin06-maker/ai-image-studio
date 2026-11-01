@@ -631,12 +631,15 @@ export function useGPUProviders() {
   });
 }
 
-export function useGpuTypes(provider: string, enabled: boolean) {
+/** GPU types with prices; for RunPod also what is free right now for this purpose, so the
+ * list is refreshed often. */
+export function useGpuTypes(provider: string, enabled: boolean, purpose?: "comfyui" | "training") {
   return useQuery({
-    queryKey: gpuKeys.types(provider),
-    queryFn: () => api<{ items: GpuType[] }>(`/api/gpu/${provider}/gpu-types`),
+    queryKey: [...gpuKeys.types(provider), purpose ?? "any"],
+    queryFn: () => api<{ items: GpuType[] }>(`/api/gpu/${provider}/gpu-types${purpose ? `?purpose=${purpose}` : ""}`),
     enabled,
-    staleTime: 5 * 60_000,
+    staleTime: 30_000,
+    refetchInterval: enabled ? 60_000 : false,
   });
 }
 

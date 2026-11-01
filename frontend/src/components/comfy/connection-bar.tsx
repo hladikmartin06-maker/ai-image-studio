@@ -10,8 +10,25 @@ import { formatElapsed, formatMoney, StatusPill } from "@/components/studio/comm
 import { Button, IconButton, Modal, Notice, Select, useConfirm } from "@/components/ui";
 import { ApiError } from "@/lib/api";
 import { useI18n } from "@/lib/i18n";
+import type { MessageKey } from "@/lib/i18n";
 import { useComfyConnections, useComfyPower, useRemoveComfy } from "@/lib/queries";
 import type { ComfyConnection } from "@/lib/types";
+
+/** Spent so far and time left in the GPU's session (estimate). */
+function SessionLine({ conn }: { conn: ComfyConnection }) {
+  const { t, locale } = useI18n();
+  const s = conn.session;
+  if (!s || s.per_hour == null) return null;
+  return (
+    <span className="tiny subtle" style={{ display: "block" }}>
+      {t("cf.sessionLine", {
+        rate: formatMoney(s.per_hour, locale),
+        spent: formatMoney(s.spent ?? 0, locale),
+        left: formatElapsed(s.seconds_left),
+      })}
+    </span>
+  );
+}
 
 function secondsSince(iso: string | undefined) {
   return iso ? Math.max(0, (Date.now() - new Date(iso).getTime()) / 1000) : null;
@@ -99,7 +116,7 @@ export function ComfyConnectionBar({
   const d = selected?.deploy ?? {};
   // starting: the GPU boots and the studio agent comes up; booting: ComfyUI starts (the first
   // start copies it onto the GPU's disk).
-  const stage = d.stage === "booting" ? "booting" : "starting";
+  const stage = d.stage === "booting" ? "booting" : d.stage === "creating" ? "creating" : "starting";
   const since = secondsSince(d.started_at);
 
   return (
@@ -127,16 +144,17 @@ export function ComfyConnectionBar({
           <div className="row" style={{ gap: 8 }}>
             <span className="dot pulse" style={{ color: "var(--accent)" }} />
             <span className="small grow" style={{ fontWeight: 600 }}>
-              {t(stage === "booting" ? "cf.setupBooting" : "cf.setupStarting")}
+              {t(stage === "booting" ? "cf.setupBooting" : stage === "creating" ? "cf.setupCreating" : "cf.setupStarting")}
             </span>
             {since !== null ? <span className="tiny subtle">{formatElapsed(since)}</span> : null}
           </div>
           <ol className="setup-steps tiny">
-            <li data-state={stage === "starting" ? "active" : "done"}>{t("cf.setupStep1")}</li>
+            <li data-state={stage === "booting" ? "done" : "active"}>{t("cf.setupStep1")}</li>
             <li data-state={stage === "booting" ? "active" : "todo"}>{t("cf.setupStep2")}</li>
             <li data-state="todo">{t("cf.setupStep3")}</li>
           </ol>
-          <div className="tiny subtle">{t("cf.setupHint")}</div>
+          <div className="tiny subtle">{t(stage === "creating" ? "cf.setupCreatingHint" : "cf.setupHint")}</div>
+          {selected.session ? <SessionLine conn={selected} /> : null}
           <div className="row wrap" style={{ gap: 8 }}>
             <Button size="sm" icon={<ScrollText />} onClick={() => setLog(true)}>
               {t("cf.logs")}
@@ -177,6 +195,11 @@ export function ComfyConnectionBar({
         </Notice>
       ) : null}
 
+      {selected?.status === "stopped" && deployed && d.stopped_by && d.stopped_by !== "user" ? (
+        <div className="tiny subtle">
+          {t(`cf.stoppedBy.${d.stopped_by}` as MessageKey)}
+        </div>
+      ) : null}
       {selected?.status === "stopped" && deployed ? (
         <div className="row" style={{ gap: 8 }}>
           <Button size="sm" variant="primary" icon={<Play />} loading={power.isPending} onClick={() => start(selected)}>
@@ -191,11 +214,12 @@ export function ComfyConnectionBar({
           <span className="tiny subtle grow">
             {[
               selected.info.devices?.[0]?.name?.replace(/^cuda:\d+\s*/, "").split(":")[0],
-              deployed && d.cost_per_hour ? `${formatMoney(d.cost_per_hour, locale)}/h` : null,
+              deployed && !selected.session && d.cost_per_hour ? `${formatMoney(d.cost_per_hour, locale)}/h` : null,
               deployed ? t("cf.gpuBills") : null,
             ]
               .filter(Boolean)
               .join(" · ")}
+            {deployed && selected.session ? <SessionLine conn={selected} /> : null}
           </span>
           {deployed ? (
             <Button

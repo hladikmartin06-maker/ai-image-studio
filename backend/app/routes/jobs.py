@@ -116,6 +116,7 @@ def _deployment(conn: ComfyConnection) -> dict[str, Any]:
     d = conn.deploy or {}
     status = {
         "starting": "preparing",
+        "creating": "preparing",
         "booting": "preparing",
         "installing": "preparing",
         "ready": "running",

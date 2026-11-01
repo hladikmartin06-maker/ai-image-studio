@@ -15,6 +15,7 @@ agent's token-protected port is exposed). Stages, advanced by the GPU runner (~e
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 import uuid
@@ -31,8 +32,8 @@ from app.gpu import service as gpu_service
 from app.gpu.agent import AGENT_PORT, COMFY_AGENT_PORT, COMFY_BOOT, agent_env, new_token
 from app.gpu.agent_client import AgentClient, AgentError
 from app.gpu.base import GPUError, WorkloadSpec
+from app.gpu.modal_provider import SANDBOX_CPU, SANDBOX_MEMORY_MB, hourly_estimate
 from app.gpu.registry import get_gpu_adapter
-from app.gpu.runpod import CUDA12, CUDA13
 from app.models import ComfyConnection, Generation, UserSecret
 from app.security import decrypt_secret, encrypt_secret
 
@@ -53,6 +54,34 @@ COMFY_SUBDIR = "runpod-slim/ComfyUI"
 # Modal's first start also pulls the image and copies ComfyUI onto its Volume.
 BOOT_LIMIT = {"runpod": timedelta(minutes=30), "modal": timedelta(minutes=45)}
 POLL_EVERY = timedelta(seconds=10)
+MODAL_VOLUME = "ais-comfyui"
+# A session: from the start request until the GPU is stopped. Its time limit (default 2 h)
+# and optional spending limit stop the GPU, like inactivity does.
+DEFAULT_SESSION_MINUTES = 120
+
+
+def session_minutes(d: dict[str, Any]) -> int:
+    return int(d.get("session_minutes") or DEFAULT_SESSION_MINUTES)
+
+
+def session_estimate(d: dict[str, Any]) -> dict[str, Any] | None:
+    """Spent so far and time left in the current session: billable seconds since the start
+    request x the GPU's hourly rate. An estimate; the cloud's own billing counts."""
+    started = d.get("session_started_at")
+    if not started or d.get("stage") in ("stopped", "error"):
+        return None
+    seconds = max(0.0, (now() - datetime.fromisoformat(started)).total_seconds())
+    rate = d.get("cost_per_hour")
+    spent = round(float(rate) * seconds / 3600, 4) if rate is not None else None
+    return {
+        "per_hour": rate,
+        "spent": spent,
+        "seconds": round(seconds),
+        "seconds_left": max(0, round(session_minutes(d) * 60 - seconds)),
+        "spend_limit": d.get("spend_limit"),
+    }
+
+
 # deploy["setup"]: how the GPU was set up (1 = older studio versions that installed ComfyUI).
 SETUP = 2
 OUTDATED = (
@@ -95,13 +124,23 @@ async def hf_token(db, user_id: uuid.UUID) -> str | None:
     return decrypt_secret(row.encrypted_value, associated=f"{user_id}:secret:huggingface")
 
 
-def image_plan(provider: str, gpu_type: str) -> list[tuple[str, list[str]]]:
-    """The images to try in order, each with the driver CUDA versions it may run on."""
+def image_plan(
+    provider: str, gpu_type: str, free: list[str] | None = None
+) -> list[tuple[str, list[str]]]:
+    """The images to try in order, each with the driver CUDA versions to ask for. `free` is
+    what RunPod's catalog lists as free for this GPU and cloud (None = unknown): the CUDA 12.8
+    image on 12.8/12.9 machines, the CUDA 13 image only when the GPU is offered with CUDA 13
+    only right now (or is a Blackwell GPU, which the CUDA 12 image does not support)."""
     if provider == "modal":
         return [(IMAGE_CUDA12, [])]
-    if BLACKWELL.search(gpu_type):
-        return [(IMAGE_CUDA13, CUDA13)]
-    return [(IMAGE_CUDA12, CUDA12), (IMAGE_CUDA13, CUDA13)]
+    cuda12 = gpu_service.CUDA12 if free is None else [v for v in free if v in gpu_service.CUDA12]
+    cuda13 = gpu_service.CUDA13 if free is None else [v for v in free if v.startswith("13.")]
+    plan: list[tuple[str, list[str]]] = []
+    if cuda12 and not BLACKWELL.search(gpu_type):
+        plan.append((IMAGE_CUDA12, cuda12))
+    if cuda13:
+        plan.append((IMAGE_CUDA13, cuda13))
+    return plan
 
 
 def spec_for(
@@ -124,33 +163,46 @@ def spec_for(
         env=env,
         secret_env=secret_env,
         cloud_type=d.get("cloud_type") or "SECURE",
-        container_disk_gb=int(d.get("container_disk_gb") or 50),
+        container_disk_gb=int(d.get("container_disk_gb") or 30),
         # RunPod: a pod volume at /workspace keeps ComfyUI and the models when it is stopped.
-        volume_gb=int(d.get("volume_gb") or 120) if provider == "runpod" else 0,
+        volume_gb=int(d.get("volume_gb") or 80) if provider == "runpod" else 0,
         entrypoint=["/bin/bash", "-c"],
         command=[COMFY_BOOT],
-        timeout_minutes=int(d.get("timeout_minutes") or 720),
-        # Modal: a named Volume at /workspace does the same.
-        volume_name=f"ais-comfyui-{str(conn.id)[:12]}" if provider == "modal" else None,
+        # Modal: the sandbox ends itself after the session (+10 min, at most 24 h).
+        timeout_minutes=min(session_minutes(d) + 10, 1440),
+        # Modal: one named Volume at /workspace keeps ComfyUI and every downloaded model for
+        # all of the user's Modal GPUs, so only the first start is slow.
+        volume_name=MODAL_VOLUME if provider == "modal" else None,
+        cpu=SANDBOX_CPU if provider == "modal" else None,
+        memory_mb=SANDBOX_MEMORY_MB if provider == "modal" else None,
         clear_entrypoint=provider == "modal",
         allowed_cuda_versions=cuda,
+        tags={"studio-connection": str(conn.id)},
     )
 
 
 async def _create(db, conn: ComfyConnection, token: str, hf: str | None):
-    """Creates the pod with the first image a free GPU fits. A request is only followed by the
-    next one when RunPod answered that no machine is free (no pod was created)."""
-    provider = conn.deploy["provider"]
-    plan = image_plan(provider, conn.deploy["gpu_type"])
-    creds = await gpu_service.load_creds(db, conn.user_id, provider)
-    adapter = get_gpu_adapter(provider)
+    """Creates the pod with the first image a free machine fits. The CUDA versions come from
+    RunPod's catalog (it matches them exactly, so a version without a free machine fails). A
+    request is followed by the next one only when RunPod answered that no machine is free
+    (no pod was created) — same GPU and cloud, so the same price."""
+    d = conn.deploy
+    provider = d["provider"]
+    cloud = d.get("cloud_type") or "SECURE"
+    free, price = await gpu_service.offer(db, conn.user_id, provider, d["gpu_type"], cloud)
+    confirmed = d.get("confirmed_price")
+    if price is not None and confirmed is not None and abs(float(confirmed) - price) > 0.0005:
+        # Nothing starts at a price the owner did not confirm.
+        raise GPUError("price_changed", f"now {price:.3f} USD per hour")
+    plan = image_plan(provider, d["gpu_type"], free)
+    if not plan:
+        raise GPUError(
+            "unavailable",
+            f"RunPod has no free {d['gpu_type']} with a recent driver (CUDA 12.8 or newer) in "
+            f"{cloud.title()} Cloud right now",
+        )
     last: GPUError | None = None
-    for image, wanted in plan:
-        # Only the CUDA versions RunPod's API accepts are sent (it refuses the whole request
-        # otherwise).
-        cuda = await adapter.accepted_cuda(creds, wanted) if wanted else []
-        if wanted and not cuda:
-            continue
+    for image, cuda in plan:
         spec = spec_for(conn, token, hf, image, cuda)
         try:
             workload = await gpu_service.launch(db, conn.user_id, provider, spec, "comfyui")
@@ -160,7 +212,8 @@ async def _create(db, conn: ComfyConnection, token: str, hf: str | None):
             if exc.code == "unavailable":
                 continue  # no free machine for this image: try the next one
             raise
-    raise last or GPUError("unavailable", "No CUDA version of this GPU is accepted by RunPod.")
+    assert last is not None
+    raise last
 
 
 async def launch(db, conn: ComfyConnection) -> None:
@@ -168,6 +221,9 @@ async def launch(db, conn: ComfyConnection) -> None:
     token = new_token()
     conn.encrypted_secret = encrypt_secret(token, associated=assoc(conn))
     conn.secret_last4 = token[-4:]
+    # Saved before the GPU exists: a Modal sandbox whose creation outlived the app is taken
+    # over with it (see _adopt).
+    await db.commit()
     hf = await hf_token(db, conn.user_id)
     workload, image, cuda = await _create(db, conn, token, hf)
     conn.workload_id = workload.id
@@ -186,12 +242,103 @@ async def launch(db, conn: ComfyConnection) -> None:
         "job_id": None,
         "model_job": None,
         "started_at": now().isoformat(),
+        "session_started_at": conn.deploy.get("session_started_at") or now().isoformat(),
         "polled_at": None,
-        "cost_per_hour": workload.cost_per_hour,
+        "cost_per_hour": workload.cost_per_hour
+        if workload.cost_per_hour is not None
+        else hourly_estimate(conn.deploy["gpu_type"])
+        if conn.deploy["provider"] == "modal"
+        else None,
+        "cost_is_estimate": conn.deploy["provider"] == "modal",
         "log_tail": "",
         "log_offset": 0,
     }
     await db.commit()
+
+
+# Modal builds the image when the sandbox is created (the first time it pulls RunPod's
+# ComfyUI image, many minutes), so Modal sandboxes are created in the background and the
+# studio shows the progress; RunPod answers a create within seconds.
+SLOW_CREATE = {"modal"}
+_creating: set[uuid.UUID] = set()
+_tasks: set[asyncio.Task[None]] = set()
+
+
+def creates_in_background(conn: ComfyConnection) -> bool:
+    return (conn.deploy or {}).get("provider") in SLOW_CREATE
+
+
+def mark_creating(conn: ComfyConnection) -> None:
+    """Stage "creating": the GPU is being created in the background (create_later)."""
+    conn.status = "deploying"
+    conn.last_error = None
+    conn.deploy = {
+        **(conn.deploy or {}),
+        "setup": SETUP,
+        "agent_port": COMFY_AGENT_PORT,
+        "comfy_dir": COMFY_SUBDIR,
+        "stage": "creating",
+        "agent_url": None,
+        "model_job": None,
+        "started_at": now().isoformat(),
+        "session_started_at": now().isoformat(),
+        "polled_at": None,
+        "log_tail": "",
+        "log_offset": 0,
+    }
+
+
+def create_later(conn_id: uuid.UUID) -> None:
+    """Creates the GPU of a connection in stage "creating" in the background."""
+    if conn_id in _creating:
+        return
+    _creating.add(conn_id)
+
+    async def run() -> None:
+        try:
+            async with SessionLocal() as db:
+                conn = await db.get(ComfyConnection, conn_id)
+                if conn is None or (conn.deploy or {}).get("stage") != "creating":
+                    return
+                try:
+                    await launch(db, conn)
+                except GPUError as exc:
+                    await _fail(db, conn, exc.message)
+        except Exception:  # noqa: BLE001 - reported in the log; the stage times out
+            log.exception("creating the GPU for %s failed", conn_id)
+        finally:
+            _creating.discard(conn_id)
+
+    task = asyncio.create_task(run())
+    _tasks.add(task)
+    task.add_done_callback(_tasks.discard)
+
+
+async def _adopt(db, conn: ComfyConnection, d: dict[str, Any]) -> None:
+    """Stage "creating" with no creation running in this app (it was restarted): take over a
+    sandbox that was created for this connection, else create it (none exists, so nothing is
+    billed twice), or give up after the start limit."""
+    provider = d["provider"]
+    adapter = get_gpu_adapter(provider)
+    found: list[str] = []
+    if hasattr(adapter, "find_workloads"):
+        try:
+            creds = await gpu_service.load_creds(db, conn.user_id, provider)
+            found = await adapter.find_workloads(creds, {"studio-connection": str(conn.id)})
+        except GPUError:
+            return  # try again on the next pass
+    if found:
+        conn.workload_id = found[0]
+        conn.gpu_provider = provider
+        d.update(stage="starting", agent_url=None)
+        conn.deploy = dict(d)
+        await db.commit()
+        return
+    limit = BOOT_LIMIT.get(provider, BOOT_LIMIT["runpod"])
+    if _since(d.get("started_at")) > limit:
+        await _fail(db, conn, "The GPU could not be created in time. Try again.")
+        return
+    create_later(conn.id)
 
 
 def _since(value: str | None) -> timedelta:
@@ -244,6 +391,12 @@ async def advance(conn_id: uuid.UUID) -> None:
         d = dict(conn.deploy or {})
         stage = d.get("stage")
         provider = conn.gpu_provider or d.get("provider")
+        if stage == "creating":
+            if conn.id not in _creating:
+                await _adopt(db, conn, d)
+            return
+        if stage in ("starting", "booting", "ready") and await _session_limits(db, conn, d):
+            return
         if stage in ("starting", "booting", "installing"):
             if d.get("setup") != SETUP:
                 await _fail(db, conn, OUTDATED, stop_gpu=True)
@@ -260,6 +413,26 @@ async def advance(conn_id: uuid.UUID) -> None:
             await _auto_stop(db, conn, d)
 
 
+async def _session_limits(db, conn: ComfyConnection, d: dict[str, Any]) -> bool:
+    """Stops the GPU at the session's time limit or spending limit. True when it stopped."""
+    est = session_estimate(d)
+    if est is None:
+        return False
+    reason = None
+    if est["seconds_left"] <= 0:
+        reason = "time_limit"
+    elif d.get("spend_limit") and est["spent"] is not None and est["spent"] >= d["spend_limit"]:
+        reason = "spend_limit"
+    if reason is None:
+        return False
+    try:
+        await stop(db, conn, reason=reason)
+    except GPUError as exc:
+        log.warning("could not stop GPU at its %s: %s", reason, exc.message)
+        return False
+    return True
+
+
 async def _advance_start(db, conn: ComfyConnection, d: dict[str, Any], provider: str) -> None:
     limit = BOOT_LIMIT.get(provider, BOOT_LIMIT["runpod"])
     try:
@@ -273,7 +446,7 @@ async def _advance_start(db, conn: ComfyConnection, d: dict[str, Any], provider:
             conn.deploy = dict(d)
             await db.commit()
         return
-    if workload is None or workload.status in ("terminated", "exited", "stopped"):
+    if workload is None or workload.status in ("terminated", "exited", "stopped", "error"):
         await _fail(db, conn, "The GPU stopped before ComfyUI was ready.")
         return
     if workload.cost_per_hour is not None:
@@ -483,10 +656,17 @@ async def stop(db, conn: ComfyConnection, reason: str = "user") -> None:
         status = "terminated"
     await gpu_service.mark_workload(db, conn.user_id, provider, conn.workload_id, status, now())
     conn.status = "stopped"
+    est = session_estimate(conn.deploy or {})
+    spent_total = float((conn.deploy or {}).get("spent_total") or 0) + float(
+        (est or {}).get("spent") or 0
+    )
     conn.deploy = {
         **(conn.deploy or {}),
         "stage": "stopped",
         "stopped_by": reason,
+        "last_session": est,
+        "spent_total": round(spent_total, 4),
+        "session_started_at": None,
         "agent_url": None if provider == "modal" else (conn.deploy or {}).get("agent_url"),
     }
     await db.commit()
@@ -519,6 +699,7 @@ async def start(db, conn: ComfyConnection) -> None:
             "job_id": None,
             "model_job": None,
             "started_at": now().isoformat(),
+            "session_started_at": now().isoformat(),
             "polled_at": None,
             # A new container: the agent's address stays, its start log begins again.
             "log_tail": "",
@@ -527,6 +708,11 @@ async def start(db, conn: ComfyConnection) -> None:
         await db.commit()
         return
     # Modal (or a RunPod pod that is gone): a new workload on the same volume.
+    if creates_in_background(conn):
+        mark_creating(conn)
+        await db.commit()
+        create_later(conn.id)
+        return
     await launch(db, conn)
 
 

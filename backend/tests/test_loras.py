@@ -285,9 +285,9 @@ async def test_training_on_runpod_end_to_end(user: Api, tmp_path: Path, hub: Fak
         assert version["status"] == "completed", version
         pod = next(iter(fake.bodies.values()))
         assert pod["env"]["HF_TOKEN"] == "hf_testtoken123"
-        assert pod["imageName"] == "ostris/aitoolkit:latest"
-        # Only CUDA versions RunPod's API accepts (13.1-13.3 are not in its spec).
-        assert pod["allowedCudaVersions"] == ["13.0"]
+        assert pod["image"] == "ostris/aitoolkit:latest"
+        # Only CUDA 13 versions with a free machine (RunPod's catalog).
+        assert pod["gpu"]["allowedCudaVersions"] == ["13.0"]
         assert version["step"] == 100 and version["loss"]
         assert version["checkpoints"][0]["step"] == 50
         assert version["samples"] and version["cost_final"] is not None

@@ -15,75 +15,149 @@ from app.db import SessionLocal
 from app.gpu.base import GPUError, WorkloadSpec
 from app.gpu.modal_provider import ModalProvider
 from app.gpu.registry import set_gpu_adapter
-from app.gpu.runpod import REST_CUDA, REST_GPU_IDS, RunPodProvider
+from app.gpu.runpod import RunPodProvider
 from app.models import GPUIntegration, GPUWorkload
 from tests.conftest import Api, make_user
 
 RUNPOD_KEY = "rp_test_key_123456"
 
 
-# RunPod's answer to a body outside its spec (the owner's error message, 2026-11-01).
-SCHEMA_ERROR = (
-    "At #/paths/pods/post for POST https://rest.runpod.io/v1/pods, The request body is defined "
-    "as an object. However, it does not meet the schema requirements of the specification. "
-    "Suggestion: Ensure that the object being submitted, matches the schema correctly"
-)
+# RunPod's catalog in the fake: GPU types with prices per cloud.
+CATALOG = [
+    {
+        "id": "NVIDIA L4",
+        "name": "L4",
+        "manufacturer": "NVIDIA",
+        "memory": 24,
+        "secure": True,
+        "community": True,
+        "price": {"secure": 0.43, "community": 0.39},
+    },
+    {
+        "id": "NVIDIA H100 80GB HBM3",
+        "name": "H100 SXM",
+        "manufacturer": "NVIDIA",
+        "memory": 80,
+        "secure": True,
+        "community": False,
+        "price": {"secure": 2.99, "community": 0},
+    },
+    {
+        "id": "AMD Instinct MI300X OAM",
+        "name": "MI300X",
+        "manufacturer": "AMD",
+        "memory": 192,
+        "secure": True,
+        "community": False,
+        "price": {"secure": 2.49, "community": 0},
+    },
+]
+OFFERED_CUDA = ["12.4", "12.8", "12.9", "13.0"]
+# CreatePodRequest (v2) closes its properties (unevaluatedProperties: false).
+POD_KEYS = {
+    "name", "image", "templateId", "cloud", "cpu", "gpu", "dataCenterIds", "globalNetworking",
+    "mounts", "startJupyter", "startSsh", "args", "cmd", "entrypoint", "disk", "env", "ports",
+    "registry",
+}  # fmt: skip
+GPU_KEYS = {"id", "count", "allowedCudaVersions", "minCudaVersion", "minRamPerGpu",
+            "minVcpuCountPerGpu"}  # fmt: skip
+
+
+def problem(status: int, detail: str, errors: list[str] | None = None) -> httpx.Response:
+    body: dict[str, Any] = {"title": httpx.codes.get_reason_phrase(status), "status": status,
+                            "detail": detail}  # fmt: skip
+    if errors:
+        body["errors"] = errors
+    return httpx.Response(status, json=body, headers={"content-type": "application/problem+json"})
 
 
 @dataclass
 class FakeRunPod:
+    """RunPod's REST API v2 (pods, actions, catalog with availability, serverless) and the
+    GraphQL balance query. Free machines per (GPU, cloud) are listed by CUDA version; a
+    create whose allowedCudaVersions match no free machine is refused like RunPod does."""
+
     pods: dict[str, dict[str, Any]] = field(default_factory=dict)
     endpoints: dict[str, dict[str, Any]] = field(
         default_factory=lambda: {
             "ep1": {
                 "id": "ep1",
                 "name": "sdxl",
-                "gpuTypeIds": ["NVIDIA L4"],
-                "workersMin": 0,
-                "workersMax": 2,
+                "gpu": {"pools": ["ADA_24"]},
+                "workers": {"min": 0, "max": 2},
             }
         }
     )
     calls: list[tuple[str, str, Any]] = field(default_factory=list)
-    # Driver CUDA versions with no free host right now (pod creation answers "no instances").
-    no_capacity: set[str] = field(default_factory=set)
+    # CUDA versions with a free machine, per (GPU id, cloud); default: 12.8, 12.9 and 13.0.
+    free: dict[tuple[str, str], list[str]] = field(default_factory=dict)
+    # Versions the catalog lists as free but whose last machine is taken at create time.
+    taken_at_create: set[str] = field(default_factory=set)
+    catalog: list[dict[str, Any]] = field(default_factory=lambda: list(CATALOG))
     _ids: itertools.count = field(default_factory=lambda: itertools.count(1))
 
     def transport(self) -> httpx.MockTransport:
         return httpx.MockTransport(self.handle)
 
+    def authorized(self, request: httpx.Request) -> bool:
+        return request.headers.get("authorization") == f"Bearer {RUNPOD_KEY}"
+
+    def new_id(self) -> str:
+        return f"pod{next(self._ids)}"
+
+    def free_versions(self, gpu: dict[str, Any], cloud: str) -> list[str]:
+        if not gpu["secure" if cloud == "SECURE" else "community"]:
+            return []
+        return self.free.get((gpu["id"], cloud), ["12.8", "12.9", "13.0"])
+
+    def catalog_item(self, gpu: dict[str, Any], cloud: str) -> dict[str, Any]:
+        free = self.free_versions(gpu, cloud)
+        return {
+            **gpu,
+            "pool": None,
+            "maxCount": {"secure": 8, "community": 4},
+            "availability": "HIGH" if free else "NONE",
+            "dataCenters": [{"id": "EU-RO-1", "name": "Europe Romania 1", "availability": "HIGH"}]
+            if free
+            else [],
+            "cudaVersions": [{"version": v, "available": v in free} for v in OFFERED_CUDA],
+        }
+
+    def create(self, body: dict[str, Any]) -> httpx.Response:
+        unknown = sorted(set(body) - POD_KEYS) + sorted(set(body.get("gpu") or {}) - GPU_KEYS)
+        if unknown or "name" not in body or "image" not in body or "gpu" not in body:
+            return problem(422, "The request body is invalid.", [f"unknown: {unknown}"])
+        cloud = body.get("cloud", "SECURE")
+        gpu = next((g for g in self.catalog if g["id"] == body["gpu"]["id"]), None)
+        if gpu is None:
+            return problem(400, f"Unknown GPU type {body['gpu']['id']}")
+        allowed = body["gpu"].get("allowedCudaVersions") or []
+        free = [v for v in self.free_versions(gpu, cloud) if v not in self.taken_at_create]
+        if not (set(allowed) & set(free) if allowed else free):
+            return problem(409, "There are no instances currently available")
+        pod_id = self.new_id()
+        self.pods[pod_id] = {
+            "id": pod_id,
+            "name": body["name"],
+            "status": "RUNNING",
+            "actions": ["stop", "terminate"],
+            "image": body["image"],
+            "gpu": {"id": gpu["id"], "count": body["gpu"].get("count", 1)},
+            "cloud": cloud,
+            "cost": gpu["price"]["secure" if cloud == "SECURE" else "community"],
+            "ports": body.get("ports", []),
+            "cudaVersion": next(v for v in free if not allowed or v in allowed),
+            "createdAt": "2026-11-01T10:00:00Z",
+        }
+        return httpx.Response(201, json=self.pods[pod_id])
+
     def handle(self, request: httpx.Request) -> httpx.Response:
-        if request.headers.get("authorization") != f"Bearer {RUNPOD_KEY}":
-            return httpx.Response(401, json={"error": "Unauthorized"})
+        if not self.authorized(request):
+            return problem(401, "Unauthorized")
         body = json.loads(request.content) if request.content else None
         self.calls.append((request.method, request.url.path, body))
-        host, path = request.url.host, request.url.path
-        if host == "api.runpod.io":
-            query = body["query"]
-            if "gpuTypes" in query:
-                return httpx.Response(
-                    200,
-                    json={
-                        "data": {
-                            "gpuTypes": [
-                                {
-                                    "id": "NVIDIA L4",
-                                    "displayName": "L4",
-                                    "memoryInGb": 24,
-                                    "securePrice": 0.43,
-                                    "communityPrice": 0.39,
-                                },
-                                {
-                                    "id": "NVIDIA H100 80GB HBM3",
-                                    "displayName": "H100 SXM",
-                                    "memoryInGb": 80,
-                                    "securePrice": 2.99,
-                                    "communityPrice": None,
-                                },
-                            ]
-                        }
-                    },
-                )
+        host, path, query = request.url.host, request.url.path, request.url.params
+        if host == "api.runpod.io" and path == "/graphql":
             return httpx.Response(
                 200, json={"data": {"myself": {"clientBalance": 12.5, "currentSpendPerHr": 0.43}}}
             )
@@ -91,65 +165,60 @@ class FakeRunPod:
             return httpx.Response(
                 200, json={"jobs": {"inQueue": 0}, "workers": {"idle": 0, "running": 0}}
             )
-        if path == "/v1/pods" and request.method == "GET":
-            return httpx.Response(200, json=list(self.pods.values()))
-        if path == "/v1/pods" and request.method == "POST":
-            allowed = body.get("allowedCudaVersions") or []
-            # Like RunPod's API: every value is checked against its OpenAPI enums.
-            if any(v not in REST_CUDA for v in allowed) or any(
-                g not in REST_GPU_IDS for g in body.get("gpuTypeIds") or []
-            ):
-                return httpx.Response(400, json={"error": SCHEMA_ERROR})
-            if allowed and all(v in self.no_capacity for v in allowed):
+        empty_page = {"nextCursor": None, "hasNextPage": False}
+        if path.startswith("/v2/catalog/gpus"):
+            if query.get("include") != "AVAILABILITY" or query.get("product") != "POD":
+                return problem(400, "include=AVAILABILITY needs product")
+            cloud = query.get("cloud", "SECURE")
+            if path == "/v2/catalog/gpus":
                 return httpx.Response(
-                    500,
-                    json={
-                        "error": "There are no longer any instances available with the "
-                        "requested specifications. Please refresh and try again."
-                    },
+                    200, json={"gpus": [self.catalog_item(g, cloud) for g in self.catalog]}
                 )
-            pod_id = f"pod{next(self._ids)}"
-            self.pods[pod_id] = {
-                "id": pod_id,
-                "name": body["name"],
-                "desiredStatus": "RUNNING",
-                "imageName": body["imageName"],
-                "gpuCount": body["gpuCount"],
-                "costPerHr": 0.43,
-                "ports": body["ports"],
-                "gpu": {"id": body["gpuTypeIds"][0], "displayName": "L4"},
-            }
-            return httpx.Response(200, json=self.pods[pod_id])
-        if path.startswith("/v1/pods/"):
+            gpu_id = path.removeprefix("/v2/catalog/gpus/")
+            gpu = next((g for g in self.catalog if g["id"] == gpu_id), None)
+            if gpu is None:
+                return problem(404, "GPU type not found")
+            return httpx.Response(200, json=self.catalog_item(gpu, cloud))
+        if path == "/v2/pods" and request.method == "GET":
+            return httpx.Response(
+                200, json={"pods": list(self.pods.values()), "pagination": empty_page}
+            )
+        if path == "/v2/pods" and request.method == "POST":
+            return self.create(body or {})
+        if path.startswith("/v2/pods/"):
             parts = path.split("/")
             pod_id = parts[3]
             if pod_id not in self.pods:
-                return httpx.Response(404, json={"error": "pod not found"})
+                return problem(404, "The requested Pod does not exist.")
             if request.method == "GET" and len(parts) == 4:
                 return httpx.Response(200, json=self.pods[pod_id])
             if request.method == "DELETE":
                 self.pods.pop(pod_id)
-            elif parts[-1] == "stop":
-                self.pods[pod_id]["desiredStatus"] = "EXITED"
-            elif parts[-1] == "start":
-                self.pods[pod_id]["desiredStatus"] = "RUNNING"
-            return httpx.Response(200, json={})
-        if path == "/v1/endpoints":
-            return httpx.Response(200, json=list(self.endpoints.values()))
-        if path.startswith("/v1/endpoints/"):
+                return httpx.Response(204)
+            if parts[-1] == "action":
+                status = {"stop": "EXITED", "start": "RUNNING", "terminate": "TERMINATED"}
+                self.pods[pod_id]["status"] = status[body["action"]]
+                return httpx.Response(200, json=self.pods[pod_id])
+            return problem(404, "Not found")
+        if path == "/v2/serverless":
+            return httpx.Response(
+                200, json={"endpoints": list(self.endpoints.values()), "pagination": empty_page}
+            )
+        if path.startswith("/v2/serverless/"):
             endpoint_id = path.split("/")[3]
             if request.method == "PATCH":
                 self.endpoints[endpoint_id].update(body)
-            else:
-                self.endpoints.pop(endpoint_id, None)
-            return httpx.Response(200, json={})
-        return httpx.Response(404, json={"error": "unknown"})
+                return httpx.Response(200, json=self.endpoints[endpoint_id])
+            self.endpoints.pop(endpoint_id, None)
+            return httpx.Response(204)
+        return problem(404, "unknown")
 
 
 class FakeSandbox:
-    def __init__(self, object_id: str):
+    def __init__(self, object_id: str, tags: dict[str, str] | None = None):
         self.object_id = object_id
         self.code: int | None = None
+        self.tags = tags or {}
 
 
 class FakeModalSDK:
@@ -166,11 +235,15 @@ class FakeModalSDK:
     async def app(self, client):
         return type("App", (), {"app_id": "ap-1"})()
 
-    async def list(self, client, app):
-        return list(self.sandboxes.values())
+    async def list(self, client, app, tags=None):
+        return [
+            sb
+            for sb in self.sandboxes.values()
+            if all(sb.tags.get(k) == v for k, v in (tags or {}).items())
+        ]
 
     async def create(self, client, app, spec):
-        sb = FakeSandbox(f"sb-{next(self._ids)}")
+        sb = FakeSandbox(f"sb-{next(self._ids)}", spec.tags)
         self.sandboxes[sb.object_id] = sb
         self.created.append(spec)
         return sb
@@ -239,8 +312,8 @@ async def test_runpod_workload_lifecycle(user: Api, runpod: FakeRunPod):
     created = await user.post("/api/gpu/runpod/workloads", json={**spec, "confirm_billing": True})
     assert created.status_code == 201, created.text
     pod_id = created.json()["id"]
-    sent = next(c for c in runpod.calls if c[0] == "POST" and c[1] == "/v1/pods")[2]
-    assert sent["gpuTypeIds"] == ["NVIDIA L4"] and sent["ports"] == ["8188/http"]
+    sent = next(c for c in runpod.calls if c[0] == "POST" and c[1] == "/v2/pods")[2]
+    assert sent["gpu"] == {"id": "NVIDIA L4", "count": 1} and sent["ports"] == ["8188/http"]
     listing = (await user.get("/api/gpu/runpod/workloads")).json()["items"]
     assert listing[0]["status"] == "running" and listing[0]["from_studio"] is True
     assert listing[0]["urls"] == [f"https://{pod_id}-8188.proxy.runpod.net"]
@@ -277,7 +350,7 @@ async def test_runpod_endpoints(user: Api, runpod: FakeRunPod):
         json={"workers_min": 1, "workers_max": 3, "confirm_billing": True},
     )
     assert r.status_code == 200
-    assert runpod.endpoints["ep1"]["workersMax"] == 3
+    assert runpod.endpoints["ep1"]["workers"]["max"] == 3
     assert (await user.delete("/api/gpu/runpod/endpoints/ep1")).status_code == 200
 
 
@@ -328,36 +401,20 @@ async def test_gpu_is_private(user: Api, runpod: FakeRunPod):
 
 
 async def test_runpod_requests_get_through_cloudflare():
-    """RunPod's GraphQL API sits behind Cloudflare, which refuses library User-Agents: the
-    studio sends its own, and a Cloudflare block page is reported as such (not as a wrong
-    key)."""
+    """RunPod's API sits behind Cloudflare, which refuses library User-Agents: the studio
+    sends its own, and a Cloudflare block page is reported as such (not as a wrong key)."""
+    fake = FakeRunPod()
     seen: list[httpx.Request] = []
 
     def answer(request: httpx.Request) -> httpx.Response:
         seen.append(request)
-        return httpx.Response(
-            200,
-            json={
-                "data": {
-                    "gpuTypes": [
-                        {
-                            "id": "NVIDIA L4",
-                            "displayName": "L4",
-                            "memoryInGb": 24,
-                            "securePrice": 0.43,
-                            "communityPrice": None,
-                            "manufacturer": "Nvidia",
-                        }
-                    ]
-                }
-            },
-        )
+        return fake.handle(request)
 
     creds = {"api_key": RUNPOD_KEY}
     types = await RunPodProvider(transport=httpx.MockTransport(answer)).gpu_types(creds)
-    assert seen[0].headers["user-agent"].startswith("ai-image-studio/")
-    assert "manufacturer" in json.loads(seen[0].content)["query"]
-    assert types[0].manufacturer == "Nvidia" and types[0].price_secure == 0.43
+    assert all(r.headers["user-agent"].startswith("ai-image-studio/") for r in seen)
+    assert seen[0].url.path == "/v2/catalog/gpus"
+    assert types[0].manufacturer == "NVIDIA" and types[0].price_secure == 0.43
 
     def blocked(request: httpx.Request) -> httpx.Response:
         return httpx.Response(
@@ -372,62 +429,24 @@ async def test_runpod_requests_get_through_cloudflare():
     assert "Cloudflare" in err.value.message and "1010" in err.value.message
 
 
-async def test_runpod_sends_only_values_its_api_accepts():
-    """RunPod checks requests against its OpenAPI spec: the studio reads the spec's lists
-    (live when reachable, else the checked-in ones) and sends only accepted GPU types and CUDA
-    versions; GPU types the API does not accept are not offered."""
-    from app.gpu import runpod
-
-    live = {
-        "components": {
-            "schemas": {
-                "PodCreateInput": {
-                    "properties": {
-                        "gpuTypeIds": {"items": {"enum": ["NVIDIA L4", "NVIDIA New GPU"]}},
-                        "allowedCudaVersions": {"items": {"enum": ["13.0", "13.1"]}},
-                    }
-                }
-            }
-        }
-    }
-    bodies: list[dict] = []
-
-    def answer(request: httpx.Request) -> httpx.Response:
-        if request.url.path.endswith("/openapi.json"):
-            return httpx.Response(200, json=live)
-        if request.url.host == "api.runpod.io":
-            return httpx.Response(
-                200,
-                json={
-                    "data": {
-                        "gpuTypes": [
-                            {"id": i, "displayName": i, "memoryInGb": 48, "securePrice": 1.0}
-                            for i in ("NVIDIA L4", "NVIDIA New GPU", "NVIDIA Old GPU")
-                        ]
-                    }
-                },
-            )
-        bodies.append(json.loads(request.content))
-        return httpx.Response(200, json={"id": "pod-x", "desiredStatus": "RUNNING"})
-
-    creds = {"api_key": RUNPOD_KEY}
-    runpod.clear_spec_cache()
-    try:
-        provider = RunPodProvider(transport=httpx.MockTransport(answer))
-        assert [g.id for g in await provider.gpu_types(creds)] == ["NVIDIA L4", "NVIDIA New GPU"]
-        spec = WorkloadSpec(
-            name="t", image="img", gpu_type="NVIDIA New GPU", allowed_cuda_versions=["13.0", "13.2"]
-        )
-        await provider.create_workload(creds, spec)
-        assert bodies[-1]["allowedCudaVersions"] == ["13.0"]
-        with pytest.raises(GPUError) as err:
-            await provider.create_workload(
-                creds, WorkloadSpec(name="t", image="img", gpu_type="NVIDIA Old GPU")
-            )
-        assert err.value.code == "invalid_request" and len(bodies) == 1
-    finally:
-        runpod.clear_spec_cache()
-    # Without the live spec, the lists checked into the studio are used.
-    offline = RunPodProvider(transport=httpx.MockTransport(lambda r: httpx.Response(404)))
-    assert await offline.accepted_cuda(creds, ["12.8", "13.0", "13.3"]) == ["12.8", "13.0"]
-    runpod.clear_spec_cache()
+async def test_runpod_catalog_shows_only_free_gpus(user: Api, runpod: FakeRunPod):
+    """The GPU list comes from RunPod's catalog per cloud: price, stock and the CUDA versions
+    with free machines. A GPU counts as free only when a machine with a driver the task's
+    image runs on is free; AMD GPUs are never offered."""
+    await user.put("/api/gpu/providers/runpod", json={"api_key": RUNPOD_KEY})
+    # Secure Cloud: only old-driver machines free; Community: 12.8 free.
+    runpod.free[("NVIDIA L4", "SECURE")] = ["12.4"]
+    runpod.free[("NVIDIA L4", "COMMUNITY")] = ["12.8"]
+    runpod.free[("NVIDIA H100 80GB HBM3", "SECURE")] = ["13.0"]
+    items = (await user.get("/api/gpu/runpod/gpu-types?purpose=comfyui")).json()["items"]
+    by_id = {g["id"]: g for g in items}
+    assert "AMD Instinct MI300X OAM" not in by_id
+    l4 = by_id["NVIDIA L4"]
+    assert l4["stock_secure"] == "NONE" and l4["stock_community"] == "HIGH"
+    assert l4["price_community"] == 0.39 and l4["cuda_community"] == ["12.8"]
+    h100 = by_id["NVIDIA H100 80GB HBM3"]
+    assert h100["stock_secure"] == "HIGH" and h100["price_community"] is None
+    # Training needs a CUDA 13 machine: the L4 in Community (12.8 only) does not fit.
+    training = (await user.get("/api/gpu/runpod/gpu-types?purpose=training")).json()["items"]
+    l4t = next(g for g in training if g["id"] == "NVIDIA L4")
+    assert l4t["stock_community"] == "NONE"

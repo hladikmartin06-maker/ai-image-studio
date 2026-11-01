@@ -70,6 +70,8 @@ def conn_json(conn: ComfyConnection) -> dict[str, Any]:
         "last_checked_at": iso(conn.last_checked_at),
         "info": info,
         "deploy": d,
+        # Spent so far and time left in the current session (estimate).
+        "session": deploy.session_estimate(d) if conn.auth_type == "agent" else None,
         "file_capability": file_capability(conn),
         "created_at": iso(conn.created_at),
     }
@@ -86,7 +88,7 @@ def _fail(exc: ComfyError):
 
 def _gpu_fail(exc: GPUError):
     status = 400 if exc.code in ("invalid_credentials", "invalid_request") else 502
-    if exc.code == "unavailable":
+    if exc.code in ("unavailable", "price_changed"):
         status = 409
     return api_error(status, exc.code, exc.message)
 
@@ -270,10 +272,17 @@ class DeployBody(BaseModel):
     gpu_type: str = Field(min_length=1, max_length=80)
     gpu_count: int = Field(default=1, ge=1, le=8)
     cloud_type: Literal["SECURE", "COMMUNITY"] = "SECURE"
-    volume_gb: int = Field(default=120, ge=40, le=2000)
-    container_disk_gb: int = Field(default=50, ge=20, le=500)
+    # Small enough that many machines fit (ComfyUI and PyTorch are in the image; the volume
+    # holds ComfyUI's copy, Krea 2 Turbo and RAW and LoRAs).
+    volume_gb: int = Field(default=80, ge=40, le=2000)
+    container_disk_gb: int = Field(default=30, ge=20, le=500)
     auto_stop_minutes: int | None = Field(default=30, ge=0, le=1440)
-    timeout_minutes: int = Field(default=720, ge=10, le=1440)
+    # The session: the GPU stops after this long, or once the estimated spending reaches the
+    # limit (USD), whichever comes first.
+    session_minutes: int = Field(default=120, ge=15, le=1440)
+    spend_limit: float | None = Field(default=None, gt=0, le=10000)
+    # The hourly price the owner confirmed; nothing starts at another price.
+    confirmed_price: float | None = Field(default=None, ge=0)
     confirm_billing: bool = False
 
 
@@ -301,11 +310,18 @@ async def deploy_comfyui(
             "volume_gb": body.volume_gb,
             "container_disk_gb": body.container_disk_gb,
             "auto_stop_minutes": body.auto_stop_minutes or None,
-            "timeout_minutes": body.timeout_minutes,
+            "session_minutes": body.session_minutes,
+            "spend_limit": body.spend_limit,
+            "confirmed_price": body.confirmed_price,
         },
     )
     db.add(conn)
     await db.commit()
+    if deploy.creates_in_background(conn):
+        deploy.mark_creating(conn)
+        await db.commit()
+        deploy.create_later(conn.id)
+        return conn_json(conn)
     try:
         await deploy.launch(db, conn)
     except GPUError as exc:

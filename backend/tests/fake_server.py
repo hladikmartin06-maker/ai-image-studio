@@ -8,7 +8,7 @@ Then set in backend/.env:
 Any API key that starts with "test-" is accepted. Prompts containing "fail" fail.
 The images it returns are generated test patterns, clearly not AI output.
 
-RunPod: also set RUNPOD_REST_URL=http://127.0.0.1:8900/runpod/rest/v1,
+RunPod: also set RUNPOD_API_URL=http://127.0.0.1:8900/runpod/v2,
 RUNPOD_GRAPHQL_URL=http://127.0.0.1:8900/runpod/graphql and
 RUNPOD_PROXY_URL=http://127.0.0.1:8900/runpod/proxy/{pod_id}/{port}. A pod created with the
 studio agent in its environment runs that (real) agent as a local process, with a fake
@@ -278,23 +278,13 @@ async def chat_completions(request: Request):
     return StreamingResponse(stream(), media_type="text/event-stream")
 
 
-# --- RunPod stand-in (set RUNPOD_REST_URL / RUNPOD_GRAPHQL_URL / RUNPOD_SERVERLESS_URL) -----
-
-_pods: dict[str, dict[str, Any]] = {}
-_endpoints: dict[str, dict[str, Any]] = {
-    "ep-sdxl": {
-        "id": "ep-sdxl",
-        "name": "sdxl-worker",
-        "gpuTypeIds": ["NVIDIA L4"],
-        "workersMin": 0,
-        "workersMax": 2,
-    }
-}
+# --- RunPod stand-in (set RUNPOD_API_URL / RUNPOD_GRAPHQL_URL / RUNPOD_SERVERLESS_URL) ------
+# REST API v2 (pods, actions, catalog with availability, serverless): the same fake the tests
+# use (tests/test_gpu.py FakeRunPod), with this server's GPU list and "test-" keys.
 
 
-@app.post("/runpod/graphql")
-async def runpod_graphql(request: Request):
-    # Like Cloudflare in front of api.runpod.io: library User-Agents are refused (error 1010).
+def _cloudflare_refuses(request: Request) -> Response | None:
+    """Like Cloudflare in front of api.runpod.io: library User-Agents are refused (1010)."""
     agent = request.headers.get("user-agent", "").lower()
     if agent.startswith(("python-httpx", "python-urllib", "python-requests")):
         return Response(
@@ -303,134 +293,108 @@ async def runpod_graphql(request: Request):
             headers={"server": "cloudflare"},
             media_type="text/plain",
         )
+    return None
+
+
+def _runpod_fake():
+    from tests.test_gpu import FakeRunPod
+
+    def gpu(gpu_id, name, memory, secure, community, maker="NVIDIA"):
+        return {
+            "id": gpu_id,
+            "name": name,
+            "manufacturer": maker,
+            "memory": memory,
+            "secure": secure is not None,
+            "community": community is not None,
+            "price": {"secure": secure or 0, "community": community or 0},
+        }
+
+    class ServerRunPod(FakeRunPod):
+        def authorized(self, request: httpx.Request) -> bool:
+            return request.headers.get("authorization", "").startswith("Bearer test-")
+
+        def new_id(self) -> str:
+            return f"pod{uuid.uuid4().hex[:10]}"  # unique across restarts of this fake
+
+    fake = ServerRunPod(
+        catalog=[
+            gpu("NVIDIA GeForce RTX 3070", "RTX 3070", 8, 0.13, 0.07),
+            gpu("NVIDIA RTX A4000", "RTX A4000", 16, 0.25, 0.17),
+            gpu("NVIDIA L4", "L4", 24, 0.43, 0.39),
+            gpu("NVIDIA GeForce RTX 4090", "RTX 4090", 24, 0.69, 0.34),
+            gpu("NVIDIA A40", "A40", 48, None, 0.35),
+            gpu("NVIDIA RTX 6000 Ada Generation", "RTX 6000 Ada", 48, 0.77, 0.74),
+            gpu("NVIDIA H100 80GB HBM3", "H100 SXM", 80, 2.99, None),
+            gpu("AMD Instinct MI300X OAM", "MI300X", 192, 2.49, None, maker="AMD"),
+        ]
+    )
+    # Fully booked right now / only old drivers free in Secure Cloud / Community only.
+    fake.free[("NVIDIA RTX 6000 Ada Generation", "SECURE")] = []
+    fake.free[("NVIDIA RTX 6000 Ada Generation", "COMMUNITY")] = []
+    fake.free[("NVIDIA GeForce RTX 4090", "SECURE")] = ["12.4"]
+    fake.free[("NVIDIA GeForce RTX 4090", "COMMUNITY")] = ["12.8", "13.0"]
+    fake.endpoints = {
+        "ep-sdxl": {
+            "id": "ep-sdxl",
+            "name": "sdxl-worker",
+            "gpu": {"pools": ["ADA_24"]},
+            "workers": {"min": 0, "max": 2},
+        }
+    }
+    return fake
+
+
+_runpod = _runpod_fake()
+
+
+async def _to_fake(request: Request, path: str) -> Response:
+    blocked = _cloudflare_refuses(request)
+    if blocked is not None:
+        return blocked
+    content = await request.body()
+    fake_request = httpx.Request(
+        request.method,
+        f"https://api.runpod.io{path}",
+        params=request.query_params,
+        content=content,
+        headers={k: v for k, v in request.headers.items() if k.lower() == "authorization"},
+    )
+    answer = _runpod.handle(fake_request)
+    return Response(
+        answer.content,
+        status_code=answer.status_code,
+        media_type=answer.headers.get("content-type", "application/json"),
+    )
+
+
+@app.post("/runpod/graphql")
+async def runpod_graphql(request: Request):
+    blocked = _cloudflare_refuses(request)
+    if blocked is not None:
+        return blocked
     if not _authorized(request):
         return _unauthorized()
-    query = (await request.json())["query"]
-    if "gpuTypes" in query:
-        return {
-            "data": {
-                "gpuTypes": [
-                    {
-                        "id": "NVIDIA GeForce RTX 3070",
-                        "displayName": "RTX 3070",
-                        "memoryInGb": 8,
-                        "securePrice": 0.13,
-                        "manufacturer": "Nvidia",
-                        "communityPrice": 0.07,
-                    },
-                    {
-                        "id": "NVIDIA RTX A4000",
-                        "displayName": "RTX A4000",
-                        "memoryInGb": 16,
-                        "securePrice": 0.25,
-                        "manufacturer": "Nvidia",
-                        "communityPrice": 0.17,
-                    },
-                    {
-                        "id": "NVIDIA L4",
-                        "displayName": "L4",
-                        "memoryInGb": 24,
-                        "securePrice": 0.43,
-                        "manufacturer": "Nvidia",
-                        "communityPrice": 0.39,
-                    },
-                    {
-                        "id": "NVIDIA GeForce RTX 4090",
-                        "displayName": "RTX 4090",
-                        "memoryInGb": 24,
-                        "securePrice": 0.69,
-                        "manufacturer": "Nvidia",
-                        "communityPrice": 0.34,
-                    },
-                    {
-                        "id": "NVIDIA H100 80GB HBM3",
-                        "displayName": "H100 SXM",
-                        "memoryInGb": 80,
-                        "securePrice": 2.99,
-                        "manufacturer": "Nvidia",
-                        "communityPrice": None,
-                    },
-                    {
-                        "id": "AMD Instinct MI300X OAM",
-                        "displayName": "MI300X",
-                        "memoryInGb": 192,
-                        "securePrice": 2.49,
-                        "manufacturer": "AMD",
-                        "communityPrice": None,
-                    },
-                    {
-                        # Listed by GraphQL but not accepted by the pod API: never offered.
-                        "id": "NVIDIA A100-SXM4-40GB",
-                        "displayName": "A100 SXM 40GB",
-                        "memoryInGb": 40,
-                        "securePrice": 1.19,
-                        "manufacturer": "Nvidia",
-                        "communityPrice": None,
-                    },
-                    {
-                        "id": "NVIDIA A40",
-                        "displayName": "A40",
-                        "memoryInGb": 48,
-                        "securePrice": None,
-                        "manufacturer": "Nvidia",
-                        "communityPrice": 0.35,
-                    },
-                ]
-            }
-        }
-    spend = sum(p["costPerHr"] for p in _pods.values() if p["desiredStatus"] == "RUNNING")
+    spend = sum(p["cost"] for p in _runpod.pods.values() if p["status"] == "RUNNING")
     return {"data": {"myself": {"clientBalance": 18.4, "currentSpendPerHr": spend}}}
 
 
-@app.get("/runpod/rest/v1/pods")
-async def runpod_pods(request: Request):
-    if not _authorized(request):
-        return _unauthorized()
-    return list(_pods.values())
-
-
-@app.post("/runpod/rest/v1/pods")
-async def runpod_create(request: Request):
-    if not _authorized(request):
-        return _unauthorized()
-    body = await request.json()
-    # Like RunPod's API: values outside its OpenAPI enums are refused.
-    from app.gpu.runpod import REST_CUDA, REST_GPU_IDS
-
-    if any(v not in REST_CUDA for v in body.get("allowedCudaVersions") or []) or any(
-        g not in REST_GPU_IDS for g in body.get("gpuTypeIds") or []
-    ):
-        return JSONResponse(
-            {
-                "error": "At #/paths/pods/post for POST https://rest.runpod.io/v1/pods, The "
-                "request body is defined as an object. However, it does not meet the schema "
-                "requirements of the specification."
-            },
-            status_code=400,
-        )
-    pod_id = f"pod{uuid.uuid4().hex[:10]}"  # unique across restarts of this fake
-    _pods[pod_id] = {
-        "id": pod_id,
-        "name": body["name"],
-        "desiredStatus": "RUNNING",
-        "imageName": body["imageName"],
-        "gpuCount": body["gpuCount"],
-        "costPerHr": 0.43 * body["gpuCount"],
-        "ports": body.get("ports", []),
-        "gpu": {"id": body["gpuTypeIds"][0], "displayName": body["gpuTypeIds"][0]},
-    }
-    _bodies[pod_id] = body
-    _spawn(pod_id)
-    return _pods[pod_id]
-
-
-@app.get("/runpod/rest/v1/pods/{pod_id}")
-async def runpod_get(pod_id: str, request: Request):
-    if not _authorized(request):
-        return _unauthorized()
-    if pod_id not in _pods:
-        return JSONResponse({"error": "pod not found"}, status_code=404)
-    return _pods[pod_id]
+@app.api_route("/runpod/v2/{path:path}", methods=["GET", "POST", "PATCH", "DELETE"])
+async def runpod_v2(path: str, request: Request):
+    body = json.loads(await request.body() or b"null")
+    response = await _to_fake(request, f"/v2/{path}")
+    parts = path.split("/")
+    if request.method == "POST" and path == "pods" and response.status_code == 201:
+        pod_id = json.loads(response.body)["id"]
+        _bodies[pod_id] = body
+        _spawn(pod_id)
+    elif parts[0] == "pods" and len(parts) >= 2 and response.status_code in (200, 204):
+        action = (body or {}).get("action") if parts[-1] == "action" else None
+        if request.method == "DELETE" or action in ("stop", "terminate"):
+            _kill(parts[1])
+        elif action == "start":
+            _spawn(parts[1])
+    return response
 
 
 # --- pods that run the studio agent locally ----------------------------------------------
@@ -474,7 +438,7 @@ def _spawn(pod_id: str) -> None:
     (base / "workspace").mkdir(parents=True, exist_ok=True)
     log = (base / "container.log").open("ab")
     proc = subprocess.Popen(
-        [*body["dockerEntrypoint"], *body["dockerStartCmd"]],
+        [*body["entrypoint"], *body["cmd"]],
         env=env,
         stdout=log,
         stderr=subprocess.STDOUT,
@@ -494,7 +458,7 @@ def _kill(pod_id: str) -> None:
 )
 async def runpod_proxy(pod_id: str, port: int, path: str, request: Request):
     entry = _procs.get(pod_id)
-    if entry is None or _pods.get(pod_id, {}).get("desiredStatus") != "RUNNING":
+    if entry is None or _runpod.pods.get(pod_id, {}).get("status") != "RUNNING":
         return Response("Bad Gateway", status_code=502)
     headers = {
         k: v
@@ -518,44 +482,6 @@ async def runpod_proxy(pod_id: str, port: int, path: str, request: Request):
         if k.lower() in ("content-type", "content-range", "x-next-offset", "accept-ranges")
     }
     return Response(upstream.content, status_code=upstream.status_code, headers=keep)
-
-
-@app.post("/runpod/rest/v1/pods/{pod_id}/{action}")
-async def runpod_action(pod_id: str, action: str, request: Request):
-    if not _authorized(request):
-        return _unauthorized()
-    if pod_id not in _pods:
-        return JSONResponse({"error": "pod not found"}, status_code=404)
-    _pods[pod_id]["desiredStatus"] = "RUNNING" if action == "start" else "EXITED"
-    if action == "start":
-        _spawn(pod_id)
-    else:
-        _kill(pod_id)
-    return {}
-
-
-@app.delete("/runpod/rest/v1/pods/{pod_id}")
-async def runpod_delete(pod_id: str, request: Request):
-    if not _authorized(request):
-        return _unauthorized()
-    _pods.pop(pod_id, None)
-    _kill(pod_id)
-    return {}
-
-
-@app.get("/runpod/rest/v1/endpoints")
-async def runpod_endpoints(request: Request):
-    if not _authorized(request):
-        return _unauthorized()
-    return list(_endpoints.values())
-
-
-@app.patch("/runpod/rest/v1/endpoints/{endpoint_id}")
-async def runpod_scale(endpoint_id: str, request: Request):
-    if not _authorized(request):
-        return _unauthorized()
-    _endpoints[endpoint_id].update(await request.json())
-    return {}
 
 
 @app.get("/runpod/serverless/{endpoint_id}/health")

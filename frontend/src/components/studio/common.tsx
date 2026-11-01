@@ -152,42 +152,92 @@ export interface GpuChoice {
   gpu_type: string;
   gpu_count: number;
   cloud_type: "SECURE" | "COMMUNITY";
-  // The provider's hourly price of the chosen GPU, when its API reports one.
+  // The provider's hourly list price of the chosen GPU (RunPod: live; Modal: estimate from
+  // its published list prices), and Modal's CPU/memory on top.
   price_per_hour?: number | null;
+  price_extra?: number | null;
+  price_estimate?: boolean;
+}
+
+/** Hourly price of a GPU choice (GPU + Modal's CPU/memory), or null when unknown. */
+export function hourlyPrice(c: GpuChoice): number | null {
+  return c.price_per_hour != null ? c.price_per_hour + (c.price_extra ?? 0) : null;
 }
 
 /** GPUs with less memory are never offered (the owner's rule). */
 export const MIN_GPU_GB = 24;
 
+type StockLevel = "NONE" | "LOW" | "MEDIUM" | "HIGH";
+const STOCK_RANK: Record<string, number> = { HIGH: 3, MEDIUM: 2, LOW: 1, NONE: 0 };
+
 export function GpuPicker({
   value,
   onChange,
   minMemoryGb,
+  purpose,
 }: {
   value: GpuChoice;
   onChange: (v: GpuChoice) => void;
   minMemoryGb?: number;
+  // What the GPU is for: RunPod reports which GPUs have a free machine whose driver fits it.
+  purpose?: "comfyui" | "training";
 }) {
   const { t, locale } = useI18n();
   const providers = useGPUProviders();
   const connected = (providers.data?.providers ?? []).filter((p) => p.status !== "not_connected");
-  const types = useGpuTypes(value.provider || "runpod", Boolean(value.provider));
-  const price = (g: GpuType) => (value.cloud_type === "COMMUNITY" ? g.price_community : g.price_secure);
-  // Only GPUs that can do the job: 24 GB or more (and at least what this task needs),
-  // smallest and cheapest first. GPUs whose memory the provider does not report stay listed.
-  // NVIDIA only (the studio's images are CUDA images); when the provider reports prices, only
-  // GPUs it offers in the chosen cloud (no price there = cannot be rented there).
+  const types = useGpuTypes(value.provider || "runpod", Boolean(value.provider), purpose);
+  // Only GPUs that can do the job: 24 GB or more (and at least what this task needs), NVIDIA
+  // only (the studio's images are CUDA images), smallest and cheapest first. When the provider
+  // reports availability (RunPod's catalog), only GPUs with a free machine right now: Secure
+  // Cloud first, Community Cloud (its own price) only when Secure has none.
   const floor = Math.max(MIN_GPU_GB, minMemoryGb ?? 0);
   const all = types.data?.items ?? [];
-  const priced = all.some((g) => g.price_secure != null || g.price_community != null);
-  const usable = all
+  const reportsStock = all.some((g) => g.stock_secure != null || g.stock_community != null);
+  type Offer = {
+    key: string;
+    gpu: GpuType;
+    cloud: "SECURE" | "COMMUNITY";
+    price: number | null;
+    stock: StockLevel | null;
+    busy?: boolean;
+  };
+  const fitting = all
     .filter((g) => !g.memory_gb || g.memory_gb >= floor)
-    .filter((g) => (g.manufacturer ?? "").toLowerCase() !== "amd" && !/^amd\b/i.test(g.id) && !/^amd\b/i.test(g.name))
-    .filter((g) => !priced || (price(g) ?? 0) > 0)
-    .sort((a, b) => (a.memory_gb ?? 999) - (b.memory_gb ?? 999) || (price(a) ?? 999) - (price(b) ?? 999));
-  const selected = types.data?.items.find((g) => g.id === value.gpu_type);
+    .filter((g) => (g.manufacturer ?? "").toLowerCase() !== "amd" && !/^amd\b/i.test(g.id) && !/^amd\b/i.test(g.name));
+  const offers: Offer[] = [];
+  for (const g of fitting) {
+    if (!reportsStock) {
+      const p = value.cloud_type === "COMMUNITY" ? g.price_community : g.price_secure;
+      const priced = all.some((x) => x.price_secure != null || x.price_community != null);
+      if (!priced || (p ?? 0) > 0) offers.push({ key: g.id, gpu: g, cloud: value.cloud_type, price: p, stock: null });
+      continue;
+    }
+    const secure = (g.stock_secure ?? "NONE") as StockLevel;
+    const community = (g.stock_community ?? "NONE") as StockLevel;
+    if (secure !== "NONE" && (g.price_secure ?? 0) > 0) {
+      offers.push({ key: `${g.id}|SECURE`, gpu: g, cloud: "SECURE", price: g.price_secure, stock: secure });
+    } else if (community !== "NONE" && (g.price_community ?? 0) > 0) {
+      offers.push({ key: `${g.id}|COMMUNITY`, gpu: g, cloud: "COMMUNITY", price: g.price_community, stock: community });
+    }
+  }
+  offers.sort(
+    (a, b) =>
+      (a.gpu.memory_gb ?? 999) - (b.gpu.memory_gb ?? 999) ||
+      (a.price ?? 999) - (b.price ?? 999) ||
+      STOCK_RANK[b.stock ?? "NONE"] - STOCK_RANK[a.stock ?? "NONE"],
+  );
+  // GPUs without a free machine that fits are listed too, but cannot be picked.
+  const busy: Offer[] = reportsStock
+    ? fitting
+        .filter((g) => !offers.some((o) => o.gpu.id === g.id))
+        .map((g) => ({ key: `${g.id}|busy`, gpu: g, cloud: "SECURE", price: g.price_secure, stock: "NONE", busy: true }))
+    : [];
+  const estimates = all.some((g) => g.price_estimate);
+  const currentKey = reportsStock ? (value.gpu_type ? `${value.gpu_type}|${value.cloud_type}` : "") : value.gpu_type;
+  const selected = offers.find((o) => o.key === currentKey);
   const providerName = connected.find((p) => p.key === value.provider)?.name ?? value.provider;
-  const selectedPrice = selected ? price(selected) : null;
+  const stockLabel = (s: StockLevel | null) =>
+    s === "HIGH" ? t("gpu.stock.high") : s === "MEDIUM" ? t("gpu.stock.medium") : s === "LOW" ? t("gpu.stock.low") : "";
 
   if (providers.isLoading) return <Spinner />;
   if (!connected.length) {
@@ -209,7 +259,7 @@ export function GpuPicker({
             label={t("gpu.provider")}
             value={value.provider || null}
             placeholder={t("gpu.chooseProvider")}
-            onChange={(p) => onChange({ ...value, provider: p as GpuChoice["provider"], gpu_type: "" })}
+            onChange={(p) => onChange({ ...value, provider: p as GpuChoice["provider"], gpu_type: "", cloud_type: "SECURE" })}
             options={connected.map((p) => ({ value: p.key, label: p.name }))}
           />
         </Field>
@@ -219,17 +269,34 @@ export function GpuPicker({
           ) : (
             <Select
               label={t("gpu.gpuType")}
-              value={value.gpu_type || null}
+              value={selected ? selected.key : null}
               placeholder={t("gpu.chooseGpu")}
-              onChange={(g) => {
-                const found = all.find((x) => x.id === String(g));
-                onChange({ ...value, gpu_type: String(g), price_per_hour: found ? (price(found) ?? null) : null });
+              onChange={(key) => {
+                const offer = offers.find((o) => o.key === String(key));
+                if (!offer) return;
+                onChange({
+                  ...value,
+                  gpu_type: offer.gpu.id,
+                  cloud_type: offer.cloud,
+                  price_per_hour: offer.price,
+                  price_extra: offer.gpu.price_extra ?? null,
+                  price_estimate: Boolean(offer.gpu.price_estimate),
+                });
               }}
-              options={usable.map((g) => ({
-                value: g.id,
-                label: `${g.name}${g.memory_gb ? ` · ${g.memory_gb} GB` : ""}${
-                  price(g) !== null && price(g) !== undefined ? ` · ${formatMoney(price(g), locale)}/h` : ""
-                }`,
+              options={[...offers, ...busy].map((o) => ({
+                value: o.key,
+                disabled: o.busy,
+                label: [
+                  o.gpu.name,
+                  o.gpu.memory_gb ? `${o.gpu.memory_gb} GB` : null,
+                  o.price != null
+                    ? `${o.gpu.price_estimate ? "≈ " : ""}${formatMoney(o.price, locale)}/h${o.gpu.price_extra ? ` + ${t("gpu.cpuRam")}` : ""}`
+                    : null,
+                  o.cloud === "COMMUNITY" && reportsStock && !o.busy ? t("gpu.community") : null,
+                  o.busy ? t("gpu.booked") : stockLabel(o.stock) || null,
+                ]
+                  .filter(Boolean)
+                  .join(" · "),
               }))}
             />
           )}
@@ -243,13 +310,29 @@ export function GpuPicker({
             {t("cf.tryAgain")}
           </Button>
         </Notice>
-      ) : value.provider && types.data && !usable.length ? (
-        <Notice tone="warning">{t("gpu.noGpus", { provider: providerName, n: floor })}</Notice>
+      ) : value.provider && types.data && !offers.length ? (
+        <Notice tone="warning">
+          {reportsStock ? t("gpu.noneFree", { provider: providerName, n: floor }) : t("gpu.noGpus", { provider: providerName, n: floor })}
+          <div style={{ marginTop: 10 }}>
+            <Button size="sm" icon={<RotateCcw />} loading={types.isFetching} onClick={() => void types.refetch()}>
+              {t("gpu.refresh")}
+            </Button>
+          </div>
+        </Notice>
       ) : null}
-      {selected && minMemoryGb && selected.memory_gb && selected.memory_gb < minMemoryGb ? (
+      {estimates && value.provider === "modal" ? (
+        <div className="hint">
+          {t("gpu.modalEstimate")}{" "}
+          <a href="https://modal.com/pricing" target="_blank" rel="noreferrer" style={{ color: "var(--accent-text)" }}>
+            modal.com/pricing
+          </a>
+        </div>
+      ) : null}
+      {selected?.cloud === "COMMUNITY" && reportsStock ? <div className="hint">{t("gpu.communityHint")}</div> : null}
+      {selected && minMemoryGb && selected.gpu.memory_gb && selected.gpu.memory_gb < minMemoryGb ? (
         <div className="error-text">{t("gpu.tooSmall", { n: minMemoryGb })}</div>
       ) : null}
-      {selected && !selectedPrice ? <div className="hint">{t("gpu.noPrice")}</div> : null}
+      {selected && !selected.price ? <div className="hint">{t("gpu.noPrice")}</div> : null}
     </div>
   );
 }
