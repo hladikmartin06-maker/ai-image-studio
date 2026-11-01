@@ -1,5 +1,6 @@
 "use client";
 
+import { useQueryClient } from "@tanstack/react-query";
 import { useRouter } from "next/navigation";
 import { useCallback } from "react";
 import { toast } from "sonner";
@@ -7,9 +8,16 @@ import { toast } from "sonner";
 import { useConfirm } from "@/components/ui";
 import { ApiError, downloadUrl } from "@/lib/api";
 import { useT } from "@/lib/i18n";
-import { useDeleteImage, useRegenerate, useSaveToLibrary } from "@/lib/queries";
+import {
+  patchImageEverywhere,
+  removeGenerationEverywhere,
+  useDeleteGeneration,
+  useDeleteImage,
+  useRegenerate,
+  useSaveToLibrary,
+} from "@/lib/queries";
 import { enhanceInStudio } from "@/lib/studio-bridge";
-import type { StudioImage } from "@/lib/types";
+import type { Generation, StudioImage } from "@/lib/types";
 
 export async function copyText(text: string) {
   try {
@@ -27,6 +35,70 @@ export async function copyText(text: string) {
     area.remove();
     return ok;
   }
+}
+
+// How long "Undo" is offered after a quick delete; the delete is sent only then.
+const UNDO_MS = 6000;
+
+/** One-click delete (no confirmation): the item disappears at once and is deleted after a
+ * few seconds unless "Undo" is pressed. Closing the app before that keeps it. */
+export function useQuickDelete() {
+  const t = useT();
+  const qc = useQueryClient();
+  const removeImage = useDeleteImage();
+  const removeGeneration = useDeleteGeneration();
+
+  const later = useCallback(
+    (hide: () => void, commit: () => Promise<unknown>, message: string) => {
+      hide();
+      let undone = false;
+      const restore = () => {
+        qc.invalidateQueries({ queryKey: ["generations"] });
+        qc.invalidateQueries({ queryKey: ["images"] });
+      };
+      const timer = window.setTimeout(() => {
+        if (undone) return;
+        commit().catch((e: Error) => {
+          toast.error(e.message);
+          restore();
+        });
+      }, UNDO_MS);
+      toast(message, {
+        duration: UNDO_MS,
+        action: {
+          label: t("common.undo"),
+          onClick: () => {
+            undone = true;
+            window.clearTimeout(timer);
+            restore();
+          },
+        },
+      });
+    },
+    [qc, t],
+  );
+
+  const deleteImageQuick = useCallback(
+    (img: StudioImage) =>
+      later(
+        () => patchImageEverywhere(qc, img.id, () => null),
+        () => removeImage.mutateAsync(img.id),
+        t("images.deleted"),
+      ),
+    [later, qc, removeImage, t],
+  );
+
+  const deleteGenerationQuick = useCallback(
+    (gen: Generation) =>
+      later(
+        () => removeGenerationEverywhere(qc, gen.id),
+        () => removeGeneration.mutateAsync(gen.id),
+        t("gen.deleted"),
+      ),
+    [later, qc, removeGeneration, t],
+  );
+
+  return { deleteImageQuick, deleteGenerationQuick };
 }
 
 export function useImageActions() {

@@ -48,7 +48,8 @@ export default function AIModelPage() {
     );
   }
   if (persona.isError || !persona.data) {
-    const missing = persona.error instanceof ApiError && persona.error.status === 404;
+    // 404, or a link with a broken id (422): both mean there is nothing to show.
+    const missing = persona.error instanceof ApiError && (persona.error.status === 404 || persona.error.status === 422);
     return (
       <div className="page">
         {back}

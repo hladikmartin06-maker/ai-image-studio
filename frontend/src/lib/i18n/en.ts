@@ -966,7 +966,7 @@ export const en = {
   "k2.loraRule": "LoRAs trained on RAW work on RAW and Turbo (documented by Krea); LoRAs trained on Turbo with the training adapter only on Turbo. Other architectures are never loaded.",
   "k2.engine": "Engine",
   "k2.engineHosted": "Online models",
-  "k2.engineComfy": "Krea 2 (Mac or own GPU)",
+  "k2.engineComfy": "Krea 2",
   "k2.connectTitle": "Where should Krea 2 run?",
   "k2.connectBody": "Pick one. You can add the other later.",
   "k2.workflow": "Workflow",
@@ -980,7 +980,6 @@ export const en = {
   "k2.insertTrigger": "Add the trigger word",
   "k2.rawOnTurbo": "Trained on RAW, used on Turbo — documented by Krea.",
   "k2.negative": "Negative prompt",
-  "k2.noNegative": "Turbo runs without CFG, so a negative prompt has no effect and is not sent.",
   "k2.steps": "Steps",
   "k2.default": "Default {n}",
   "k2.noConnection": "Choose where Krea 2 runs first.",
@@ -1449,6 +1448,9 @@ export const en = {
   "k2.adultOnHint": "On: nudity and adult content are allowed — fictional adult characters only, never anything with minors. The images are marked 18+ and blurred if Settings say so.",
   "k2.adultShort": "18+",
   "k2.photo": "Photo to start from",
+  "common.undo": "Undo",
+  "gen.deleted": "Generation deleted",
+  "gen.deleteRun": "Delete this generation",
 } as const;
 
 export type MessageKey = keyof typeof en;

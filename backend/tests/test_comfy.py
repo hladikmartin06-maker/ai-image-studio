@@ -985,6 +985,18 @@ async def test_session_time_and_spending_limits_stop_the_gpu(user: Api, no_poll_
         await gpu_runner.tick()
         conn = (await user.get("/api/comfy/connections")).json()["items"][-1]
         assert conn["status"] == "stopped" and conn["deploy"]["stopped_by"] == "time_limit"
+
+        # The pod was removed in RunPod's console meanwhile: at the limit the connection is
+        # simply stopped, not retried every few seconds.
+        r = await user.post(
+            f"/api/comfy/connections/{conn['id']}/start", json={"confirm_billing": True}
+        )
+        assert r.status_code == 200, r.text
+        fake.pods.clear()
+        await started(timedelta(minutes=61))
+        await gpu_runner.tick()
+        conn = (await user.get("/api/comfy/connections")).json()["items"][-1]
+        assert conn["status"] == "stopped" and conn["deploy"]["stopped_by"] == "time_limit"
     finally:
         AgentClient.transport = None
         set_gpu_adapter("runpod", None)

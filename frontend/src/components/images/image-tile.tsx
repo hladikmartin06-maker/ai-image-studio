@@ -1,6 +1,6 @@
 "use client";
 
-import { Check, Download, EyeOff } from "lucide-react";
+import { Check, Download, EyeOff, Trash2 } from "lucide-react";
 import type { CSSProperties, KeyboardEvent, MouseEvent } from "react";
 
 import { IconButton, cx } from "@/components/ui";
@@ -12,6 +12,7 @@ export function ImageTile({
   image,
   onOpen,
   onDownload,
+  onDelete,
   selecting,
   selected,
   onSelect,
@@ -23,6 +24,8 @@ export function ImageTile({
   image: StudioImage;
   onOpen: () => void;
   onDownload: () => void;
+  /** One-click delete (Generate results). */
+  onDelete?: () => void;
   selecting?: boolean;
   selected?: boolean;
   onSelect?: (shift: boolean) => void;
@@ -86,6 +89,11 @@ export function ImageTile({
             <IconButton label={t("common.download")} onMedia onClick={onDownload}>
               <Download />
             </IconButton>
+            {onDelete ? (
+              <IconButton label={t("common.delete")} onMedia onClick={onDelete}>
+                <Trash2 />
+              </IconButton>
+            ) : null}
           </div>
         </div>
         <div className="tile-meta">

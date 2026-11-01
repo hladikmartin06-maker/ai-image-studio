@@ -68,6 +68,11 @@ function StatCard({
   );
 }
 
+/** Where a generation ran: the two image providers or the user's own ComfyUI. */
+function providerName(key: string) {
+  return key === "wavespeed" ? "WaveSpeed" : key === "atlas" ? "Atlas Cloud" : key === "comfyui" ? "ComfyUI" : key;
+}
+
 function ActivityBars({ stats }: { stats: Stats }) {
   const { locale, t } = useI18n();
   const max = Math.max(1, ...stats.activity.map((d) => d.images));
@@ -79,7 +84,7 @@ function ActivityBars({ stats }: { stats: Stats }) {
             key={d.date}
             label={`${new Date(d.date + "T12:00:00").toLocaleDateString(locale, { day: "numeric", month: "short" })} · ${d.images}`}
           >
-            <div data-zero={d.images === 0 || undefined} style={{ height: `${Math.max(3, (d.images / max) * 100)}%` }} />
+            <div className="bar" data-zero={d.images === 0 || undefined} style={{ height: `${Math.max(3, (d.images / max) * 100)}%` }} />
           </Tooltip>
         ))}
       </div>
@@ -304,15 +309,14 @@ export default function DashboardPage() {
           label={t("dash.providerUsageTitle")}
           value={
             s && s.providers.length
-              ? s.providers
-                  .slice()
-                  .sort((a, b) => b.generations - a.generations)
-                  .map((p) => (p.provider === "wavespeed" ? "WaveSpeed" : "Atlas"))[0]
+              ? providerName(
+                  s.providers.slice().sort((a, b) => b.generations - a.generations)[0].provider,
+                )
               : "—"
           }
           foot={
             s && s.providers.length
-              ? s.providers.map((p) => `${p.provider === "wavespeed" ? "WaveSpeed" : "Atlas"} ${p.generations}`).join(" · ")
+              ? s.providers.map((p) => `${providerName(p.provider)} ${p.generations}`).join(" · ")
               : t("dash.noUsage")
           }
           loading={stats.isLoading}

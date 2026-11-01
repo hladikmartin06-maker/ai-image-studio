@@ -344,6 +344,20 @@ export interface CreateGenerationBody {
 }
 
 /** Puts a generation (new or updated) into every cached generation list. */
+/** Takes a generation out of the cached lists at once (deleted, or about to be). */
+export function removeGenerationEverywhere(qc: QueryClient, id: string) {
+  qc.setQueriesData<InfiniteData<Page<Generation>>>({ queryKey: ["generations", "list"] }, (data) => {
+    if (!data) return data;
+    return {
+      ...data,
+      pages: data.pages.map((page) => {
+        const items = page.items.filter((gen) => gen.id !== id);
+        return { ...page, items, total: page.total - (page.items.length - items.length) };
+      }),
+    };
+  });
+}
+
 export function upsertGeneration(qc: QueryClient, gen: Generation) {
   qc.setQueryData(keys.generation(gen.id), gen);
   qc.setQueriesData<InfiniteData<Page<Generation>>>(

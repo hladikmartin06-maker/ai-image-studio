@@ -1,11 +1,11 @@
 "use client";
 
-import { Ban, CircleAlert, Copy, Plug, RefreshCw, SlidersHorizontal, Timer } from "lucide-react";
+import { Ban, CircleAlert, Copy, Plug, RefreshCw, SlidersHorizontal, Timer, Trash2 } from "lucide-react";
 import Link from "next/link";
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
 
-import { copyText, useImageActions } from "@/components/images/actions";
+import { copyText, useImageActions, useQuickDelete } from "@/components/images/actions";
 import { ImageTile } from "@/components/images/image-tile";
 import { StatusBadge } from "@/components/images/status";
 import { Button, IconButton, Notice, Skeleton } from "@/components/ui";
@@ -53,6 +53,7 @@ export function JobCard({
 }) {
   const { t, locale } = useI18n();
   const actions = useImageActions();
+  const quick = useQuickDelete();
   const regenerate = useRegenerate();
   const cancel = useCancelGeneration();
   const running = gen.status === "queued" || gen.status === "processing";
@@ -123,6 +124,11 @@ export function JobCard({
               <RefreshCw />
             </IconButton>
           )}
+          {!running ? (
+            <IconButton label={t("gen.deleteRun")} onClick={() => quick.deleteGenerationQuick(gen)}>
+              <Trash2 />
+            </IconButton>
+          ) : null}
         </div>
       </div>
 
@@ -136,6 +142,7 @@ export function JobCard({
               image={img}
               onOpen={() => onOpen(gen, i)}
               onDownload={() => actions.download(img)}
+              onDelete={() => quick.deleteImageQuick(img)}
               showPrompt={false}
               blurNsfw={blurNsfw}
             />

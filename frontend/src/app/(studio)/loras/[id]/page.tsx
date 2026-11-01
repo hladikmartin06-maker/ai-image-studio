@@ -93,7 +93,8 @@ export default function LoraPage() {
     );
   }
   if (lora.isError || !lora.data) {
-    const missing = lora.error instanceof ApiError && lora.error.status === 404;
+    // 404, or a link with a broken id (422): both mean there is nothing to show.
+    const missing = lora.error instanceof ApiError && (lora.error.status === 404 || lora.error.status === 422);
     return (
       <div className="page">
         {back}

@@ -500,9 +500,7 @@ export function ComfyPanel({
               <Field label={t("k2.negative")}>
                 <textarea className="textarea" rows={2} value={draft.negative} maxLength={2000} onChange={(e) => set({ negative: e.target.value })} />
               </Field>
-            ) : (
-              <div className="hint">{t("k2.noNegative")}</div>
-            )}
+            ) : null}
 
             <div>
               <div className="section-title">

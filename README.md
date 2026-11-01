@@ -35,7 +35,9 @@ Integrations and Settings.
 
 - **Dashboard** — real statistics, recent images, live activity, provider usage and WaveSpeed
   balance.
-- **Generate** — two choices at the top:
+- **Generate** — three choices at the top (Online models, Krea 2, Enhance photo). Results
+  appear on the right; one click on the bin deletes an image or a whole generation, with
+  "Undo" for a few seconds.
   - **Online models** (Nano Banana Pro, Seedream, Wan 2.7, Wan 2.7 Pro through WaveSpeed or
     Atlas Cloud): model cards, prompt editor with history, reference images (drag & drop), only
     the settings the selected model and provider support, live progress.

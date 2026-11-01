@@ -680,11 +680,18 @@ async def stop(db, conn: ComfyConnection, reason: str = "user") -> None:
     provider = conn.gpu_provider
     creds = await gpu_service.load_creds(db, conn.user_id, provider)
     adapter = get_gpu_adapter(provider)
-    if provider == "runpod":
-        await adapter.stop(creds, conn.workload_id)
-        status = "stopped"
-    else:
-        await adapter.terminate(creds, conn.workload_id)
+    try:
+        if provider == "runpod":
+            await adapter.stop(creds, conn.workload_id)
+            status = "stopped"
+        else:
+            await adapter.terminate(creds, conn.workload_id)
+            status = "terminated"
+    except GPUError as exc:
+        # Removed at the provider already (e.g. in its console): nothing runs or is billed,
+        # so the connection is stopped instead of being retried every few seconds.
+        if exc.code != "not_found":
+            raise
         status = "terminated"
     await gpu_service.mark_workload(db, conn.user_id, provider, conn.workload_id, status, now())
     conn.status = "stopped"
