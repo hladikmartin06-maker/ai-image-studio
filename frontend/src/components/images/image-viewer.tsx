@@ -17,6 +17,7 @@ import { useEffect, useState } from "react";
 import { createPortal } from "react-dom";
 
 import { useImageActions } from "@/components/images/actions";
+import { AddToLora } from "@/components/lora/add-to-lora";
 import { AddToPersona } from "@/components/personas/shared";
 import { Badge, Button, IconButton, Notice, Segmented } from "@/components/ui";
 import { aspectLabel, formatBytes, formatDate } from "@/lib/format";
@@ -175,6 +176,7 @@ export function ImageViewer({
               </Button>
             ) : null}
             <AddToPersona imageIds={[image.id]} />
+            <AddToLora imageIds={[image.id]} />
           </div>
         </div>
         {input ? (

@@ -5,7 +5,7 @@ import { useState } from "react";
 import { toast } from "sonner";
 
 import { StatusPill } from "@/components/studio/common";
-import { Button, EmptyState, Field, Notice, Select, Skeleton, Switch, useConfirm } from "@/components/ui";
+import { Button, EmptyState, Field, Notice, Segmented, Select, Skeleton, Switch, useConfirm } from "@/components/ui";
 import { ApiError } from "@/lib/api";
 import { formatRelative } from "@/lib/format";
 import { useI18n } from "@/lib/i18n";
@@ -51,7 +51,21 @@ export function TestPanel({ lora }: { lora: LoraDetail }) {
   const usable = lora.versions.filter((v) => v.status === "completed" && v.file_url);
   const [connection, setConnection] = useState("");
   const [variant, setVariant] = useState<"turbo" | "raw">(lora.base_variant === "turbo" ? "turbo" : "turbo");
-  const [prompts, setPrompts] = useState(`portrait photo of ${lora.trigger_word} ${lora.class_word}, soft window light`);
+  const subject = `${lora.trigger_word} ${lora.class_word}`.trim();
+  // Face: one portrait. Body: full body from the front, the side and the back, on a plain
+  // background, to see whether a version keeps the same proportions (the studio's prompts).
+  const presetPrompts = (kind: "face" | "body", adult: boolean) =>
+    kind === "face"
+      ? `portrait photo of ${subject}, soft window light`
+      : ["front view", "side view, profile", "back view"]
+          .map(
+            (view) =>
+              `full body photo of ${subject}, ${adult ? "nude" : "wearing a fitted plain black bodysuit"}, standing straight, ${view}, arms relaxed, plain light grey studio background, even soft light`,
+          )
+          .join("\n");
+  const [kind, setKind] = useState<"face" | "body">("face");
+  const [adult, setAdult] = useState(false);
+  const [prompts, setPrompts] = useState(() => presetPrompts("face", false));
   const [seeds, setSeeds] = useState("7, 42");
   const [versions, setVersions] = useState<string[]>(lora.preferred_version_id ? [lora.preferred_version_id] : usable.slice(0, 1).map((v) => v.id));
   const [includeBase, setIncludeBase] = useState(true);
@@ -73,6 +87,8 @@ export function TestPanel({ lora }: { lora: LoraDetail }) {
         version_ids: versions,
         include_base: includeBase,
         strength,
+        aspect_ratio: kind === "body" ? "2:3" : "3:4",
+        adult,
         confirm_count: count,
       });
       toast.success(t("cmp.started", { n: count }));
@@ -101,6 +117,34 @@ export function TestPanel({ lora }: { lora: LoraDetail }) {
             />
           </Field>
         </div>
+        <Field label={t("cmp.kind")} hint={kind === "body" ? t("cmp.bodyHint") : t("cmp.faceHint")}>
+          <Segmented
+            label={t("cmp.kind")}
+            value={kind}
+            onChange={(k) => {
+              setKind(k);
+              setPrompts(presetPrompts(k, adult));
+            }}
+            options={[
+              { value: "face", label: t("cmp.kindFace") },
+              { value: "body", label: t("cmp.kindBody") },
+            ]}
+          />
+        </Field>
+        <label className="row small" style={{ gap: 10, alignItems: "flex-start" }}>
+          <Switch
+            checked={adult}
+            onChange={(v) => {
+              setAdult(v);
+              if (kind === "body") setPrompts(presetPrompts("body", v));
+            }}
+            label={t("k2.adult")}
+          />
+          <span>
+            {t("k2.adult")}
+            <span className="hint" style={{ display: "block" }}>{t(adult ? "k2.adultOnHint" : "k2.adultOffHint")}</span>
+          </span>
+        </label>
         <Field label={t("cmp.prompts")} hint={t("cmp.promptsHint")}>
           <textarea className="textarea" rows={3} value={prompts} onChange={(e) => setPrompts(e.target.value)} />
         </Field>

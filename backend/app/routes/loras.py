@@ -1127,6 +1127,8 @@ class TestBody(BaseModel):
     strength: float = Field(default=1.0, ge=-2, le=2)
     aspect_ratio: str = "3:4"
     resolution: str = "1K"
+    # Krea 2's "18+ content" switch for these runs (e.g. the body consistency test).
+    adult: bool = False
     confirm_count: int = Field(ge=1, le=48)
 
 
@@ -1173,6 +1175,7 @@ async def run_test(
                     seed=seed,
                     count=1,
                     lora=LoraUse(version_id=vid, strength=body.strength) if vid else None,
+                    adult=body.adult,
                     test_group=group,
                     test_label=label,
                     test_lora_id=lora.id,

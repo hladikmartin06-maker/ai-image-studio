@@ -7,6 +7,7 @@ import { toast } from "sonner";
 
 import { copyText, useImageActions, useQuickDelete } from "@/components/images/actions";
 import { ImageTile } from "@/components/images/image-tile";
+import { AddToLora } from "@/components/lora/add-to-lora";
 import { StatusBadge } from "@/components/images/status";
 import { Button, IconButton, Notice, Skeleton } from "@/components/ui";
 import { formatDuration, formatRelative } from "@/lib/format";
@@ -143,6 +144,7 @@ export function JobCard({
               onOpen={() => onOpen(gen, i)}
               onDownload={() => actions.download(img)}
               onDelete={() => quick.deleteImageQuick(img)}
+              extra={<AddToLora imageIds={[img.id]} compact />}
               showPrompt={false}
               blurNsfw={blurNsfw}
             />

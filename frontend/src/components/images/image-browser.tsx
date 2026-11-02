@@ -19,6 +19,7 @@ import { toast } from "sonner";
 
 import { useImageActions } from "@/components/images/actions";
 import { GridSkeleton, ImageGrid } from "@/components/images/image-grid";
+import { AddToLora } from "@/components/lora/add-to-lora";
 import { AddToPersona } from "@/components/personas/shared";
 import { ImageViewer } from "@/components/images/image-viewer";
 import { StatusBadge } from "@/components/images/status";
@@ -389,6 +390,7 @@ export function ImageBrowser({
             </Button>
           ) : null}
           <AddToPersona imageIds={ids} />
+          <AddToLora imageIds={ids} />
           <Button size="sm" variant="danger" icon={<Trash2 />} onClick={() => runBulk("delete")}>
             {t("common.delete")}
           </Button>

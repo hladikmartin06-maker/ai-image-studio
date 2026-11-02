@@ -971,6 +971,21 @@ export function useAddDatasetImages(id: string) {
   );
 }
 
+/** Copies library images into any LoRA's photos (from Generate, a viewer or the library). */
+export function useAddToLoraDataset() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ loraId, imageIds }: { loraId: string; imageIds: string[] }) =>
+      api<{ added: number; lora: LoraDetail }>(`/api/loras/${loraId}/dataset/add`, {
+        body: { library_image_ids: imageIds },
+      }),
+    onSuccess: (r, { loraId }) => {
+      qc.setQueryData(loraKeys.one(loraId), r.lora);
+      qc.invalidateQueries({ queryKey: loraKeys.all });
+    },
+  });
+}
+
 export function useUpdateDatasetItem(id: string) {
   const qc = useQueryClient();
   return useMutation({

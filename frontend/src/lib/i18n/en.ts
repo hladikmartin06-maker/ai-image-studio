@@ -1459,6 +1459,18 @@ export const en = {
   "ls.continueTraining": "Continue training",
   "ls.continuedFrom": "continues v{n}",
   "ls.sizeLocked": "Kept from v{n} when continuing, so its LoRA fits.",
+  "lo.addToLora": "Add to LoRA",
+  "lo.addToLoraHint": "{n} photo(s) are copied into the LoRA's photos, for the next training or “Continue training”.",
+  "lo.addedTo": "{n} photo(s) added to {name}",
+  "lo.alreadyIn": "Already in {name}",
+  "lo.photoCount": "{n} photos",
+  "lo.noneYet": "No LoRA yet.",
+  "lo.newLoraEllipsis": "New LoRA…",
+  "cmp.kind": "Test",
+  "cmp.kindFace": "Face",
+  "cmp.kindBody": "Body (full figure)",
+  "cmp.faceHint": "A portrait: does the face match?",
+  "cmp.bodyHint": "Full body from the front, the side and the back on a plain background, same seeds: do the proportions stay the same across views and versions?",
 } as const;
 
 export type MessageKey = keyof typeof en;

@@ -439,6 +439,46 @@ async def test_training_on_runpod_end_to_end(user: Api, tmp_path: Path, hub: Fak
         assert base["comfy"]["lora"] is None and "lnx" not in base["prompt"]
         assert {r["settings"]["seed"] for r in runs} == {7}
 
+        # Body consistency test (18+): full-body views, same seed, only with the switch on.
+        body_test = {
+            "connection_id": conn["id"],
+            "prompts": [
+                f"full body photo of lnx woman, nude, standing straight, {view}"
+                for view in ("front view", "side view", "back view")
+            ],
+            "seeds": [7],
+            "version_ids": [version["id"]],
+            "include_base": False,
+            "aspect_ratio": "2:3",
+            "confirm_count": 3,
+        }
+        off = await user.post(f"/api/loras/{lora['id']}/tests", json=body_test)
+        assert off.status_code == 422 and off.json()["error"]["code"] == "adult_off"
+        t = await user.post(f"/api/loras/{lora['id']}/tests", json={**body_test, "adult": True})
+        assert t.status_code == 201 and t.json()["count"] == 3, t.text
+        for _ in range(400):
+            tests = (await user.get(f"/api/loras/{lora['id']}/tests")).json()["items"]
+            if all(r["status"] == "completed" for r in tests[0]["runs"]):
+                break
+            await asyncio.sleep(0.05)
+        body_runs = tests[0]["runs"]
+        assert len(body_runs) == 3 and all(r["status"] == "completed" for r in body_runs)
+        assert all(
+            r["settings"]["aspect_ratio"] == "2:3" and r["settings"]["adult"] for r in body_runs
+        )
+        assert all(r["images"][0]["nsfw"] is True for r in body_runs)
+
+        # The best generated images go into the LoRA's dataset (copied, once).
+        best = [r["images"][0]["id"] for r in body_runs[:2]]
+        added = await user.post(
+            f"/api/loras/{lora['id']}/dataset/add", json={"library_image_ids": best}
+        )
+        assert added.status_code == 200 and added.json()["added"] == 2
+        again = await user.post(
+            f"/api/loras/{lora['id']}/dataset/add", json={"library_image_ids": best}
+        )
+        assert again.json()["added"] == 0
+
         jobs = (await user.get("/api/jobs", params={"type": "training"})).json()
         assert jobs["items"][0]["status"] == "completed" and jobs["items"][0]["progress"] == 100
 

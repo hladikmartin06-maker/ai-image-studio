@@ -1,7 +1,7 @@
 "use client";
 
 import { Check, Download, EyeOff, Trash2 } from "lucide-react";
-import type { CSSProperties, KeyboardEvent, MouseEvent } from "react";
+import type { CSSProperties, KeyboardEvent, MouseEvent, ReactNode } from "react";
 
 import { IconButton, cx } from "@/components/ui";
 import { formatRelative } from "@/lib/format";
@@ -13,6 +13,7 @@ export function ImageTile({
   onOpen,
   onDownload,
   onDelete,
+  extra,
   selecting,
   selected,
   onSelect,
@@ -26,6 +27,8 @@ export function ImageTile({
   onDownload: () => void;
   /** One-click delete (Generate results). */
   onDelete?: () => void;
+  /** More buttons next to download (e.g. "Add to LoRA"). */
+  extra?: ReactNode;
   selecting?: boolean;
   selected?: boolean;
   onSelect?: (shift: boolean) => void;
@@ -85,7 +88,8 @@ export function ImageTile({
             </button>
           ) : null}
           <span className="spacer" />
-          <div className="tile-actions" onClick={stop}>
+          <div className="tile-actions" onClick={stop} onKeyDown={(e) => e.stopPropagation()}>
+            {extra}
             <IconButton label={t("common.download")} onMedia onClick={onDownload}>
               <Download />
             </IconButton>
