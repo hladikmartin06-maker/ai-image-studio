@@ -12,8 +12,8 @@ const nextConfig: NextConfig = {
   // Compression would buffer the live event stream (/api/events).
   compress: false,
   experimental: {
-    // Reference uploads pass through the proxy (backend limit: 10 MB per image).
-    proxyClientMaxBodySize: "12mb",
+    // Reference uploads pass through the proxy (backend limit: 20 MB per image).
+    proxyClientMaxBodySize: "22mb",
     // Archive downloads and slow provider uploads may take longer than the 30 s default.
     proxyTimeout: 10 * 60 * 1000,
   },

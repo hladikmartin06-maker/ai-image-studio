@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import uuid
 
 from sqlalchemy import select
@@ -413,6 +414,41 @@ async def test_cancel_only_while_queued(connected: Api, fake):
     await wait_done(connected, r.json()["id"])
     c = await connected.post(f"/api/generations/{r.json()['id']}/cancel")
     assert c.status_code == 409
+
+
+async def test_photos_up_to_20_mb(connected: Api, fake):
+    """Photos up to 20 MB are accepted and stored as they are; a hosted provider gets at most
+    10 MB (a high-quality JPEG of a larger photo); above 20 MB is refused."""
+    import io
+
+    from PIL import Image as PILImage
+
+    noise = PILImage.frombytes("RGB", (2400, 2000), os.urandom(2400 * 2000 * 3))
+    out = io.BytesIO()
+    noise.save(out, format="PNG", compress_level=0)
+    big = out.getvalue()
+    assert 10 * 1024 * 1024 < len(big) < 20 * 1024 * 1024
+    up = await connected.post(
+        "/api/reference-images", files={"file": ("big.png", big, "image/png")}
+    )
+    assert up.status_code == 201, up.text
+    assert up.json()["size_bytes"] == len(big) and up.json()["width"] == 2400
+    r = await connected.post(
+        "/api/generations",
+        json={
+            "model": "seedream",
+            "provider": "wavespeed",
+            "prompt": "make it a watercolor",
+            "reference_image_ids": [up.json()["id"]],
+        },
+    )
+    assert (await wait_done(connected, r.json()["id"]))["status"] == "completed"
+    assert fake.upload_sizes and fake.upload_sizes[-1] <= 10 * 1024 * 1024 + 4096
+    too_big = big + b"\0" * (21 * 1024 * 1024 - len(big))
+    refused = await connected.post(
+        "/api/reference-images", files={"file": ("huge.png", too_big, "image/png")}
+    )
+    assert refused.status_code == 413 and "20 MB" in refused.json()["error"]["message"]
 
 
 async def test_reference_upload_validation(user: Api):

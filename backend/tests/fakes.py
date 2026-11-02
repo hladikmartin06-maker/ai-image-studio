@@ -46,6 +46,8 @@ class FakeProviders:
     unit_price: float = 0.04
     pricing_fails: bool = False
     pricing_calls: list[dict[str, Any]] = field(default_factory=list)
+    # Size of each uploaded request body (multipart), to check what reaches the provider.
+    upload_sizes: list[int] = field(default_factory=list)
     _ids: itertools.count = field(default_factory=lambda: itertools.count(1))
 
     def transport(self) -> httpx.MockTransport:
@@ -125,6 +127,7 @@ class FakeProviders:
             if path == "/api/v3/media/upload/binary":
                 name = f"https://cdn.fake/upload-{len(self.uploads) + 1}.png"
                 self.uploads.append(name)
+                self.upload_sizes.append(len(request.content))
                 return httpx.Response(200, json={"code": 200, "data": {"download_url": name}})
             if path.startswith("/api/v3/predictions/") and path.endswith("/result"):
                 pid = path.split("/")[4]

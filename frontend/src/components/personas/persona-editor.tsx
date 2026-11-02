@@ -20,7 +20,7 @@ import {
 import type { Persona, PersonaAppearance, PersonaImage } from "@/lib/types";
 
 const ACCEPT = ["image/png", "image/jpeg", "image/webp"];
-const MAX_MB = 10;
+const MAX_MB = 20;
 
 // --- Profile ------------------------------------------------------------------------------
 

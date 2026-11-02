@@ -23,6 +23,10 @@ from app.services import storage
 ALLOWED_MIME = {"image/png", "image/jpeg", "image/webp"}
 MIN_EDGE = 64
 MAX_EDGE = 8192
+# The largest file sent to WaveSpeed or Atlas Cloud. Neither documents an upload limit; this
+# was the studio's upload limit before uploads went up to 20 MB, so a larger photo is sent as
+# a high-quality JPEG of at most this size (the stored original is kept for ComfyUI).
+PROVIDER_MAX_BYTES = 10 * 1024 * 1024
 # How long a provider keeps an uploaded file reachable is not documented by WaveSpeed or
 # Atlas Cloud. An upload is reused for this long, then the file is uploaded again, so a
 # saved AI model never points the provider at an expired URL.
@@ -106,6 +110,14 @@ async def from_library_file(
     data = await asyncio.to_thread(storage.absolute(relative_path).read_bytes)
     data = await asyncio.to_thread(storage.fit_for_reference, data, max_bytes(), MAX_EDGE)
     return await store(db, user_id, data, name)
+
+
+def for_provider(data: bytes, mime: str, ext: str) -> tuple[bytes, str, str]:
+    """The file as sent to a hosted provider: unchanged up to PROVIDER_MAX_BYTES, else a
+    high-quality JPEG that fits (scaled down only as far as needed)."""
+    if len(data) <= PROVIDER_MAX_BYTES:
+        return data, mime, ext
+    return storage.fit_for_reference(data, PROVIDER_MAX_BYTES, MAX_EDGE), "image/jpeg", "jpg"
 
 
 def reusable_url(ref: ReferenceImage, provider: str, now: datetime | None = None) -> str | None:

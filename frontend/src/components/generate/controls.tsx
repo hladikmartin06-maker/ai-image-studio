@@ -229,7 +229,7 @@ export function PromptEditor({
 // --- Reference images ------------------------------------------------------------------------
 
 const ACCEPT = ["image/png", "image/jpeg", "image/webp"];
-const MAX_MB = 10;
+const MAX_MB = 20;
 
 export function ReferenceImages({
   refs,

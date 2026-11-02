@@ -132,6 +132,12 @@ without editing, nothing is uploaded. Each file is uploaded to a provider once a
 reused for 24 hours: neither provider documents how long an uploaded file stays available, so
 the studio uploads it again after that instead of risking an expired URL.
 
+Photos up to 20 MB can be uploaded to the studio (references, AI model photos, photos for
+Krea 2 and Enhance photo) and are stored as they are. Neither WaveSpeed nor Atlas Cloud
+documents a maximum upload size, so a file sent to them is at most 10 MB (the studio's earlier
+limit, known to work): a larger photo goes as a high-quality JPEG (quality 92, scaled down only
+as far as needed; `references.for_provider`). ComfyUI gets the original.
+
 The description of an AI model is plain text appended to the prompt (`Character: adult …`, plus
 "Keep the same person as in the reference images …" when images are attached). It is not a
 provider parameter; History shows the prompt exactly as sent. **Not run against the real

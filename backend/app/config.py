@@ -34,7 +34,8 @@ class Settings(BaseSettings):
     # account on this Mac (created automatically when there is none). AUTO_LOGIN=false brings
     # the sign-in screen back.
     auto_login: bool = True
-    max_upload_mb: int = 10
+    # Largest photo the user can upload (references, AI model photos, photos for Krea 2).
+    max_upload_mb: int = 20
     # How many generation jobs run at the same time (each may hold several requests).
     worker_concurrency: int = 4
     # A provider request that is not finished after this many seconds is failed.

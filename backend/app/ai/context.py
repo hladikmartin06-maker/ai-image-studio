@@ -70,7 +70,7 @@ Cloud account:
 
 How the app works:
 - Generate page: pick a model and provider, write a prompt, optional reference images (PNG, JPEG \
-or WebP up to 10 MB) switch to image editing, settings shown are only those the endpoint supports, \
+or WebP up to 20 MB) switch to image editing, settings shown are only those the endpoint supports, \
 1–4 images per run (each image is a separate paid request unless the endpoint batches them).
 - AI Models page: saved fictional adult characters (name, description, appearance, reference \
 images with a primary image). Selected on the Generate page, the character's description is \

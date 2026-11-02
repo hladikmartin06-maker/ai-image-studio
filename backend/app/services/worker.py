@@ -311,8 +311,13 @@ class JobWorker:
                 url = references.reusable_url(ref, gen.provider)
                 if not url:
                     data = await asyncio.to_thread(storage.absolute(ref.file_path).read_bytes)
-                    ext = ref.file_path.rsplit(".", 1)[-1]
-                    url = await adapter.upload(api_key, data, f"{ref.id}.{ext}", ref.mime_type)
+                    data, mime, ext = await asyncio.to_thread(
+                        references.for_provider,
+                        data,
+                        ref.mime_type,
+                        ref.file_path.rsplit(".", 1)[-1],
+                    )
+                    url = await adapter.upload(api_key, data, f"{ref.id}.{ext}", mime)
                     references.remember_upload(ref, gen.provider, url)
                     await db.commit()
                 urls.append(url)
