@@ -37,6 +37,13 @@ print(f"dataset: {len(images)} images, {len(captions)} captions", flush=True)
 if os.environ.get("FAKE_TRAIN_FAIL"):
     print("CUDA out of memory", flush=True)
     sys.exit(3)
+start = proc.get("network", {}).get("pretrained_lora_path")
+if start:
+    # Like ai-toolkit: a missing starting LoRA is reported, an existing one is loaded.
+    if not os.path.isfile(start):
+        print(f"Pretrained lora path from config does not exist: {start}", flush=True)
+        sys.exit(4)
+    print(f"Using pretrained lora path from config ({os.path.getsize(start)} bytes)", flush=True)
 total = int(proc["train"]["steps"])
 meta = {"format": "pt", "name": name, "studio_architecture": "krea2",
         "training_info": json.dumps(cfg.get("meta", {}))}

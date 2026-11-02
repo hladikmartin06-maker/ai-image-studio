@@ -7,6 +7,7 @@ import asyncio
 import io
 import json
 import struct
+import uuid
 from pathlib import Path
 
 import pytest
@@ -16,9 +17,11 @@ from app.ai.providers.openai_compat import OpenAICompatibleProvider
 from app.ai.registry import AI_PROVIDERS, set_adapter
 from app.comfy import runner as comfy_runner
 from app.comfy.client import ComfyClient
+from app.db import SessionLocal
 from app.gpu.registry import set_gpu_adapter
 from app.lora import aitoolkit
 from app.lora.presets import ARCHITECTURES, TrainingConfig, preset_config
+from app.models import LoraVersion
 from app.services.gpu_runner import gpu_runner
 from tests.ai_fakes import AI_KEY, FakeAI
 from tests.conftest import Api, make_user, wait_done
@@ -343,6 +346,42 @@ async def test_training_on_runpod_end_to_end(user: Api, tmp_path: Path, hub: Fak
         assert cp.status_code == 201 and cp.json()["number"] == 2
         blocked = await user.delete(f"/api/loras/{lora['id']}/versions/{version['id']}")
         assert blocked.status_code == 409
+
+        # Continue training from v1 with more photos: v1's file is the starting point and its
+        # size is kept (the requested rank is ignored).
+        lora = await upload_dataset(user, lora["id"], 2, start=11)
+        assert len(lora["dataset"]) == 12
+        cont = {
+            **body,
+            "config": {**config, "continue_from": version["id"], "rank": 64, "alpha": 64},
+            "client_request_id": "train-continue",
+            "confirm_billing": True,
+        }
+        wrong = await user.post(
+            f"/api/loras/{lora['id']}/versions",
+            json={**cont, "config": {**cont["config"], "continue_from": str(uuid.uuid4())}},
+        )
+        assert wrong.status_code == 404
+        r = await user.post(f"/api/loras/{lora['id']}/versions", json=cont)
+        assert r.status_code == 201, r.text
+        assert r.json()["config"]["rank"] == config["rank"] == 16
+        assert r.json()["config"]["continue_from_number"] == 1
+        for _ in range(300):
+            await gpu_runner.tick()
+            detail = (await user.get(f"/api/loras/{lora['id']}")).json()
+            v3 = next(v for v in detail["versions"] if v["id"] == r.json()["id"])
+            if v3["status"] in ("completed", "failed", "cancelled", "interrupted"):
+                break
+            await asyncio.sleep(0.05)
+        assert v3["status"] == "completed", v3
+        assert v3["dataset_size"] == 12
+        logs = (await user.get(f"/api/loras/{lora['id']}/versions/{v3['id']}/logs")).json()
+        assert "Using pretrained lora path from config" in logs["text"]
+        async with SessionLocal() as db:
+            row = await db.get(LoraVersion, uuid.UUID(v3["id"]))
+            network = row.trainer_config["config"]["process"][0]["network"]
+        assert network["pretrained_lora_path"].endswith("/start_lora.safetensors")
+        assert network["linear"] == 16
 
         # Generate with it on a local ComfyUI folder: copied once, trigger added, strict.
         conn = await user.post(

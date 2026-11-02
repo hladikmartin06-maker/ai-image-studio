@@ -75,7 +75,8 @@ Integrations and Settings.
   captions (templates, trigger word, AI captions), choose a training type and a GPU, train on
   your RunPod or Modal account with live progress, test images, logs and cost (Advanced:
   test images only at the end, base-model protection and memory saving can be switched off
-  for faster runs). The LoRA
+  for faster runs). **Continue training**: add photos and train a finished version further —
+  the training starts from that LoRA instead of from zero and makes a new version. The LoRA
   is saved to this Mac and the GPU is always removed afterwards. Versions, preferred version,
   download, copy to a ComfyUI, base-vs-LoRA tests with a comparison slider, import of existing
   Krea 2 LoRA files and the training history with time and cost.

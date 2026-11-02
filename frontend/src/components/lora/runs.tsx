@@ -1,6 +1,6 @@
 "use client";
 
-import { CopyPlus, Download, ScrollText, Send, Square, Star, Trash2 } from "lucide-react";
+import { CopyPlus, Download, FastForward, ScrollText, Send, Square, Star, Trash2 } from "lucide-react";
 import { useState } from "react";
 import { toast } from "sonner";
 
@@ -25,6 +25,11 @@ function elapsed(v: LoraVersion) {
   const end = v.completed_at ? new Date(v.completed_at) : new Date();
   return (end.getTime() - new Date(v.started_at).getTime()) / 1000;
 }
+
+// Continuing a LoRA: fewer steps and the gentle learning speed by default (the studio's
+// starting point; it refines the earlier LoRA instead of overwriting it).
+export const CONTINUE_STEPS = 1000;
+export const CONTINUE_LR = 0.00006;
 
 export function VersionCard({
   lora,
@@ -68,6 +73,9 @@ export function VersionCard({
           </Badge>
         ) : null}
         {version.source === "imported" ? <Badge>{t("ls.importedBadge")}</Badge> : null}
+        {version.config.continue_from_number ? (
+          <Badge>{t("ls.continuedFrom", { n: version.config.continue_from_number })}</Badge>
+        ) : null}
         <span className="grow tiny subtle truncate">
           {version.preset ? t(`ls.preset.${version.preset}` as MessageKey) : ""}
           {version.gpu_type ? ` · ${version.gpu_count}× ${version.gpu_type} · ${version.gpu_provider === "modal" ? "Modal" : "RunPod"}` : ""}
@@ -209,8 +217,19 @@ export function VersionCard({
             </>
           ) : null}
           <span className="spacer" />
+          {onNewExperiment && version.config.rank && version.status === "completed" && version.file_url ? (
+            <Button
+              size="sm"
+              icon={<FastForward />}
+              onClick={() =>
+                onNewExperiment({ ...version.config, continue_from: version.id, steps: CONTINUE_STEPS, learning_rate: CONTINUE_LR })
+              }
+            >
+              {t("ls.continueTraining")}
+            </Button>
+          ) : null}
           {onNewExperiment && version.config.rank ? (
-            <Button size="sm" variant="ghost" icon={<CopyPlus />} onClick={() => onNewExperiment(version.config)}>
+            <Button size="sm" variant="ghost" icon={<CopyPlus />} onClick={() => onNewExperiment({ ...version.config, continue_from: null })}>
               {t("ls.newExperiment")}
             </Button>
           ) : null}

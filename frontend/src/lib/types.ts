@@ -835,6 +835,8 @@ export interface TrainingConfig {
   max_checkpoints: number;
   sample_every: number;
   previews: "during" | "end";
+  // Continue an earlier version (its LoRA is the starting point; its size is kept).
+  continue_from?: string | null;
   validation_prompts: string[];
   seed: number;
   save_dtype: "float16" | "bf16";
@@ -858,7 +860,7 @@ export interface LoraVersion {
   status: TrainingStatus;
   stage_detail: string;
   preset: string;
-  config: Partial<TrainingConfig> & { image?: string | null; cloud_type?: string };
+  config: Partial<TrainingConfig> & { image?: string | null; cloud_type?: string; continue_from_number?: number };
   gpu_provider: "runpod" | "modal" | null;
   gpu_type: string;
   gpu_count: number;

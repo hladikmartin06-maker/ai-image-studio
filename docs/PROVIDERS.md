@@ -434,6 +434,16 @@ the image): the same graph in API format, on the same ComfyUI connection as Krea
     default is true). Same training math, faster, much more VRAM; the studio then asks for an
     80 GB GPU — an estimate, not measured for Krea 2 — and refuses a smaller one.
 
+- **Continue training** (LoRA › Runs › "Continue training", or Training › "Start from"):
+  `network.pretrained_lora_path` (ai-toolkit `toolkit/config_modules.py` NetworkConfig;
+  `BaseSDTrainProcess.get_latest_save_path` loads it when the run has no checkpoint of its
+  own, without its step metadata, so the new run counts its own steps). The earlier
+  version's file is uploaded with the dataset as `runs/<run>/start_lora.safetensors`; its
+  rank and alpha are kept (the server overrides the request) so the weights fit; the dataset
+  is all current photos. The studio suggests 1000 steps and the gentle learning speed
+  (its own choice). The result is a new version; the earlier one is not changed. Not run on
+  a real GPU.
+
 Presets are the studio's starting points, not published recommendations. Progress and loss
 come from ai-toolkit's own output (the run page no longer draws a loss chart). **Not run on a real RunPod or Modal GPU** — verified with a
 fake RunPod that starts the real agent locally and a fake `run.py`.

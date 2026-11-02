@@ -97,6 +97,12 @@ class TrainingConfig(BaseModel):
     # step (ai-toolkit: skip_first_sample, and sample_every 0 never matches a step). The
     # images do not change the LoRA; they cost time while the GPU is billed.
     previews: Literal["during", "end"] = "during"
+    # Continue an earlier version: training starts from that version's LoRA weights
+    # (ai-toolkit network.pretrained_lora_path) instead of from zero, on the current photos.
+    # Its size (rank/alpha) is kept, so the weights fit.
+    continue_from: str | None = Field(
+        default=None, pattern=r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+    )
     validation_prompts: list[str] = Field(default_factory=list, max_length=6)
     seed: int = Field(default=42, ge=0, le=2**31 - 1)
     save_dtype: Literal["float16", "bf16"] = "float16"

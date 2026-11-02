@@ -7,8 +7,9 @@ import { useState } from "react";
 import { toast } from "sonner";
 
 import { hfProblem } from "@/components/integrations/huggingface";
+import { CONTINUE_LR, CONTINUE_STEPS } from "@/components/lora/runs";
 import { formatMoney, type GpuChoice, GpuPicker, hourlyPrice, newRequestId } from "@/components/studio/common";
-import { Button, Field, Notice, Segmented, Skeleton, Switch, useConfirm } from "@/components/ui";
+import { Button, Field, Notice, Segmented, Select, Skeleton, Switch, useConfirm } from "@/components/ui";
 import { ApiError } from "@/lib/api";
 import { useI18n } from "@/lib/i18n";
 import type { MessageKey } from "@/lib/i18n";
@@ -38,8 +39,20 @@ export function TrainingTab({ lora, onStarted, initial }: { lora: LoraDetail; on
   const arch = catalog.data.architectures.find((a) => a.key === lora.architecture);
   const presets = catalog.data.presets;
   const base = presets.find((p) => p.key === preset)!.config;
-  const cfg: TrainingConfig = config ?? { ...base, ...(initial ?? {}), base_variant: lora.base_variant };
+  const draft: TrainingConfig = config ?? { ...base, ...(initial ?? {}), base_variant: lora.base_variant };
+  // Continue an earlier version: its size (rank/alpha) is kept, so its weights fit.
+  const startVersions = lora.versions.filter((v) => v.status === "completed" && v.file_url && v.config.rank && v.config.alpha);
+  const startFrom = startVersions.find((v) => v.id === draft.continue_from) ?? null;
+  const cfg: TrainingConfig = startFrom
+    ? { ...draft, rank: startFrom.config.rank ?? draft.rank, alpha: startFrom.config.alpha ?? draft.alpha }
+    : { ...draft, continue_from: null };
   const set = (patch: Partial<TrainingConfig>) => setConfig({ ...cfg, ...patch });
+  const pickStart = (id: string) =>
+    setConfig(
+      id
+        ? { ...cfg, continue_from: id, steps: CONTINUE_STEPS, learning_rate: CONTINUE_LR }
+        : { ...cfg, continue_from: null, steps: base.steps, learning_rate: base.learning_rate, rank: base.rank, alpha: base.alpha },
+    );
   // Without gradient checkpointing the activations stay in memory (an 80 GB estimate).
   const baseVram = cfg.quantize ? arch?.vram_quantized_gb : arch?.vram_full_gb;
   const minVram = !cfg.gradient_checkpointing && arch ? Math.max(baseVram ?? 0, arch.vram_no_checkpointing_gb) : baseVram;
@@ -113,6 +126,29 @@ export function TrainingTab({ lora, onStarted, initial }: { lora: LoraDetail; on
         </Notice>
       ) : null}
 
+      {startVersions.length ? (
+        <section className="card card-pad col gap-12">
+          <div className="eyebrow">{t("ls.startFrom")}</div>
+          <Select
+            label={t("ls.startFrom")}
+            value={startFrom?.id ?? ""}
+            onChange={pickStart}
+            options={[
+              { value: "", label: t("ls.startFresh") },
+              ...startVersions.map((v) => ({
+                value: v.id,
+                label: t("ls.startFromVersion", { n: v.number, photos: v.dataset_size }),
+              })),
+            ]}
+          />
+          <div className="hint">
+            {startFrom
+              ? t("ls.continueHint", { n: startFrom.number, photos: lora.analysis.train, old: startFrom.dataset_size })
+              : t("ls.freshHint")}
+          </div>
+        </section>
+      ) : null}
+
       <section>
         <div className="section-title">
           <span className="eyebrow grow">{t("ls.presets")}</span>
@@ -127,7 +163,8 @@ export function TrainingTab({ lora, onStarted, initial }: { lora: LoraDetail; on
               className="model-card"
               onClick={() => {
                 setPreset(p.key);
-                setConfig(null);
+                // A new training type keeps the choice to continue an earlier version.
+                setConfig(startFrom ? { ...p.config, base_variant: lora.base_variant, continue_from: startFrom.id, steps: CONTINUE_STEPS, learning_rate: CONTINUE_LR } : null);
               }}
             >
               <span className="name">{t(`ls.preset.${p.key}` as MessageKey)}</span>
@@ -164,12 +201,12 @@ export function TrainingTab({ lora, onStarted, initial }: { lora: LoraDetail; on
                   onChange={(e) => set({ steps: Number(e.target.value) })}
                 />
               </Field>
-              <Field label={t("ls.size")} hint={t("ls.sizeHint")}>
+              <Field label={t("ls.size")} hint={startFrom ? t("ls.sizeLocked", { n: startFrom.number }) : t("ls.sizeHint")}>
                 <Segmented
                   label={t("ls.size")}
                   value={cfg.rank}
                   onChange={(r) => set({ rank: r, alpha: Math.min(cfg.alpha, r) })}
-                  options={[16, 32, 64].map((r) => ({ value: r, label: String(r) }))}
+                  options={[16, 32, 64].map((r) => ({ value: r, label: String(r), disabled: Boolean(startFrom) && r !== cfg.rank }))}
                 />
               </Field>
               <Field label={t("ls.speed")} hint={t("ls.speedHint")}>

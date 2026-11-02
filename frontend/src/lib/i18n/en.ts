@@ -1451,6 +1451,14 @@ export const en = {
   "common.undo": "Undo",
   "gen.deleted": "Generation deleted",
   "gen.deleteRun": "Delete this generation",
+  "ls.startFrom": "Start from",
+  "ls.startFresh": "Zero — a new LoRA",
+  "ls.startFromVersion": "Continue v{n} (trained on {photos} photos)",
+  "ls.freshHint": "Trains a new LoRA from zero on the current photos.",
+  "ls.continueHint": "Continues v{n}: training starts from its LoRA instead of from zero and uses all current photos ({photos}; v{n} had {old}). Add new photos in the Dataset tab first. The result is a new version; v{n} stays as it is.",
+  "ls.continueTraining": "Continue training",
+  "ls.continuedFrom": "continues v{n}",
+  "ls.sizeLocked": "Kept from v{n} when continuing, so its LoRA fits.",
 } as const;
 
 export type MessageKey = keyof typeof en;

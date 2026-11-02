@@ -251,7 +251,22 @@ async def _upload_and_start(db, v: LoraVersion, lora: Lora) -> None:
     paths = run_paths(run)
     local = storage.absolute(version_dir(v)) / "dataset"
     files = sorted(await asyncio.to_thread(lambda: [p for p in local.iterdir() if p.is_file()]))
+    start: Path | None = None
+    if (v.config or {}).get("continue_from"):
+        # Continue training: the earlier version's LoRA file goes to the GPU first.
+        source = await db.get(LoraVersion, uuid.UUID(v.config["continue_from"]))
+        start = storage.absolute(source.file_path) if source and source.file_path else None
+        if start is None or not await asyncio.to_thread(start.is_file):
+            await _fail(
+                db, v, "not_found", "The LoRA file to continue from is no longer on this Mac."
+            )
+            return
     try:
+        if start is not None:
+            v.stage_detail = "Uploading the LoRA to continue from"
+            await db.commit()
+            publish(v)
+            await agent.upload_file(paths["start_rel"], start)
         for index, path in enumerate(files):
             v.stage_detail = f"Uploading dataset {index + 1}/{len(files)}"
             if index % 5 == 0:

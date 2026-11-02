@@ -1452,4 +1452,12 @@ export const sk: Record<MessageKey, string> = {
   "common.undo": "Späť",
   "gen.deleted": "Generovanie zmazané",
   "gen.deleteRun": "Zmazať toto generovanie",
+  "ls.startFrom": "Začať z",
+  "ls.startFresh": "Od nuly — nová LoRA",
+  "ls.startFromVersion": "Pokračovať vo v{n} (trénovaná na {photos} fotkách)",
+  "ls.freshHint": "Natrénuje novú LoRA od nuly na aktuálnych fotkách.",
+  "ls.continueHint": "Pokračuje vo v{n}: tréning začne z jej LoRA namiesto od nuly a použije všetky aktuálne fotky ({photos}; v{n} mala {old}). Nové fotky najprv pridaj v karte Dataset. Výsledok bude nová verzia, v{n} ostane bezo zmeny.",
+  "ls.continueTraining": "Pokračovať v tréningu",
+  "ls.continuedFrom": "pokračuje z v{n}",
+  "ls.sizeLocked": "Pri pokračovaní ostáva podľa v{n}, aby jej LoRA sedela.",
 };

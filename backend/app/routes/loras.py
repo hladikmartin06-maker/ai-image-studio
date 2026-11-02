@@ -709,6 +709,25 @@ async def start_training(
             f"{dataset.MIN_EDGE_HARD} px.",
         )
     _check_words(*body.config.validation_prompts)
+    start: LoraVersion | None = None
+    if body.config.continue_from:
+        # Continue an earlier version of this LoRA: its file is the starting point, and its
+        # size (rank/alpha) is kept so the weights fit.
+        start = await db.scalar(
+            select(LoraVersion).where(
+                LoraVersion.id == uuid.UUID(body.config.continue_from),
+                LoraVersion.lora_id == lora.id,
+                LoraVersion.user_id == user.id,
+            )
+        )
+        if start is None:
+            raise api_error(404, "not_found", "That version of this LoRA no longer exists.")
+        if start.status != "completed" or not start.file_path:
+            raise api_error(409, "not_ready", f"v{start.number} has no finished LoRA file.")
+        if not (start.config or {}).get("rank") or not (start.config or {}).get("alpha"):
+            raise api_error(409, "unknown_size", f"The size of v{start.number} is unknown.")
+        body.config.rank = int(start.config["rank"])
+        body.config.alpha = int(start.config["alpha"])
     number = (
         await db.scalar(select(func.max(LoraVersion.number)).where(LoraVersion.lora_id == lora.id))
         or 0
@@ -730,9 +749,12 @@ async def start_training(
         class_word=lora.class_word,
         config=body.config,
         sample_prompts=prompts,
+        start_lora=paths["start_abs"] if start else None,
     )
     config = body.config.model_dump()
     config.update({"image": body.image, "cloud_type": body.cloud_type})
+    if start:
+        config["continue_from_number"] = start.number
     version = LoraVersion(
         id=version_id,
         lora_id=lora.id,

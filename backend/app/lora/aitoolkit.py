@@ -3,6 +3,7 @@
 Layout inside the GPU workspace (/workspace/runs/<run>/):
   dataset/<n>.<ext> + <n>.txt   images and captions (ai-toolkit: jpg/jpeg/png + .txt)
   config.json                   this file
+  start_lora.safetensors        when continuing: the earlier version the training starts from
   output/<run>/                 <run>.safetensors, <run>_<step>.safetensors checkpoints,
                                 samples/*.jpg
 """
@@ -23,6 +24,8 @@ def run_paths(run: str) -> dict[str, str]:
         "rel": rel,
         "dataset_rel": f"{rel}/dataset",
         "config_rel": f"{rel}/config.json",
+        "start_rel": f"{rel}/start_lora.safetensors",
+        "start_abs": f"{WORKSPACE}/{rel}/start_lora.safetensors",
         "output_rel": f"{rel}/output/{run}",
         "dataset_abs": f"{WORKSPACE}/{rel}/dataset",
         "output_abs": f"{WORKSPACE}/{rel}/output",
@@ -43,6 +46,7 @@ def build(
     class_word: str,
     config: TrainingConfig,
     sample_prompts: list[str],
+    start_lora: str | None = None,
 ) -> dict[str, Any]:
     arch = ARCHITECTURES[architecture]
     variant = arch["variants"][config.base_variant]
@@ -86,7 +90,14 @@ def build(
         "training_folder": output_dir,
         "device": "cuda:0",
         "trigger_word": trigger_word,
-        "network": {"type": "lora", "linear": config.rank, "linear_alpha": config.alpha},
+        "network": {
+            "type": "lora",
+            "linear": config.rank,
+            "linear_alpha": config.alpha,
+            # Continue training: ai-toolkit loads these weights when the run has no
+            # checkpoint of its own yet (BaseSDTrainProcess.get_latest_save_path).
+            **({"pretrained_lora_path": start_lora} if start_lora else {}),
+        },
         "save": {
             "dtype": config.save_dtype,
             "save_every": config.save_every,
