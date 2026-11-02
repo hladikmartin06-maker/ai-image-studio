@@ -39,8 +39,14 @@ Integrations and Settings.
   appear on the right; one click on the bin deletes an image or a whole generation, with
   "Undo" for a few seconds.
   - **Online models** (Nano Banana Pro, Seedream, Wan 2.7, Wan 2.7 Pro through WaveSpeed or
-    Atlas Cloud): model cards, prompt editor with history, reference images (drag & drop), only
-    the settings the selected model and provider support, live progress.
+    Atlas Cloud): model cards with the price per image, prompt editor with history, reference
+    images (drag & drop; click a photo to make it the first one — they are sent in that order,
+    so the prompt can say "image 1", "image 2"), only the settings the selected model and
+    provider support, live progress. **Generate** first shows the price (an estimate from
+    WaveSpeed's price API; Atlas Cloud has no price API, so it says "Price unknown" with a link
+    to its pricing) and starts only after you confirm it; Repeat asks the same way. Wan 2.7 and
+    Wan 2.7 Pro have an **"18+ content"** switch at the bottom (off by default): off refuses
+    explicit prompts, on allows adult content for fictional adults and marks the images 18+.
   - **Krea 2** (open weights, RAW and Turbo) through ComfyUI, in three steps: **1** choose
     where it runs — **Rent a GPU** (pick an NVIDIA GPU with 24 GB or more; the studio starts it
     on your RunPod or Modal account with RunPod's ready-made ComfyUI image, so it is ready in

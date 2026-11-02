@@ -2,8 +2,8 @@
 
 - Sexual content involving minors is always refused, for every model.
 - Explicit prompts are refused for the SFW-only models (Nano Banana Pro, Seedream), with a
-  hint to use Wan 2.7 / Wan 2.7 Pro, which allow mature content for adults, and for Krea 2
-  unless its "18+ content" switch is on.
+  hint to use Wan 2.7 / Wan 2.7 Pro, which allow mature content for adults, and on Wan 2.7,
+  Wan 2.7 Pro and Krea 2 unless their "18+ content" switch is on.
 The providers apply their own moderation on top of this.
 """
 
@@ -82,6 +82,13 @@ def mentions_minors(text: str) -> bool:
     """True when the text refers to children or teenagers (used for AI model profiles,
     which must describe adults)."""
     return bool(_MINOR_RE.search(_HARMLESS_RE.sub(" ", text)))
+
+
+# Shown when a model allows 18+ content but its "18+ content" switch is off.
+ADULT_OFF = (
+    "This prompt asks for 18+ content. Turn on “18+ content” (adults only, fictional "
+    "characters) to generate it."
+)
 
 
 class PromptRefused(ValueError):

@@ -19,9 +19,33 @@ and `backend/app/providers/` (HTTP).
 | Result | `GET /api/v3/predictions/{id}/result` | `data: {status, outputs[], error, has_nsfw_contents[]}` |
 | Upload | `POST /api/v3/media/upload/binary` (multipart `file`) | `data.download_url` |
 | Balance | `GET /api/v3/balance` | `data.balance` (USD) |
+| List prices | `GET /api/v3/models` | `data: [{model_id, name, base_price, …}]` (`base_price` USD) |
+| Price estimate | `POST /api/v3/model/pricing` `{model_id, inputs}` | `data: {model_id, unit_price}` (USD) |
 
 Auth: `Authorization: Bearer <key>`. Status values: created, processing, completed, failed.
 Docs: https://wavespeed.ai/docs — predictions, media upload, balance.
+
+### Prices (shown before every hosted run)
+
+Sources: https://wavespeed.ai/docs/docs-common-api/models (List Models: `base_price`, float,
+USD), https://wavespeed.ai/docs/docs-common-api/pricing (Pricing API: body `model_id` +
+`inputs`, response `data.unit_price`), https://wavespeed.ai/docs/how-pricing-works (the price
+depends on the inputs, e.g. resolution; check it before running).
+
+> Status (2026-11-02): **unverified**. The sandbox could not open wavespeed.ai (blocked by
+> its network policy); the shapes above come from search results of those pages, and neither
+> call has run against the real API. So both are read tolerantly: a missing or non-numeric
+> price counts as unknown, never as 0. "How to Reduce Costs" mentions `/api/v3/model/price`
+> (singular); the studio uses `/model/pricing` from the API reference.
+
+How the studio uses them (`services/pricing.py`):
+- Model cards: `base_price` of each catalog endpoint on the chosen provider ("≈ $X / image",
+  cached 10 minutes per user).
+- Clicking Generate (or Repeat) first runs every check of a real submit, then asks the
+  pricing endpoint with the exact inputs the run would send (references as placeholders), one
+  call per request size. The confirmation shows the total, the price per image and the source;
+  the run starts only after the user confirms. Without an estimate, the list price × images is
+  shown and labelled as the list price. Nothing is generated or charged by these calls.
 
 ## Atlas Cloud (`https://api.atlascloud.ai`)
 
@@ -32,7 +56,10 @@ Docs: https://wavespeed.ai/docs — predictions, media upload, balance.
 | Upload | `POST /api/v1/model/uploadMedia` (multipart `file`) | `data.download_url` |
 
 Auth: `Authorization: Bearer <key>`. Status values: processing, completed, failed.
-Atlas documents no balance endpoint, so the app shows no balance for it.
+Atlas documents no balance endpoint, so the app shows no balance for it. It has no price API
+either: its docs point to a pricing page (https://www.atlascloud.ai/docs/models/price; image
+models are billed per generation). The studio shows "Price unknown" with that link, and the
+run still needs the user's confirmation.
 "Test connection" looks up a prediction id that cannot exist (free): 401/403 = key rejected.
 Docs: https://www.atlascloud.ai/docs — predictions, image models.
 
@@ -88,7 +115,11 @@ fixed presets; only the 2K presets are offered there. Atlas edit documents no si
 Not documented for these endpoints and therefore never sent or shown: negative prompt,
 guidance scale, steps, safety-checker switches. Mature content on the Wan models follows the
 providers' own policies; images the provider flags (`has_nsfw_contents`) are blurred when
-"Blur mature content" is on.
+"Blur mature content" is on. On top of that, Generate has an "18+ content" switch (off by
+default; `adult` in the request): off, explicit prompts are refused on Wan as well
+(`adult_off`); on, they are allowed (never with minor-related terms) and every image of the
+run is marked 18+. The switch is not a provider parameter and is never sent; it is disabled on
+the SFW-only models.
 
 ## Reference images and AI models
 

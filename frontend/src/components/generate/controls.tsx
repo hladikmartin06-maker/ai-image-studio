@@ -25,6 +25,7 @@ import {
   Switch,
   Tooltip,
 } from "@/components/ui";
+import { formatMoney } from "@/components/studio/common";
 import { ApiError } from "@/lib/api";
 import { formatRelative } from "@/lib/format";
 import { useI18n, useT } from "@/lib/i18n";
@@ -38,13 +39,18 @@ export function ModelPicker({
   value,
   onChange,
   connected,
+  prices,
+  pricesLoading,
 }: {
   models: ModelInfo[];
   value: ModelKey;
   onChange: (key: ModelKey) => void;
   connected: ProviderKey[];
+  // List prices (USD per image) on the chosen provider; `supported` false = no price API.
+  prices?: { supported: boolean; prices: Partial<Record<ModelKey, number | null>> };
+  pricesLoading?: boolean;
 }) {
-  const t = useT();
+  const { t, locale } = useI18n();
   return (
     <div className="models" role="radiogroup" aria-label={t("gen.model")}>
       {models.map((m) => (
@@ -63,6 +69,12 @@ export function ModelPicker({
             </Badge>
           </div>
           <div className="desc clamp-2">{t(`model.${m.key}.short`)}</div>
+          <ModelPrice
+            price={prices?.prices[m.key]}
+            supported={prices?.supported}
+            loading={pricesLoading}
+            locale={locale}
+          />
           <div className="avail">
             {(["wavespeed", "atlas"] as ProviderKey[]).map((p) => (
               <span
@@ -83,6 +95,29 @@ export function ModelPicker({
           </div>
         </button>
       ))}
+    </div>
+  );
+}
+
+function ModelPrice({
+  price,
+  supported,
+  loading,
+  locale,
+}: {
+  price: number | null | undefined;
+  supported: boolean | undefined;
+  loading?: boolean;
+  locale: string;
+}) {
+  const t = useT();
+  if (loading) return <div className="model-price subtle">…</div>;
+  if (supported === undefined) return null;
+  if (!supported) return <div className="model-price subtle">{t("price.cardNoApi")}</div>;
+  if (price === null || price === undefined) return <div className="model-price subtle">{t("price.cardUnknown")}</div>;
+  return (
+    <div className="model-price" title={t("price.cardHint")}>
+      {t("price.card", { price: formatMoney(price, locale) })}
     </div>
   );
 }
@@ -200,10 +235,13 @@ export function ReferenceImages({
   refs,
   onChange,
   max,
+  offset = 0,
 }: {
   refs: ReferenceImage[];
   onChange: (refs: ReferenceImage[]) => void;
   max: number;
+  // Images sent before these (the AI model's), so the numbers match the order sent.
+  offset?: number;
 }) {
   const t = useT();
   const upload = useUploadReference();
@@ -280,8 +318,30 @@ export function ReferenceImages({
       {refs.length || pending ? (
         <div className="refs">
           {refs.map((ref, i) => (
-            <div className="ref" key={ref.id}>
-              <img src={ref.thumb_url} alt={ref.original_name || t("refs.reference")} />
+            <div className="ref" key={ref.id} data-first={(i === 0 && refs.length > 1) || undefined}>
+              {refs.length > 1 ? (
+                // Click a photo to make it the first one (the order is the order sent).
+                <button
+                  type="button"
+                  className="ref-pick"
+                  aria-label={i === 0 ? t("refs.isFirst") : t("refs.makeFirst")}
+                  title={i === 0 ? t("refs.isFirst") : t("refs.makeFirst")}
+                  onClick={() => {
+                    if (i === 0) return;
+                    onChange([ref, ...refs.filter((r) => r.id !== ref.id)]);
+                    toast.success(t("refs.nowFirst"));
+                  }}
+                >
+                  <img src={ref.thumb_url} alt={ref.original_name || t("refs.reference")} />
+                </button>
+              ) : (
+                <img src={ref.thumb_url} alt={ref.original_name || t("refs.reference")} />
+              )}
+              {refs.length > 1 ? (
+                <span className="ref-order" aria-hidden>
+                  {offset + i + 1}
+                </span>
+              ) : null}
               <div className="ref-actions">
                 <IconButton
                   label={t("refs.replace")}
@@ -337,6 +397,9 @@ export function ReferenceImages({
           </div>
         </button>
       )}
+      {refs.length > 1 ? (
+        <div className="hint">{t(offset ? "refs.orderHintPersona" : "refs.orderHint", { n: offset })}</div>
+      ) : null}
     </div>
   );
 }

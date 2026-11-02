@@ -41,6 +41,43 @@ export interface ProviderInfo {
   keys_url: string;
   docs_url: string;
   supports_balance: boolean;
+  // A price API exists (WaveSpeed); otherwise the price is on the provider's pricing page.
+  supports_prices: boolean;
+  pricing_url: string | null;
+}
+
+/** List prices (USD) of the hosted models on each connected provider. */
+export interface PriceList {
+  currency: "USD";
+  providers: Partial<
+    Record<
+      ProviderKey,
+      {
+        supported: boolean;
+        pricing_url: string | null;
+        error: string | null;
+        prices: { model: ModelKey; mode: Mode; model_id: string; price: number | null }[];
+      }
+    >
+  >;
+}
+
+/** The price of one request before it is sent (an estimate from the provider's own API). */
+export interface PriceEstimate {
+  provider: ProviderKey;
+  provider_name: string;
+  model: ModelKey;
+  model_name: string;
+  mode: Mode;
+  images: number;
+  requests: number;
+  currency: "USD";
+  total: number | null;
+  per_image: number | null;
+  source: "estimate" | "list_price" | null;
+  supported: boolean;
+  pricing_url: string | null;
+  error: string | null;
 }
 
 export interface Variant {

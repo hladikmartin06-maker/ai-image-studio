@@ -367,6 +367,9 @@ class JobWorker:
         self, gen: Generation, task: ProviderTask, outputs: list[str], nsfw_flags: list[bool]
     ) -> None:
         datas = [await self._download(gen, output) for output in outputs]
+        if (gen.settings or {}).get("adult"):
+            # Run with "18+ content" on: every image counts as 18+ (blurred per Settings).
+            nsfw_flags = [True] * len(datas)
         await self.store_outputs(gen, task, datas, nsfw_flags)
 
     async def store_outputs(

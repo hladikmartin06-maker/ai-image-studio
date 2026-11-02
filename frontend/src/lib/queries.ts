@@ -26,6 +26,7 @@ import type {
   GpuUsage,
   GpuWorkload,
   IntegrationList,
+  PriceList,
   ComfyCatalog,
   ComfyConnection,
   ComfyWorkflow,
@@ -57,6 +58,7 @@ export const keys = {
   settings: ["settings"] as const,
   integrations: ["integrations"] as const,
   balance: (p: string) => ["balance", p] as const,
+  prices: ["prices"] as const,
   stats: ["stats"] as const,
   images: ["images"] as const,
   imageList: (filters: ImageFilters) => ["images", "list", filters] as const,
@@ -158,6 +160,17 @@ export function useBalance(provider: string, enabled: boolean) {
     queryFn: () => api<Balance>(`/api/integrations/${provider}/balance`),
     enabled,
     staleTime: 60_000,
+    retry: false,
+  });
+}
+
+/** List prices of the hosted models (from the providers' price APIs, where they exist). */
+export function usePrices(enabled: boolean) {
+  return useQuery({
+    queryKey: keys.prices,
+    queryFn: () => api<PriceList>("/api/prices"),
+    enabled,
+    staleTime: 10 * 60_000,
     retry: false,
   });
 }
@@ -335,6 +348,8 @@ export interface CreateGenerationBody {
   settings: Record<string, unknown>;
   reference_image_ids: string[];
   client_request_id: string;
+  // "18+ content" on Wan 2.7 / Wan 2.7 Pro.
+  adult?: boolean;
   persona?: {
     id: string;
     reference_image_ids: string[];

@@ -32,13 +32,8 @@ from app.models import (
 )
 from app.services import personas
 from app.services.generation import GenerationRejected
-from app.services.safety import PromptRefused, check_prompt, is_explicit
+from app.services.safety import ADULT_OFF, PromptRefused, check_prompt, is_explicit
 from app.services.worker import worker
-
-ADULT_OFF = (
-    "This prompt asks for 18+ content. Turn on “18+ content” (adults only, fictional "
-    "characters) to generate it."
-)
 
 PROVIDER = "comfyui"
 

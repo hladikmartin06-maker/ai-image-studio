@@ -6,7 +6,8 @@ API reference (https://www.atlascloud.ai/docs):
            status: processing | completed | failed
   upload   POST {base}/api/v1/model/uploadMedia (multipart "file") -> data.download_url
 Authentication: "Authorization: Bearer <API key>".
-Atlas documents no balance endpoint, so the app shows no balance for it.
+Atlas documents no balance endpoint and no price API (prices are on its pricing page), so
+the app shows neither for it.
 """
 
 from __future__ import annotations
@@ -92,6 +93,12 @@ class AtlasAdapter:
         return url
 
     async def balance(self, api_key: str) -> float | None:
+        return None
+
+    async def list_prices(self, api_key: str) -> dict[str, float]:
+        return {}
+
+    async def estimate(self, api_key: str, model_id: str, payload: dict[str, Any]) -> float | None:
         return None
 
     async def check(self, api_key: str) -> ConnectionCheck:

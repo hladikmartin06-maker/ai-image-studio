@@ -6,11 +6,17 @@ API reference (https://wavespeed.ai/docs):
                                                               has_nsfw_contents[]}
   upload   POST {base}/api/v3/media/upload/binary (multipart "file") -> data.download_url
   balance  GET  {base}/api/v3/balance                     -> data.balance (USD)
+  models   GET  {base}/api/v3/models                      -> data: [{model_id, base_price, ...}]
+  pricing  POST {base}/api/v3/model/pricing  {model_id, inputs} -> data: {model_id, unit_price}
+Prices are in USD (docs: /docs/docs-common-api/models, /docs/docs-common-api/pricing,
+/docs/how-pricing-works). The two price calls are not yet checked against the real API, so
+both are read tolerantly and shown as estimates.
 Authentication: "Authorization: Bearer <API key>".
 """
 
 from __future__ import annotations
 
+import math
 from typing import Any
 
 import httpx
@@ -99,6 +105,35 @@ class WaveSpeedAdapter:
         except (TypeError, ValueError):
             return None
 
+    async def list_prices(self, api_key: str) -> dict[str, float]:
+        """The list price (`base_price`, USD) of each model, by model id."""
+        async with self._client(api_key, timeout=30) as client:
+            response = await request(KEY, client, "GET", f"{self.base}/api/v3/models")
+        data = unwrap(KEY, response)
+        items = data.get("value", data.get("items", data.get("models", [])))
+        out: dict[str, float] = {}
+        for item in items if isinstance(items, list) else []:
+            if not isinstance(item, dict):
+                continue
+            model_id, price = item.get("model_id"), _price(item.get("base_price"))
+            if isinstance(model_id, str) and price is not None:
+                out[model_id] = price
+        return out
+
+    async def estimate(self, api_key: str, model_id: str, payload: dict[str, Any]) -> float | None:
+        """The price of one request with these inputs (`unit_price`, USD), from WaveSpeed's
+        pricing endpoint; it runs nothing and costs nothing."""
+        async with self._client(api_key, timeout=30) as client:
+            response = await request(
+                KEY,
+                client,
+                "POST",
+                f"{self.base}/api/v3/model/pricing",
+                json={"model_id": model_id, "inputs": payload},
+            )
+        data = unwrap(KEY, response)
+        return _price(data.get("unit_price"))
+
     async def check(self, api_key: str) -> ConnectionCheck:
         try:
             balance = await self.balance(api_key)
@@ -107,6 +142,17 @@ class WaveSpeedAdapter:
                 return ConnectionCheck(False, exc.user_message)
             raise
         return ConnectionCheck(True, "Connected to WaveSpeed.", balance=balance)
+
+
+def _price(value: Any) -> float | None:
+    """A price in USD; anything else (missing, negative, text) counts as unknown."""
+    if isinstance(value, bool):
+        return None
+    try:
+        price = float(value)
+    except (TypeError, ValueError):
+        return None
+    return price if math.isfinite(price) and price >= 0 else None
 
 
 def failure(message: str | None) -> ProviderError:

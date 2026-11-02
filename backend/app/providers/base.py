@@ -88,6 +88,13 @@ class ProviderAdapter(Protocol):
 
     async def balance(self, api_key: str) -> float | None: ...
 
+    # Prices in USD, only where the provider has a price API (None/empty otherwise):
+    async def list_prices(self, api_key: str) -> dict[str, float]: ...
+
+    async def estimate(
+        self, api_key: str, model_id: str, payload: dict[str, Any]
+    ) -> float | None: ...
+
 
 # --- helpers shared by the adapters ----------------------------------------------------
 

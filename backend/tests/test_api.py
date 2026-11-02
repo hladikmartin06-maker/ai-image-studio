@@ -230,13 +230,33 @@ async def test_content_rules(connected: Api, fake):
         json={"model": "wan-2.7", "provider": "wavespeed", "prompt": "nude teen"},
     )
     assert minors.status_code == 422
-    adult = await connected.post(
+    body = {"model": "wan-2.7", "provider": "wavespeed", "prompt": "artistic nude, adult woman"}
+    # Wan allows 18+ content, but only with its "18+ content" switch on.
+    off = await connected.post("/api/generations", json=body)
+    assert off.status_code == 422 and off.json()["error"]["code"] == "adult_off"
+    # The switch never opens SFW-only models.
+    on_sfw = await connected.post(
         "/api/generations",
-        json={"model": "wan-2.7", "provider": "wavespeed", "prompt": "artistic nude, adult woman"},
+        json={**body, "model": "nano-banana-pro", "prompt": "a portrait", "adult": True},
     )
+    assert on_sfw.status_code == 400
+    adult = await connected.post("/api/generations", json={**body, "adult": True})
     assert adult.status_code == 201
-    await wait_done(connected, adult.json()["id"])
-    assert fake.submits == [] or fake.submits[0]["model"] == "alibaba/wan-2.7/text-to-image"
+    gen = await wait_done(connected, adult.json()["id"])
+    assert fake.submits[-1]["model"] == "alibaba/wan-2.7/text-to-image"
+    # Kept with the request, never sent to the provider; every image is marked 18+.
+    assert gen["settings"]["adult"] is True
+    assert "adult" not in fake.submits[-1]["body"] and "adult" not in gen["request_payload"]
+    assert gen["images"] and all(img["nsfw"] is True for img in gen["images"])
+    # Repeating it keeps the switch on.
+    again = await connected.post(f"/api/generations/{gen['id']}/regenerate", json={"count": 1})
+    assert again.status_code == 201, again.text
+    assert (await wait_done(connected, again.json()["id"]))["settings"]["adult"] is True
+    # A safe prompt with the switch off stays unmarked (the provider's own flag counts).
+    safe = await connected.post("/api/generations", json={**body, "prompt": "a lighthouse at dusk"})
+    safe_gen = await wait_done(connected, safe.json()["id"])
+    assert "adult" not in safe_gen["settings"]
+    assert all(img["nsfw"] is not True for img in safe_gen["images"])
 
 
 async def test_provider_errors_are_normalized(connected: Api, fake):
@@ -422,3 +442,56 @@ async def test_prompt_history(connected: Api, fake):
         await wait_done(connected, r.json()["id"])
     items = (await connected.get("/api/prompts/history")).json()["items"]
     assert [i["prompt"] for i in items] == ["one", "two"]
+
+
+async def test_prices_and_estimate_before_a_run(connected: Api, fake):
+    """WaveSpeed's price API gives the list price per model and an estimate per request;
+    Atlas Cloud has none (price unknown, link to its pricing page). Nothing is generated."""
+    listing = (await connected.get("/api/prices")).json()
+    ws = listing["providers"]["wavespeed"]
+    assert ws["supported"] is True and ws["error"] is None
+    wan = next(p for p in ws["prices"] if p["model"] == "wan-2.7" and p["mode"] == "text-to-image")
+    assert wan["price"] == fake.list_price
+    atlas = listing["providers"]["atlas"]
+    assert atlas["supported"] is False and atlas["prices"] == [] and atlas["pricing_url"]
+
+    body = {"model": "wan-2.7", "provider": "wavespeed", "prompt": "a lighthouse", "count": 2}
+    est = (await connected.post("/api/generations/estimate", json=body)).json()
+    assert est["source"] == "estimate" and est["currency"] == "USD"
+    assert est["total"] == round(fake.unit_price * 2, 4)
+    assert est["per_image"] == fake.unit_price and est["images"] == 2
+    # The real inputs are priced (here the size), and nothing was submitted.
+    assert fake.pricing_calls[-1]["model_id"] == "alibaba/wan-2.7/text-to-image"
+    assert "size" in fake.pricing_calls[-1]["inputs"]
+    assert fake.submits == []
+
+    # Without an estimate, the list price per image is used.
+    fake.pricing_fails = True
+    est = (await connected.post("/api/generations/estimate", json=body)).json()
+    assert est["source"] == "list_price" and est["total"] == round(fake.list_price * 2, 4)
+    fake.pricing_fails = False
+
+    # Atlas: no price, but the request is still checked.
+    est = await connected.post("/api/generations/estimate", json={**body, "provider": "atlas"})
+    assert est.status_code == 200
+    assert est.json()["total"] is None and est.json()["supported"] is False
+    # The estimate runs every check of a real submit.
+    refused = await connected.post(
+        "/api/generations/estimate",
+        json={**body, "model": "nano-banana-pro", "prompt": "a nude figure"},
+    )
+    assert refused.status_code == 422
+    adult_off = await connected.post(
+        "/api/generations/estimate", json={**body, "prompt": "artistic nude, adult woman"}
+    )
+    assert adult_off.json()["error"]["code"] == "adult_off"
+
+    # Repeating a run is priced the same way.
+    gen = await wait_done(
+        connected, (await connected.post("/api/generations", json=body)).json()["id"]
+    )
+    again = await connected.post(f"/api/generations/{gen['id']}/estimate", json={"count": 1})
+    assert again.status_code == 200, again.text
+    assert again.json()["total"] == fake.unit_price and again.json()["images"] == 1
+    # Only the run's own two requests (one image each) were submitted, never an estimate.
+    assert len(fake.submits) == 2

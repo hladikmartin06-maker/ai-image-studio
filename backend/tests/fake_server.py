@@ -144,6 +144,34 @@ async def ws_balance(request: Request):
     return {"code": 200, "message": "success", "data": {"balance": 25.0}}
 
 
+@app.get("/ws/api/v3/models")
+async def ws_models(request: Request):
+    """List prices (test values, not WaveSpeed's) for the catalog's endpoints."""
+    if not _authorized(request):
+        return _unauthorized()
+    from app.catalog import MODELS
+
+    ids = sorted({v.model_id for m in MODELS.values() for v in m.variants})
+    return {
+        "code": 200,
+        "message": "success",
+        "data": [{"model_id": i, "name": i, "base_price": 0.05} for i in ids],
+    }
+
+
+@app.post("/ws/api/v3/model/pricing")
+async def ws_pricing(request: Request):
+    if not _authorized(request):
+        return _unauthorized()
+    body = await request.json()
+    count = int((body.get("inputs") or {}).get("n") or 1)
+    return {
+        "code": 200,
+        "message": "success",
+        "data": {"model_id": body.get("model_id"), "unit_price": round(0.04 * count, 4)},
+    }
+
+
 @app.post("/ws/api/v3/media/upload/binary")
 async def ws_upload(request: Request, file: UploadFile = File(...)):
     if not _authorized(request):

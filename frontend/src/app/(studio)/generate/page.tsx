@@ -23,9 +23,10 @@ import {
   PersonaSection,
 } from "@/components/personas/persona-picker";
 import { JobCard } from "@/components/generate/job-card";
+import { usePriceConfirm } from "@/components/generate/price-confirm";
 import { ImageViewer } from "@/components/images/image-viewer";
 import { ProviderLogo } from "@/components/logos";
-import { Button, EmptyState, IconButton, Notice, Segmented, Skeleton, Spinner } from "@/components/ui";
+import { Button, EmptyState, IconButton, Notice, Segmented, Skeleton, Spinner, Switch } from "@/components/ui";
 import { api, ApiError } from "@/lib/api";
 import { useT } from "@/lib/i18n";
 import {
@@ -43,6 +44,7 @@ import {
   useGenerations,
   useIntegrations,
   usePersonas,
+  usePrices,
   useSettings,
 } from "@/lib/queries";
 import type {
@@ -70,6 +72,8 @@ interface Draft {
   refs: ReferenceImage[];
   // The saved AI model (character) whose description and references go with the request.
   persona: PersonaDraft | null;
+  // "18+ content" on the models that allow it (Wan 2.7, Wan 2.7 Pro).
+  adult: boolean;
 }
 
 /** The AI model part of a past generation, for "load these settings". */
@@ -154,6 +158,8 @@ export default function GeneratePage() {
   const settings = useSettings();
   const integrations = useIntegrations();
   const create = useCreateGeneration();
+  const priceConfirm = usePriceConfirm();
+  const [pricing, setPricing] = useState(false);
   const results = useGenerations({ limit: 10 });
   const personas = usePersonas();
   const prefs = settings.data;
@@ -228,6 +234,7 @@ export default function GeneratePage() {
       settings: {},
       refs: [],
       persona: null,
+      adult: false,
     };
     const params = new URLSearchParams(window.location.search);
     const from = params.get("from");
@@ -262,6 +269,7 @@ export default function GeneratePage() {
               seed: gen.settings.seed !== undefined ? String(gen.settings.seed) : "",
             },
             ...personaFromGeneration(gen),
+            adult: Boolean(gen.settings.adult),
           });
           router.replace("/generate");
         })
@@ -288,6 +296,7 @@ export default function GeneratePage() {
       count: Math.min(4, Math.max(1, saved?.count ?? defaults.count)),
       settings: saved?.settings ?? {},
       refs: saved?.refs ?? [],
+      adult: saved?.adult === true,
       persona: chosenPersona
         ? saved?.persona?.id === chosenPersona
           ? saved.persona
@@ -326,6 +335,17 @@ export default function GeneratePage() {
   const maxImages = catalog.data?.limits.max_images ?? 4;
 
   const fitted = variant && draft ? fitSettings(variant, draft.settings, prefs) : undefined;
+  const allowsAdult = model?.content === "sfw+nsfw";
+
+  // List prices for the model cards (WaveSpeed's price API; Atlas Cloud has none).
+  const priceList = usePrices(connected.length > 0);
+  const cardPrices = useMemo(() => {
+    const entry = provider ? priceList.data?.providers[provider] : undefined;
+    if (!entry) return undefined;
+    const out: Partial<Record<ModelKey, number | null>> = {};
+    for (const p of entry.prices) if (p.mode === (withRefs ? "image-edit" : "text-to-image")) out[p.model] = p.price;
+    return { supported: entry.supported, prices: out };
+  }, [priceList.data, provider, withRefs]);
 
   // What the assistant sees when the user asks about the current setup.
   useEffect(() => {
@@ -400,7 +420,7 @@ export default function GeneratePage() {
   const promptMissing = !draft?.prompt.trim();
 
   const submit = async () => {
-    if (!draft || submitting.current || create.isPending) return;
+    if (!draft || submitting.current || create.isPending || pricing) return;
     setTouched(true);
     if (!connected.length) {
       toast.error(t("gen.problemNoProvider"), {
@@ -417,25 +437,36 @@ export default function GeneratePage() {
       return;
     }
     submitting.current = true;
+    const body = {
+      model: draft.model,
+      provider,
+      prompt: draft.prompt.trim(),
+      count: draft.count,
+      settings: toPayload(fitted),
+      reference_image_ids: draft.refs.map((r) => r.id),
+      client_request_id: newRequestId(),
+      adult: allowsAdult && draft.adult,
+      persona:
+        persona && personaDraft
+          ? {
+              id: persona.id,
+              reference_image_ids: personaRefs.map((r) => r.id),
+              use_references: personaDraft.useRefs && personaRefs.length > 0,
+              use_description: personaDraft.useDescription,
+            }
+          : null,
+    };
     try {
-      await create.mutateAsync({
-        model: draft.model,
-        provider,
-        prompt: draft.prompt.trim(),
-        count: draft.count,
-        settings: toPayload(fitted),
-        reference_image_ids: draft.refs.map((r) => r.id),
-        client_request_id: newRequestId(),
-        persona:
-          persona && personaDraft
-            ? {
-                id: persona.id,
-                reference_image_ids: personaRefs.map((r) => r.id),
-                use_references: personaDraft.useRefs && personaRefs.length > 0,
-                use_description: personaDraft.useDescription,
-              }
-            : null,
-      });
+      // Paid models: the price first, and the run starts only after the user confirms it.
+      setPricing(true);
+      let ok = false;
+      try {
+        ok = await priceConfirm.forRequest(body);
+      } finally {
+        setPricing(false);
+      }
+      if (!ok) return;
+      await create.mutateAsync(body);
       if (prefs?.clear_prompt_after_generate) update({ prompt: "" });
       setTouched(false);
     } catch (e) {
@@ -472,6 +503,7 @@ export default function GeneratePage() {
       count: gen.image_count,
       settings: { ...gen.settings, seed: gen.settings.seed !== undefined ? String(gen.settings.seed) : "" },
       ...personaFromGeneration(gen),
+      adult: Boolean(gen.settings.adult),
     });
     toast.success(t("gen.loaded"));
   };
@@ -669,6 +701,8 @@ export default function GeneratePage() {
               value={draft.model}
               connected={connected}
               onChange={(m) => update({ model: m })}
+              prices={cardPrices}
+              pricesLoading={priceList.isLoading}
             />
           </div>
 
@@ -725,6 +759,7 @@ export default function GeneratePage() {
                 refs={draft.refs}
                 max={editVariant.max_reference_images}
                 onChange={(refs) => update({ refs })}
+                offset={personaRefs.length}
               />
             </div>
           ) : provider && model ? (
@@ -748,6 +783,23 @@ export default function GeneratePage() {
             </div>
           ) : null}
 
+          <div className="row" style={{ gap: 10, alignItems: "flex-start" }}>
+            <Switch
+              checked={allowsAdult && draft.adult}
+              disabled={!allowsAdult}
+              onChange={(v) => update({ adult: v })}
+              label={t("k2.adult")}
+            />
+            <div>
+              <div className="small">{t("k2.adult")}</div>
+              <div className="hint">
+                {!allowsAdult
+                  ? t("gen.adultSfwOnly", { model: model?.name ?? "" })
+                  : t(draft.adult ? "k2.adultOnHint" : "k2.adultOffHint")}
+              </div>
+            </div>
+          </div>
+
           {problems.length && connected.length ? (
             <Notice tone="warning">
               {problems.map((p) => (
@@ -761,12 +813,14 @@ export default function GeneratePage() {
             variant="primary"
             size="lg"
             block
-            loading={create.isPending}
-            disabled={create.isPending || (connected.length > 0 && problems.length > 0)}
+            loading={create.isPending || pricing}
+            disabled={create.isPending || pricing || (connected.length > 0 && problems.length > 0)}
             onClick={submit}
             icon={<Sparkles />}
           >
-            {create.isPending
+            {pricing
+              ? t("price.checking")
+              : create.isPending
               ? t("gen.submitting")
               : draft.count > 1
                 ? t("gen.generateN", { n: draft.count })

@@ -250,17 +250,20 @@ async def test_description_follows_the_content_rules(connected: Api, fake):
     )
     assert sfw.status_code == 422
     assert "AI model “Lena”" in sfw.json()["error"]["message"]
-    adult = await connected.post(
-        "/api/generations",
-        json={
-            "model": "wan-2.7-pro",
-            "provider": "wavespeed",
-            "prompt": "a portrait",
-            "persona": {"id": bold["id"]},
-        },
-    )
+    body = {
+        "model": "wan-2.7-pro",
+        "provider": "wavespeed",
+        "prompt": "a portrait",
+        "persona": {"id": bold["id"]},
+    }
+    off = await connected.post("/api/generations", json=body)
+    assert off.status_code == 422 and off.json()["error"]["code"] == "adult_off"
+    assert "AI model “Lena”" in off.json()["error"]["message"]
+    adult = await connected.post("/api/generations", json={**body, "adult": True})
     assert adult.status_code == 201
-    await wait_done(connected, adult.json()["id"])
+    gen = await wait_done(connected, adult.json()["id"])
+    assert gen["settings"]["adult"] is True
+    assert all(img["nsfw"] is True for img in gen["images"])
 
 
 async def test_regenerate_repeats_the_request_as_sent(connected: Api, fake):

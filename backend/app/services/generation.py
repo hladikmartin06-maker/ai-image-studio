@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import uuid
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
@@ -17,6 +18,8 @@ from app.catalog import (
     MAX_PROMPT_CHARS,
     PROVIDERS,
     CatalogError,
+    ModelInfo,
+    Variant,
     build_payload,
     get_model,
     normalize_settings,
@@ -25,7 +28,7 @@ from app.catalog import (
 )
 from app.models import Generation, Integration, Persona, ProviderTask, ReferenceImage, User
 from app.services import personas, preferences
-from app.services.safety import PromptRefused, check_prompt
+from app.services.safety import ADULT_OFF, PromptRefused, check_prompt, is_explicit
 from app.services.worker import worker
 
 
@@ -51,6 +54,9 @@ class GenerationRequest(BaseModel):
     client_request_id: str | None = Field(default=None, max_length=64)
     source_generation_id: uuid.UUID | None = None
     persona: PersonaUse | None = None
+    # "18+ content" (adults only) on the models that allow it (Wan 2.7, Wan 2.7 Pro): off =
+    # explicit prompts are refused there too; on = the images are marked 18+.
+    adult: bool = False
 
 
 class Replay(BaseModel):
@@ -130,17 +136,93 @@ async def _persona_references(
     return persona, chosen, meta
 
 
+@dataclass
+class Prepared:
+    """A request checked against the catalog and the prompt rules, ready to be stored."""
+
+    model: ModelInfo
+    variant: Variant
+    provider: str
+    integration: Integration
+    prompt: str
+    final_prompt: str | None
+    settings: dict[str, Any]
+    ref_ids: list[uuid.UUID]
+    persona: Persona | None
+    persona_meta: dict[str, Any]
+    plan: list[int]
+
+
 async def create_generation(
     db: AsyncSession, user: User, req: GenerationRequest, *, replay: Replay | None = None
 ) -> Generation:
-    prompt = req.prompt.strip()
-    if not prompt:
-        raise GenerationRejected("invalid_parameter", "Enter a prompt.")
-
     if req.client_request_id:
         existing = await _existing(db, user, req.client_request_id)
         if existing is not None:
             return existing
+
+    p = await prepare(db, user, req, replay=replay)
+    model, variant, provider, prompt = p.model, p.variant, p.provider, p.prompt
+    final_prompt, settings, ref_ids, persona = p.final_prompt, p.settings, p.ref_ids, p.persona
+    persona_meta, plan = p.persona_meta, p.plan
+    preview = build_payload(
+        variant,
+        prompt=final_prompt or prompt,
+        settings=settings,
+        image_urls=[f"<reference {i + 1}>" for i in range(len(ref_ids))],
+        count=plan[0],
+    )
+    gen = Generation(
+        user_id=user.id,
+        client_request_id=req.client_request_id,
+        model_key=model.key,
+        provider=provider,
+        mode=variant.mode,
+        provider_model_id=variant.model_id,
+        prompt=prompt,
+        settings=settings,
+        request_payload=preview,
+        reference_image_ids=[str(r) for r in ref_ids],
+        image_count=req.count,
+        status="queued",
+        source_generation_id=req.source_generation_id,
+        persona_id=persona.id if persona is not None else (replay.persona_id if replay else None),
+        persona_meta=persona_meta,
+        final_prompt=final_prompt,
+        tasks=[ProviderTask(index=i, images_requested=n) for i, n in enumerate(plan)],
+    )
+    db.add(gen)
+    if persona is not None:
+        persona.last_used_at = datetime.now(UTC)
+    try:
+        await db.commit()
+    except IntegrityError:
+        # Two identical submits raced; return the one that won.
+        await db.rollback()
+        if req.client_request_id:
+            existing = await _existing(db, user, req.client_request_id)
+            if existing is not None:
+                return existing
+        raise
+    worker.enqueue(gen.id)
+    loaded = await db.scalar(
+        select(Generation)
+        .where(Generation.id == gen.id)
+        .options(selectinload(Generation.tasks), selectinload(Generation.images))
+        .execution_options(populate_existing=True)
+    )
+    assert loaded is not None
+    return loaded
+
+
+async def prepare(
+    db: AsyncSession, user: User, req: GenerationRequest, *, replay: Replay | None = None
+) -> Prepared:
+    """Every check of a request, without storing or sending anything (also used for the
+    price shown before a run)."""
+    prompt = req.prompt.strip()
+    if not prompt:
+        raise GenerationRejected("invalid_parameter", "Enter a prompt.")
 
     prefs = await preferences.load(db, user.id)
     provider = req.provider or prefs.active_provider
@@ -208,9 +290,17 @@ async def create_generation(
             f"{variant.max_reference_images} reference images.",
         )
 
+    if req.adult and model.content != "sfw+nsfw":
+        raise GenerationRejected(
+            "invalid_parameter",
+            f"{model.name} is for SFW images only. 18+ content is available on Wan 2.7 and "
+            "Wan 2.7 Pro.",
+        )
     allows_mature = model.content == "sfw+nsfw"
     try:
         check_prompt(prompt, allows_mature=allows_mature)
+        if allows_mature and not req.adult and is_explicit(prompt):
+            raise PromptRefused("adult_off", ADULT_OFF)
     except PromptRefused as exc:
         raise GenerationRejected(exc.code, exc.message, 422) from exc
 
@@ -229,57 +319,34 @@ async def create_generation(
         try:
             if persona is not None:
                 personas.check_composed(final_prompt, persona, allows_mature)
+                if allows_mature and not req.adult and is_explicit(final_prompt):
+                    raise PromptRefused(
+                        "adult_off",
+                        f"The description of the AI model “{persona.name}” asks for 18+ "
+                        "content. Turn on “18+ content” or switch its description off.",
+                    )
             else:
                 check_prompt(final_prompt, allows_mature=allows_mature)
+                if allows_mature and not req.adult and is_explicit(final_prompt):
+                    raise PromptRefused("adult_off", ADULT_OFF)
         except PromptRefused as exc:
             raise GenerationRejected(exc.code, exc.message, 422) from exc
 
-    plan = plan_tasks(variant, req.count)
-    preview = build_payload(
-        variant,
-        prompt=final_prompt or prompt,
-        settings=settings,
-        image_urls=[f"<reference {i + 1}>" for i in range(len(ref_ids))],
-        count=plan[0],
-    )
-    gen = Generation(
-        user_id=user.id,
-        client_request_id=req.client_request_id,
-        model_key=model.key,
+    if req.adult:
+        # Kept with the request (never sent to the provider: build_payload uses only the
+        # documented settings); the worker marks these images 18+.
+        settings["adult"] = True
+
+    return Prepared(
+        model=model,
+        variant=variant,
         provider=provider,
-        mode=variant.mode,
-        provider_model_id=variant.model_id,
+        integration=integration,
         prompt=prompt,
-        settings=settings,
-        request_payload=preview,
-        reference_image_ids=[str(r) for r in ref_ids],
-        image_count=req.count,
-        status="queued",
-        source_generation_id=req.source_generation_id,
-        persona_id=persona.id if persona is not None else (replay.persona_id if replay else None),
-        persona_meta=persona_meta,
         final_prompt=final_prompt,
-        tasks=[ProviderTask(index=i, images_requested=n) for i, n in enumerate(plan)],
+        settings=settings,
+        ref_ids=ref_ids,
+        persona=persona,
+        persona_meta=persona_meta,
+        plan=plan_tasks(variant, req.count),
     )
-    db.add(gen)
-    if persona is not None:
-        persona.last_used_at = datetime.now(UTC)
-    try:
-        await db.commit()
-    except IntegrityError:
-        # Two identical submits raced; return the one that won.
-        await db.rollback()
-        if req.client_request_id:
-            existing = await _existing(db, user, req.client_request_id)
-            if existing is not None:
-                return existing
-        raise
-    worker.enqueue(gen.id)
-    loaded = await db.scalar(
-        select(Generation)
-        .where(Generation.id == gen.id)
-        .options(selectinload(Generation.tasks), selectinload(Generation.images))
-        .execution_options(populate_existing=True)
-    )
-    assert loaded is not None
-    return loaded

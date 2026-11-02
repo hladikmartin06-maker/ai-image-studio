@@ -17,7 +17,7 @@ from app.models import Integration, User
 from app.providers import get_adapter
 from app.providers.base import ProviderError
 from app.security import decrypt_secret, encrypt_secret, mask_key
-from app.services import preferences
+from app.services import preferences, pricing
 from app.services.preferences import PreferencesPatch
 from app.services.serializers import iso
 
@@ -108,6 +108,7 @@ async def save_key(
     row.last_checked_at = now
     await db.commit()
     _balance_cache.pop((str(user.id), provider), None)
+    pricing.forget(str(user.id), provider)
 
     prefs = await preferences.load(db, user.id)
     if prefs.active_provider is None or await _row(db, user, prefs.active_provider) is None:
@@ -125,6 +126,7 @@ async def disconnect(
         await db.delete(row)
         await db.commit()
     _balance_cache.pop((str(user.id), provider), None)
+    pricing.forget(str(user.id), provider)
     prefs = await preferences.load(db, user.id)
     if prefs.active_provider == provider:
         other = next((p for p in PROVIDERS if p != provider), None)

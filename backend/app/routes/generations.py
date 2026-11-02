@@ -17,14 +17,17 @@ from app.db import get_db
 from app.deps import api_error, current_user
 from app.models import Generation, Image, ReferenceImage, User
 from app.routes.paging import after, encode_cursor
-from app.services import storage
+from app.services import pricing, storage
 from app.services.generation import (
     GenerationRejected,
     GenerationRequest,
     Replay,
     create_generation,
+    prepare,
 )
+from app.services.safety import is_explicit
 from app.services.serializers import generation_json
+from app.services.worker import model_allows_mature
 
 router = APIRouter(prefix="/api", tags=["generations"])
 
@@ -64,6 +67,25 @@ async def create(
     except GenerationRejected as exc:
         raise _rejected(exc) from exc
     return generation_json(gen)
+
+
+@router.post("/generations/estimate")
+async def estimate(
+    body: GenerationRequest, user: User = Depends(current_user), db: AsyncSession = Depends(get_db)
+):
+    """The price of a request before it is sent: every check of a real submit, then the
+    provider's own price (an estimate; nothing is sent to be generated)."""
+    try:
+        prepared = await prepare(db, user, body)
+    except GenerationRejected as exc:
+        raise _rejected(exc) from exc
+    return await pricing.estimate(user, prepared, body.count)
+
+
+@router.get("/prices")
+async def prices(user: User = Depends(current_user), db: AsyncSession = Depends(get_db)):
+    """List prices of the hosted models on the connected providers (where an API has them)."""
+    return await pricing.model_prices(db, user)
 
 
 @router.get("/generations")
@@ -124,25 +146,11 @@ async def get_generation(
     return generation_json(await _owned(db, user, gen_id))
 
 
-@router.post("/generations/{gen_id}/regenerate", status_code=201)
-async def regenerate(
-    gen_id: uuid.UUID,
-    body: RegenerateBody | None = None,
-    user: User = Depends(current_user),
-    db: AsyncSession = Depends(get_db),
-):
-    """Runs a past request again with the same model, provider, prompt, settings and
-    references. With a fixed seed the provider can reproduce the result."""
-    source = await _owned(db, user, gen_id)
-    body = body or RegenerateBody()
-    if source.provider == "comfyui":
-        from app.comfy.generation import repeat
-
-        try:
-            gen = await repeat(db, user, source, body.count, body.client_request_id)
-        except GenerationRejected as exc:
-            raise _rejected(exc) from exc
-        return generation_json(gen)
+async def _repeat_request(
+    db: AsyncSession, user: User, source: Generation, body: RegenerateBody
+) -> tuple[GenerationRequest, Replay]:
+    """The request a repeat sends: the same model, provider, prompt, settings, references and
+    18+ switch as the original."""
     existing_refs = (
         await db.scalars(
             select(ReferenceImage.id).where(
@@ -166,6 +174,14 @@ async def regenerate(
         reference_image_ids=[uuid.UUID(r) for r in source.reference_image_ids],
         client_request_id=body.client_request_id,
         source_generation_id=source.id,
+        # Runs from before the switch existed: an explicit prompt on Wan was 18+ already.
+        adult=bool(
+            (source.settings or {}).get("adult")
+            or (
+                model_allows_mature(source.model_key)
+                and is_explicit(source.final_prompt or source.prompt)
+            )
+        ),
     )
     # Same prompt as sent last time (with the AI model's description of that moment).
     replay = Replay(
@@ -173,11 +189,54 @@ async def regenerate(
         persona_id=source.persona_id,
         persona_meta=dict(source.persona_meta or {}),
     )
+    return request, replay
+
+
+@router.post("/generations/{gen_id}/regenerate", status_code=201)
+async def regenerate(
+    gen_id: uuid.UUID,
+    body: RegenerateBody | None = None,
+    user: User = Depends(current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Runs a past request again with the same model, provider, prompt, settings and
+    references. With a fixed seed the provider can reproduce the result."""
+    source = await _owned(db, user, gen_id)
+    body = body or RegenerateBody()
+    if source.provider == "comfyui":
+        from app.comfy.generation import repeat
+
+        try:
+            gen = await repeat(db, user, source, body.count, body.client_request_id)
+        except GenerationRejected as exc:
+            raise _rejected(exc) from exc
+        return generation_json(gen)
+    request, replay = await _repeat_request(db, user, source, body)
     try:
         gen = await create_generation(db, user, request, replay=replay)
     except GenerationRejected as exc:
         raise _rejected(exc) from exc
     return generation_json(gen)
+
+
+@router.post("/generations/{gen_id}/estimate")
+async def estimate_repeat(
+    gen_id: uuid.UUID,
+    body: RegenerateBody | None = None,
+    user: User = Depends(current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """The price of repeating a hosted request (ComfyUI runs are not priced per image)."""
+    source = await _owned(db, user, gen_id)
+    body = body or RegenerateBody()
+    if source.provider == "comfyui":
+        raise api_error(400, "not_priced", "ComfyUI runs have no price per image.")
+    request, replay = await _repeat_request(db, user, source, body)
+    try:
+        prepared = await prepare(db, user, request, replay=replay)
+    except GenerationRejected as exc:
+        raise _rejected(exc) from exc
+    return await pricing.estimate(user, prepared, request.count)
 
 
 @router.post("/generations/{gen_id}/cancel")

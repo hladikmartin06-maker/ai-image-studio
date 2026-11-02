@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { useCallback } from "react";
 import { toast } from "sonner";
 
+import { usePriceConfirm } from "@/components/generate/price-confirm";
 import { useConfirm } from "@/components/ui";
 import { ApiError, downloadUrl } from "@/lib/api";
 import { useT } from "@/lib/i18n";
@@ -107,6 +108,7 @@ export function useImageActions() {
   const confirm = useConfirm();
   const remove = useDeleteImage();
   const regenerate = useRegenerate();
+  const priceConfirm = usePriceConfirm();
   const save = useSaveToLibrary();
 
   const download = useCallback((img: StudioImage) => downloadUrl(img.download_url), []);
@@ -143,6 +145,8 @@ export function useImageActions() {
   const regenerateImage = useCallback(
     async (img: StudioImage) => {
       try {
+        // Paid models: the price first; it runs only after the user confirms it.
+        if (img.provider !== "comfyui" && !(await priceConfirm.forRepeat(img.generation_id, 1))) return;
         await regenerate.mutateAsync({ id: img.generation_id, count: 1 });
         toast.success(t("images.regenerating"), {
           action: { label: t("common.view"), onClick: () => router.push("/generate") },
@@ -157,7 +161,7 @@ export function useImageActions() {
         });
       }
     },
-    [regenerate, router, t],
+    [priceConfirm, regenerate, router, t],
   );
 
   const saveToLibrary = useCallback(

@@ -1,7 +1,9 @@
 """A fake WaveSpeed + Atlas Cloud API (httpx.MockTransport) with the documented shapes.
 
 WaveSpeed: POST /api/v3/{model}, GET /api/v3/predictions/{id}/result,
-           POST /api/v3/media/upload/binary, GET /api/v3/balance
+           POST /api/v3/media/upload/binary, GET /api/v3/balance,
+           GET /api/v3/models (base_price), POST /api/v3/model/pricing (unit_price)
+           (prices here are test values, not WaveSpeed's)
 Atlas:     POST /api/v1/model/generateImage, GET /api/v1/model/prediction/{id},
            POST /api/v1/model/uploadMedia
 Images are served from https://cdn.fake/<name>.png.
@@ -39,6 +41,11 @@ class FakeProviders:
     fail_message: str | None = None
     polls_until_done: int = 1
     nsfw: bool = False
+    # Test prices (USD): list price per image, the estimate per image of a request.
+    list_price: float = 0.05
+    unit_price: float = 0.04
+    pricing_fails: bool = False
+    pricing_calls: list[dict[str, Any]] = field(default_factory=list)
     _ids: itertools.count = field(default_factory=lambda: itertools.count(1))
 
     def transport(self) -> httpx.MockTransport:
@@ -84,6 +91,37 @@ class FakeProviders:
         if url.host == "api.wavespeed.fake":
             if path == "/api/v3/balance":
                 return httpx.Response(200, json={"code": 200, "data": {"balance": 12.5}})
+            if path == "/api/v3/models":
+                from app.catalog import MODELS
+
+                ids = {v.model_id for m in MODELS.values() for v in m.variants}
+                items = [
+                    {
+                        "model_id": i,
+                        "name": i,
+                        "type": "text-to-image",
+                        "base_price": self.list_price,
+                    }
+                    for i in sorted(ids)
+                ]
+                return httpx.Response(200, json={"code": 200, "message": "success", "data": items})
+            if path == "/api/v3/model/pricing":
+                body = json.loads(request.content)
+                self.pricing_calls.append(body)
+                if self.pricing_fails:
+                    return httpx.Response(400, json={"code": 400, "message": "invalid inputs"})
+                count = int(body["inputs"].get("n") or 1)
+                return httpx.Response(
+                    200,
+                    json={
+                        "code": 200,
+                        "message": "success",
+                        "data": {
+                            "model_id": body["model_id"],
+                            "unit_price": self.unit_price * count,
+                        },
+                    },
+                )
             if path == "/api/v3/media/upload/binary":
                 name = f"https://cdn.fake/upload-{len(self.uploads) + 1}.png"
                 self.uploads.append(name)

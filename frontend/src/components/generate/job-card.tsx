@@ -5,6 +5,7 @@ import Link from "next/link";
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
 
+import { usePriceConfirm } from "@/components/generate/price-confirm";
 import { copyText, useImageActions, useQuickDelete } from "@/components/images/actions";
 import { ImageTile } from "@/components/images/image-tile";
 import { AddToLora } from "@/components/lora/add-to-lora";
@@ -56,13 +57,27 @@ export function JobCard({
   const actions = useImageActions();
   const quick = useQuickDelete();
   const regenerate = useRegenerate();
+  const priceConfirm = usePriceConfirm();
   const cancel = useCancelGeneration();
   const running = gen.status === "queued" || gen.status === "processing";
   const elapsed = useElapsed(gen.started_at ?? gen.created_at, running);
   const ar = ratioOf(gen);
   const pending = running ? Math.max(0, gen.image_count - gen.images.length) : 0;
 
-  const again = () =>
+  const [pricing, setPricing] = useState(false);
+  const again = async () => {
+    if (gen.provider !== "comfyui") {
+      // Paid models: the price first; it runs only after the user confirms it.
+      setPricing(true);
+      try {
+        if (!(await priceConfirm.forRepeat(gen.id))) return;
+      } catch (e) {
+        toast.error((e as Error).message);
+        return;
+      } finally {
+        setPricing(false);
+      }
+    }
     regenerate.mutate(
       { id: gen.id },
       {
@@ -70,6 +85,7 @@ export function JobCard({
         onError: (e) => toast.error((e as Error).message),
       },
     );
+  };
 
   return (
     <article className="card job" aria-busy={running}>
@@ -121,7 +137,7 @@ export function JobCard({
               <Ban />
             </IconButton>
           ) : (
-            <IconButton label={t("images.regenerate")} disabled={running || regenerate.isPending} onClick={again}>
+            <IconButton label={t("images.regenerate")} disabled={running || regenerate.isPending || pricing} onClick={again}>
               <RefreshCw />
             </IconButton>
           )}
@@ -181,7 +197,7 @@ export function JobCard({
       ) : null}
       {gen.status === "failed" && !running ? (
         <div className="row" style={{ marginTop: 10 }}>
-          <Button size="sm" icon={<RefreshCw />} loading={regenerate.isPending} onClick={again}>
+          <Button size="sm" icon={<RefreshCw />} loading={regenerate.isPending || pricing} onClick={again}>
             {t("gen.tryAgain")}
           </Button>
         </div>

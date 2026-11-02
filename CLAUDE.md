@@ -56,9 +56,15 @@ repositories.
   `x-studio-client: web` header (CSRF guard).
 - No fake results or fabricated statistics; empty, loading and error states everywhere.
 - Prompts with sexual content and minor-related terms are always refused; explicit prompts
-  are refused on the SFW-only models (`services/safety.py`) and on Krea 2 unless its
-  "18+ content" switch is on (off by default; `adult` in the request). 18+ Krea 2 runs, and
-  runs that start from an 18+ image, mark their images `nsfw` (blurred per Settings).
+  are refused on the SFW-only models (`services/safety.py`) and on Wan 2.7, Wan 2.7 Pro and
+  Krea 2 unless their "18+ content" switch is on (off by default; `adult` in the request,
+  never sent to a provider). 18+ runs, and Krea 2 runs that start from an 18+ image, mark
+  their images `nsfw` (blurred per Settings).
+- Hosted runs cost money: Generate and Repeat first show the price and start only after the
+  user confirms (`POST /api/generations/estimate`, `services/pricing.py`). Prices only from a
+  provider API (WaveSpeed `model/pricing`, list `base_price`), always labelled estimates;
+  Atlas Cloud has none, so "Price unknown" with a link to its pricing page.
+- Reference images are sent in the order shown; clicking a photo makes it the first one.
 - AI Models (`personas`, page `/ai-models`) are saved fictional adult characters, not image
   models. Creating one needs the adult confirmation; profile text with minor-related terms is
   refused; age ≥ 18. Their description is appended to the prompt only when the user keeps it

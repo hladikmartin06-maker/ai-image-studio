@@ -26,6 +26,9 @@ PROVIDERS: dict[str, dict[str, Any]] = {
         "keys_url": "https://wavespeed.ai/accesskey",
         "docs_url": "https://wavespeed.ai/docs",
         "supports_balance": True,
+        # Prices come from its API (list price per model, estimate per request).
+        "supports_prices": True,
+        "pricing_url": "https://wavespeed.ai/docs/how-pricing-works",
     },
     "atlas": {
         "key": "atlas",
@@ -35,6 +38,9 @@ PROVIDERS: dict[str, dict[str, Any]] = {
         "keys_url": "https://www.atlascloud.ai/console/api-keys",
         "docs_url": "https://www.atlascloud.ai/docs",
         "supports_balance": False,
+        # No price API: the user checks its pricing page.
+        "supports_prices": False,
+        "pricing_url": "https://www.atlascloud.ai/docs/models/price",
     },
 }
 
