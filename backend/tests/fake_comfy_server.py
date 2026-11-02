@@ -113,6 +113,8 @@ class FakeComfy:
         self.polls_until_done = polls
         self.prompts: dict[str, dict] = {}
         self.order: list[str] = []
+        # The most prompts this ComfyUI ever had waiting or running at once.
+        self.max_active = 0
         self.interrupted: list[str] = []
         self.fail_with: str | None = None
         self.require_token: str | None = None
@@ -262,6 +264,8 @@ class FakeComfy:
             with self.lock:
                 self.prompts[prompt_id] = {"prompt": prompt, "polls": 0, "done": False}
                 self.order.append(prompt_id)
+                active = [p for p in self.order if not self.prompts[p]["done"]]
+                self.max_active = max(self.max_active, len(active))
             return self._json(
                 {"prompt_id": prompt_id, "number": len(self.order), "node_errors": {}}
             )

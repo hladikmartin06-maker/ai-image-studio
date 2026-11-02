@@ -26,7 +26,7 @@ Next.js 16 (127.0.0.1:3000) ── /api/* rewrite ──▶ FastAPI (127.0.0.1:8
 | `providers/` | `base.py` contract + error normalization, `wavespeed.py`, `atlas.py` |
 | `services/generation.py` | validates a request against the catalog (`prepare`) and creates the job |
 | `services/pricing.py` | prices before a hosted run: WaveSpeed's price API (list price, estimate per request); Atlas has none |
-| `services/worker.py` | runs jobs: upload references, submit, poll, download, store, publish |
+| `services/worker.py` | runs jobs: upload references, submit, poll, download, store, publish; ComfyUI runs (Krea 2, Enhance photo) in a queue per connection — one at a time on a GPU, in the order started, waiting runs show their place — outside the hosted models' worker slots |
 | `services/storage.py` | originals byte-for-byte + 640 px WebP thumbnails, path-safe |
 | `services/references.py` | reference validation, SHA-256 de-duplication, provider upload reuse (24 h), clean-up |
 | `services/personas.py` | AI models: profile schema, prompt text, adult-only checks, which references go with a request |
@@ -41,7 +41,7 @@ Next.js 16 (127.0.0.1:3000) ── /api/* rewrite ──▶ FastAPI (127.0.0.1:8
 | `ai/service.py` | one assistant turn: local/cached/streamed answer, attached photos (downscaled, sent only with their message), usage, background summary |
 | `gpu/` | `base.py` contract, `runpod.py` (REST + GraphQL), `modal_provider.py` (SDK), `registry.py`, `service.py` (credentials, launch + record, cost) |
 | `gpu/agent/` | `studio_agent.py`: stdlib HTTP agent that runs inside a GPU container (files with offsets/ranges, jobs: train / models / download — downloads from huggingface.co only, logs, the container's start log, ComfyUI proxy), sent compressed in the environment; `COMFY_BOOT` starts it in RunPod's ComfyUI image before the image's own `/start.sh` |
-| `gpu/agent_client.py` | client for the agent (chunked resumable upload, ranged resumable download with SHA-256) |
+| `gpu/agent_client.py` | client for the agent (chunked resumable upload in 8 MB pieces: a chunk whose answer was lost continues from the size the agent reports with "offset mismatch", one upload per file at a time, size checked at the end; ranged resumable download with SHA-256) |
 | `comfy/` | `client.py` (ComfyUI HTTP API), `krea2.py` (verified facts, file detection, sizes, workflow, LoRA compatibility), `workflows.py` (import, secret scrubbing, bindings, LoRA insertion), `service.py` (connections, inspection, LoRA placement), `generation.py`, `runner.py` (in the job worker), `deploy.py` (ComfyUI on RunPod/Modal) |
 | `lora/` | `presets.py` (per-architecture options and presets), `aitoolkit.py` (job file), `dataset.py` (analysis, dHash, packing with crop), `captions.py` (vision captions via the assistant provider), `safetensors_meta.py`, `runner.py` (training state machine), `serial.py` |
 | `services/gpu_runner.py` | background loop that advances training runs and deployments (state in the database) |

@@ -56,6 +56,7 @@ Integrations and Settings.
     ≈ 17 GB, downloaded from Hugging Face straight to the GPU, with progress);
     **3** pick an AI model and LoRA, start from text or **from a photo** (image to image: your
     upload or a library image, and how much changes, 0.1–0.95), write the prompt and generate.
+    Several runs started at once wait in a queue and go one after another on the GPU.
     Krea 2 is SFW + NSFW: the **"18+ content"** switch (off by default) allows adult content
     for fictional adult characters and marks those images 18+ (blurred if Settings say so).
     Seed, steps and CFG under "More settings"; model files, logs and custom workflows under

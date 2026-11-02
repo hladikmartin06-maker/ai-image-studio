@@ -4,6 +4,8 @@ cancel and recovery, LoRA placement, deployment on RunPod through the real agent
 from __future__ import annotations
 
 import asyncio
+import json
+import re
 import uuid
 from pathlib import Path
 
@@ -246,6 +248,43 @@ async def test_krea2_generation_end_to_end(user: Api, comfy: FakeComfy):
     assert rerun.status_code == 201
     rerun_gen = await wait_done(user, rerun.json()["id"])
     assert rerun_gen["settings"]["seed"] == gen["settings"]["seed"]
+
+
+async def test_runs_on_one_gpu_wait_for_each_other(user: Api, comfy: FakeComfy):
+    """Several runs started at once on the same ComfyUI (e.g. 4 + 4 + 4 images) go one after
+    another: the next is sent only when the previous one ended, and the waiting ones show
+    their place in the queue."""
+    conn = await add_local(user)
+    comfy.polls_until_done = 3
+    ids = []
+    for i in range(3):
+        r = await user.post(
+            "/api/comfy/generate",
+            json={
+                "connection_id": conn["id"],
+                "variant": "turbo",
+                "prompt": f"run {i}",
+                "count": 4,
+            },
+        )
+        assert r.status_code == 201, r.text
+        ids.append(r.json()["id"])
+    places: set[int] = set()
+    for _ in range(400):
+        gens = [(await user.get(f"/api/generations/{i}")).json() for i in ids]
+        for g in gens:
+            position = (g["tasks"][0].get("progress") or {}).get("queue_position")
+            if g["status"] == "queued" and position:
+                places.add(position)
+        if all(g["status"] in ("completed", "failed") for g in gens):
+            break
+        await asyncio.sleep(0.02)
+    assert [g["status"] for g in gens] == ["completed"] * 3
+    assert all(len(g["images"]) == 4 for g in gens)
+    assert comfy.max_active == 1  # never two runs on the GPU at once
+    sent = [re.search(r"run (\d)", json.dumps(comfy.prompts[p]["prompt"])) for p in comfy.order]
+    assert [m.group(1) for m in sent if m] == ["0", "1", "2"]  # in the order started
+    assert places >= {1, 2}
 
 
 async def test_failures_cancel_and_recovery(user: Api, comfy: FakeComfy):

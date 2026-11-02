@@ -93,6 +93,62 @@ async def test_files_offsets_ranges_and_paths(agent, tmp_path: Path, monkeypatch
     assert not (workspace / "a").exists()
 
 
+class LosingProxy(httpx.AsyncBaseTransport):
+    """Like a proxy in front of a rented GPU that times out: chosen uploads reach the agent
+    (all of the chunk, or only its first half) but their answer never comes back."""
+
+    def __init__(self, lose: dict[int, str]):
+        self.inner = httpx.AsyncHTTPTransport()
+        self.lose = lose  # PUT number -> "full" | "half"
+        self.puts = 0
+
+    async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+        if request.method == "PUT":
+            self.puts += 1
+            how = self.lose.get(self.puts)
+            if how:
+                body = await request.aread()
+                sent = body if how == "full" else body[: len(body) // 2]
+                forwarded = httpx.Request(
+                    "PUT",
+                    request.url,
+                    headers={**request.headers, "content-length": str(len(sent))},
+                    content=sent,
+                )
+                response = await self.inner.handle_async_request(forwarded)
+                await response.aread()
+                raise httpx.ReadTimeout("the answer was lost", request=request)
+        return await self.inner.handle_async_request(request)
+
+
+async def test_upload_survives_lost_answers(agent, tmp_path: Path, monkeypatch):
+    """A chunk that reached the GPU but whose answer was lost is not sent twice: the agent's
+    "offset mismatch" (with its real size) moves the upload on. This used to end with
+    "Upload to the GPU failed: offset mismatch"."""
+    client, workspace = agent
+    monkeypatch.setattr("app.gpu.agent_client.UPLOAD_CHUNK", 1000)
+    monkeypatch.setattr("app.gpu.agent_client.asyncio.sleep", _no_sleep)
+    data = os.urandom(5555)
+    src = tmp_path / "lora.safetensors"
+    src.write_bytes(data)
+    proxy = LosingProxy({2: "full", 5: "half"})
+    monkeypatch.setattr(AgentClient, "transport", proxy)
+    await client.upload_file("models/loras/lora.safetensors", src)
+    assert (workspace / "models/loras/lora.safetensors").read_bytes() == data
+
+    # Two uploads of the same file at once (two runs with the same LoRA) do not mix.
+    monkeypatch.setattr(AgentClient, "transport", None)
+    await asyncio.gather(
+        client.upload_file("models/loras/lora.safetensors", src),
+        client.upload_file("models/loras/lora.safetensors", src),
+    )
+    assert (workspace / "models/loras/lora.safetensors").read_bytes() == data
+
+
+async def _no_sleep(_seconds: float) -> None:
+    return None
+
+
 async def test_training_job_progress_logs_and_cancel(agent, tmp_path: Path):
     client, workspace = agent
     run = workspace / "runs/r1"

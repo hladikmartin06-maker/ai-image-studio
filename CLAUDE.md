@@ -102,7 +102,8 @@ repositories.
   2 install the model with one click once ComfyUI answers (Turbo or RAW, files from
   `huggingface.co/Comfy-Org/Krea-2`), 3 AI model, LoRA, start from text or a photo (image to
   image: built-in nodes, `denoise` 0.1–0.95, size from the photo's aspect ratio), prompt and
-  generate.
+  generate. Runs on one ComfyUI connection form a queue (`worker._run_comfy`): one at a time,
+  in the order started; files (LoRA, photo) go to the GPU one upload per file at a time.
 - RunPod through its REST API v2 (`api.runpod.io/v2`; v1 is retired 2026-11-15). GPU lists
   and CUDA versions come from its catalog (`/v2/catalog/gpus?include=AVAILABILITY&product=
   POD&cloud=…`): only GPUs with a free machine are offered (Community Cloud with its own price

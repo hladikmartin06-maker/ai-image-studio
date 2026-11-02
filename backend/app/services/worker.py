@@ -4,6 +4,9 @@ Lifecycle of a generation (see docs/ARCHITECTURE.md):
   queued -> processing -> completed | failed        (cancelled only while still queued)
 Each generation has one or more provider tasks:
   pending -> submitting -> processing -> completed | failed
+ComfyUI runs (Krea 2, Enhance photo) wait in a queue per ComfyUI connection: one run at a
+time on a GPU, the next starts when the previous ended (files such as the LoRA are uploaded
+just before each run), outside the worker slots of the hosted models.
 A task is sent to the provider at most once. If the app stops while a task is
 "submitting" (the provider may already have accepted and charged it), the task is
 failed as "interrupted" instead of being sent again. Tasks that have a provider id are
@@ -15,6 +18,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import binascii
+import contextlib
 import logging
 import uuid
 from datetime import UTC, datetime, timedelta
@@ -73,6 +77,10 @@ class JobWorker:
         self._queue: asyncio.Queue[uuid.UUID] = asyncio.Queue()
         self._running: set[uuid.UUID] = set()
         self._tasks: list[asyncio.Task[None]] = []
+        # ComfyUI: one lane per connection (the runs in it, the first one is running).
+        self._lanes: dict[str, list[uuid.UUID]] = {}
+        self._lane_locks: dict[str, asyncio.Lock] = {}
+        self._comfy: dict[uuid.UUID, asyncio.Task[None]] = {}
         # Overridable in tests to make polling instant.
         self.poll_initial = 1.5
         self.poll_max = 6.0
@@ -89,10 +97,14 @@ class JobWorker:
         await self.recover()
 
     async def stop(self) -> None:
-        for task in self._tasks:
+        tasks = [*self._tasks, *self._comfy.values()]
+        for task in tasks:
             task.cancel()
-        await asyncio.gather(*self._tasks, return_exceptions=True)
+        await asyncio.gather(*tasks, return_exceptions=True)
         self._tasks.clear()
+        self._comfy.clear()
+        self._lanes.clear()
+        self._lane_locks.clear()
 
     def enqueue(self, gen_id: uuid.UUID) -> None:
         self._queue.put_nowait(gen_id)
@@ -114,7 +126,7 @@ class JobWorker:
 
     async def drain(self) -> None:
         """Waits until every queued generation has finished (used by tests)."""
-        while not self._queue.empty() or self._running:  # noqa: ASYNC110
+        while not self._queue.empty() or self._running or self._comfy:  # noqa: ASYNC110
             await asyncio.sleep(0.01)
 
     async def _consume(self) -> None:
@@ -149,6 +161,9 @@ class JobWorker:
         gen = await load_generation(gen_id)
         if gen is None or gen.status not in ("queued", "processing"):
             return
+        if gen.provider == "comfyui":
+            self._queue_comfy(gen)
+            return
 
         async with SessionLocal() as db:
             result = await db.execute(
@@ -160,14 +175,6 @@ class JobWorker:
         if result.rowcount == 0:  # cancelled in the meantime
             return
         await publish(gen_id)
-
-        if gen.provider == "comfyui":
-            from app.comfy import runner as comfy_runner
-
-            await comfy_runner.run(self, gen)
-            await self._finish(gen_id)
-            await comfy_runner.after_finish(gen_id)
-            return
 
         try:
             api_key = await self._api_key(gen)
@@ -191,6 +198,85 @@ class JobWorker:
             )
         )
         await self._finish(gen_id)
+
+    # --- ComfyUI queue -------------------------------------------------------------------
+
+    def _queue_comfy(self, gen: Generation) -> None:
+        if gen.id in self._comfy:
+            return
+        lane = str((gen.comfy_meta or {}).get("connection_id") or "")
+        self._lanes.setdefault(lane, []).append(gen.id)
+        task = asyncio.create_task(self._run_comfy(gen.id, lane))
+        self._comfy[gen.id] = task
+
+    async def _run_comfy(self, gen_id: uuid.UUID, lane: str) -> None:
+        from app.comfy import runner as comfy_runner
+
+        lock = self._lane_locks.setdefault(lane, asyncio.Lock())
+        try:
+            await self._show_lane(lane)
+            async with lock:  # asyncio.Lock wakes its waiters in order
+                gen = await load_generation(gen_id)
+                if gen is None or gen.status not in ("queued", "processing"):
+                    return  # cancelled while waiting
+                async with SessionLocal() as db:
+                    result = await db.execute(
+                        update(Generation)
+                        .where(
+                            Generation.id == gen_id,
+                            Generation.status.in_(("queued", "processing")),
+                        )
+                        .values(status="processing", started_at=gen.started_at or utcnow())
+                    )
+                    await db.commit()
+                if result.rowcount == 0:
+                    return
+                async with SessionLocal() as db:  # its place in the queue is over
+                    await db.execute(
+                        update(ProviderTask)
+                        .where(
+                            ProviderTask.generation_id == gen_id, ProviderTask.status == "pending"
+                        )
+                        .values(progress={})
+                    )
+                    await db.commit()
+                await publish(gen_id)
+                gen = await load_generation(gen_id) or gen
+                try:
+                    await comfy_runner.run(self, gen)
+                except asyncio.CancelledError:
+                    raise
+                except Exception:  # noqa: BLE001 - one broken run must never stop the queue
+                    log.exception("ComfyUI run %s crashed", gen_id)
+                    await self._fail_open_tasks(
+                        gen_id, "provider_error", "Unexpected error while generating."
+                    )
+                await self._finish(gen_id)
+                await comfy_runner.after_finish(gen_id)
+        finally:
+            waiting = self._lanes.get(lane, [])
+            if gen_id in waiting:
+                waiting.remove(gen_id)
+            if not waiting:
+                self._lanes.pop(lane, None)
+            self._comfy.pop(gen_id, None)
+            if waiting:
+                with contextlib.suppress(Exception):
+                    await self._show_lane(lane)
+
+    async def _show_lane(self, lane: str) -> None:
+        """Runs waiting for an earlier one on the same GPU show their place in the queue."""
+        for position, gen_id in enumerate(list(self._lanes.get(lane, []))):
+            if position == 0:
+                continue
+            async with SessionLocal() as db:
+                await db.execute(
+                    update(ProviderTask)
+                    .where(ProviderTask.generation_id == gen_id, ProviderTask.status == "pending")
+                    .values(progress={"state": "waiting", "queue_position": position})
+                )
+                await db.commit()
+            await publish(gen_id)
 
     async def _api_key(self, gen: Generation) -> str:
         async with SessionLocal() as db:
