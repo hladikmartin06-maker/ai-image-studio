@@ -118,7 +118,8 @@ async def _persona_references(
     }
     if not use.use_references or not chosen:
         return persona, [], meta
-    edit = get_model(model_key).variant(provider, "image-edit")
+    model = get_model(model_key)
+    edit = model.variant(provider, model.mode_for(True))
     if edit is None:
         meta["references_skipped"] = "unsupported"
         return persona, [], meta

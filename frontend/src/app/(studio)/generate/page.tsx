@@ -47,6 +47,7 @@ import {
   usePrices,
   useSettings,
 } from "@/lib/queries";
+import { MODE_LABELS } from "@/lib/types";
 import type {
   Generation,
   ModelInfo,
@@ -91,11 +92,15 @@ function personaFromGeneration(gen: Generation): { persona: PersonaDraft | null;
   };
 }
 
+/** The mode a model runs in: with references an edit (images) or a video from a photo. */
+function modeFor(model: ModelInfo | undefined, withRefs: boolean) {
+  if (model?.media === "video") return withRefs ? "image-to-video" : "text-to-video";
+  return withRefs ? "image-edit" : "text-to-image";
+}
+
 function pickVariant(model: ModelInfo | undefined, provider: ProviderKey | null, withRefs: boolean) {
   if (!model || !provider) return undefined;
-  return model.variants.find(
-    (v) => v.provider === provider && v.mode === (withRefs ? "image-edit" : "text-to-image"),
-  );
+  return model.variants.find((v) => v.provider === provider && v.mode === modeFor(model, withRefs));
 }
 
 /** Keeps the draft settings valid for the endpoint that will run them. */
@@ -106,7 +111,7 @@ function fitSettings(variant: Variant, s: DraftSettings, prefs: Preferences | un
     if (!out.aspect_ratio || !ratios.includes(out.aspect_ratio)) {
       const preferred = prefs?.default_aspect_ratio;
       out.aspect_ratio =
-        variant.mode === "image-edit" && variant.allow_match_input
+        (variant.mode === "image-edit" || variant.mode === "image-to-video") && variant.allow_match_input
           ? "match"
           : preferred && ratios.includes(preferred)
             ? preferred
@@ -131,6 +136,16 @@ function fitSettings(variant: Variant, s: DraftSettings, prefs: Preferences | un
   if (variant.controls.includes("thinking_mode")) {
     if (out.thinking_mode === undefined) out.thinking_mode = prefs?.default_thinking_mode ?? true;
   } else delete out.thinking_mode;
+  if (variant.controls.includes("duration") && variant.durations) {
+    const [low, high] = variant.durations;
+    const d = Number(out.duration ?? variant.default_duration ?? low);
+    out.duration = Math.min(high, Math.max(low, Number.isFinite(d) ? Math.round(d) : low));
+  } else delete out.duration;
+  if (variant.controls.includes("generate_audio")) out.generate_audio = out.generate_audio ?? true;
+  else delete out.generate_audio;
+  if (variant.controls.includes("enable_prompt_expansion"))
+    out.enable_prompt_expansion = out.enable_prompt_expansion ?? false;
+  else delete out.enable_prompt_expansion;
   return out;
 }
 
@@ -141,6 +156,9 @@ function toPayload(settings: DraftSettings) {
   if (settings.output_format) out.output_format = settings.output_format;
   if (settings.seed !== undefined && settings.seed !== "") out.seed = Number(settings.seed);
   if (settings.thinking_mode !== undefined) out.thinking_mode = settings.thinking_mode;
+  if (settings.duration !== undefined) out.duration = settings.duration;
+  if (settings.generate_audio !== undefined) out.generate_audio = settings.generate_audio;
+  if (settings.enable_prompt_expansion !== undefined) out.enable_prompt_expansion = settings.enable_prompt_expansion;
   return out;
 }
 
@@ -343,9 +361,10 @@ export default function GeneratePage() {
     const entry = provider ? priceList.data?.providers[provider] : undefined;
     if (!entry) return undefined;
     const out: Partial<Record<ModelKey, number | null>> = {};
-    for (const p of entry.prices) if (p.mode === (withRefs ? "image-edit" : "text-to-image")) out[p.model] = p.price;
+    for (const m of catalog.data?.models ?? [])
+      for (const p of entry.prices) if (p.model === m.key && p.mode === modeFor(m, withRefs)) out[p.model] = p.price;
     return { supported: entry.supported, prices: out };
-  }, [priceList.data, provider, withRefs]);
+  }, [priceList.data, provider, withRefs, catalog.data]);
 
   // What the assistant sees when the user asks about the current setup.
   useEffect(() => {
@@ -743,7 +762,7 @@ export default function GeneratePage() {
           {editVariant ? (
             <div>
               <div className="section-title">
-                <span className="eyebrow grow">{t("refs.title")}</span>
+                <span className="eyebrow grow">{t(model?.media === "video" ? "refs.videoTitle" : "refs.title")}</span>
                 <span className="tiny subtle">
                   {personaRefs.length
                     ? t("pm.refCounter", {
@@ -760,6 +779,7 @@ export default function GeneratePage() {
                 max={editVariant.max_reference_images}
                 onChange={(refs) => update({ refs })}
                 offset={personaRefs.length}
+                video={model?.media === "video"}
               />
             </div>
           ) : provider && model ? (
@@ -770,7 +790,7 @@ export default function GeneratePage() {
             <div>
               <div className="section-title">
                 <span className="eyebrow grow">{t("gen.settings")}</span>
-                <span className="tiny subtle">{variant.mode === "image-edit" ? t("gen.modeEdit") : t("gen.modeText")}</span>
+                <span className="tiny subtle">{t(MODE_LABELS[variant.mode])}</span>
               </div>
               <SettingsControls
                 variant={variant}
@@ -822,9 +842,13 @@ export default function GeneratePage() {
               ? t("price.checking")
               : create.isPending
               ? t("gen.submitting")
-              : draft.count > 1
-                ? t("gen.generateN", { n: draft.count })
-                : t("gen.generate")}
+              : model?.media === "video"
+                ? draft.count > 1
+                  ? t("gen.generateVideos", { n: draft.count })
+                  : t("gen.generateVideo")
+                : draft.count > 1
+                  ? t("gen.generateN", { n: draft.count })
+                  : t("gen.generate")}
             <span className="kbd" aria-hidden>
               ⌘↵
             </span>

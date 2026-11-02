@@ -23,6 +23,7 @@ import { toast } from "sonner";
 import { AssistantDrawer } from "@/components/assistant/drawer";
 import { BrandMark, ProviderLogo } from "@/components/logos";
 import { IconButton, MenuItem, Popover, Spinner, Tooltip } from "@/components/ui";
+import { isVideo } from "@/lib/types";
 import { api } from "@/lib/api";
 import { useLiveGenerations } from "@/lib/events";
 import { useT } from "@/lib/i18n";
@@ -292,7 +293,7 @@ export function StudioShell({ children }: { children: ReactNode }) {
   const onFinished = useCallback(
     (gen: Generation) => {
       if (gen.status === "completed") {
-        toast.success(t("toast.generationDone", { n: gen.images.length }), {
+        toast.success(t(gen.images.some(isVideo) ? "toast.videoDone" : "toast.generationDone", { n: gen.images.length }), {
           description: gen.prompt.slice(0, 90),
           action: { label: t("common.view"), onClick: () => router.push("/generate") },
         });

@@ -18,6 +18,7 @@ import { toast } from "sonner";
 
 import { ProviderLogo } from "@/components/logos";
 import { Badge, Button, Field, Modal, Notice, Skeleton, useConfirm } from "@/components/ui";
+import { MODE_LABELS } from "@/lib/types";
 import { api, ApiError } from "@/lib/api";
 import { formatRelative } from "@/lib/format";
 import { useI18n } from "@/lib/i18n";
@@ -326,7 +327,7 @@ export function ImageProvidersTab() {
                                 title={v.model_id}
                               >
                                 <Check size={14} className="yes" />
-                                {v.mode === "image-edit" ? t("gen.modeEdit") : t("gen.modeText")}
+                                {t(MODE_LABELS[v.mode])}
                                 <span className="mono subtle" style={{ fontSize: 11 }}>
                                   {v.model_id}
                                 </span>

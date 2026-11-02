@@ -32,10 +32,14 @@ repositories.
 
 ## Product rules
 
-- Image generation only. Hosted models: Nano Banana Pro (SFW), Seedream (SFW), Wan 2.7 and
-  Wan 2.7 Pro (SFW + NSFW). Plus Krea 2 (RAW, Turbo) on the user's own ComfyUI
-  (`backend/app/comfy/krea2.py` holds the verified facts) and "Enhance photo" (below).
-  No other models or modes.
+- Image generation, plus video with Wan 3.0 (the owner's request, 2026-11-02). Hosted models:
+  Nano Banana Pro (SFW), Seedream (SFW), Wan 2.7 and Wan 2.7 Pro (SFW + NSFW), and the video
+  models Wan 3.0 and Wan 3.0 Prime (SFW; WaveSpeed only; video from text, or from a photo as
+  the first frame with an optional second photo as the last frame; 2–30 s, sound). Plus
+  Krea 2 (RAW, Turbo) on the user's own ComfyUI (`backend/app/comfy/krea2.py` holds the
+  verified facts) and "Enhance photo" (below). No other models or modes. Videos are stored as
+  delivered (MP4), shown with a player, and never used where a photo is needed (references,
+  AI models, LoRA photos, Krea 2, Enhance photo).
 - Providers: WaveSpeed and Atlas Cloud only, through `backend/app/providers/` (one adapter
   each, shared contract in `base.py`). The model catalog is `backend/app/catalog.py`: one
   `Variant` per provider endpoint. A UI control exists only when the provider documents that

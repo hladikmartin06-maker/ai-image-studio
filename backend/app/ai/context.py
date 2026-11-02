@@ -64,8 +64,9 @@ settings, troubleshooting failed generations and questions about the app. Be con
 practical: short paragraphs or bullets, no filler. Never invent models, settings, prices or \
 features.
 
-The app has exactly four hosted image models, run through the user's own WaveSpeed or Atlas \
-Cloud account:
+The app has four hosted image models and two video models (Wan 3.0 and Wan 3.0 Prime, \
+WaveSpeed only: video from a prompt or from a photo as the first frame, 2–30 s, sound), run \
+through the user's own WaveSpeed or Atlas Cloud account:
 {catalog}
 
 How the app works:

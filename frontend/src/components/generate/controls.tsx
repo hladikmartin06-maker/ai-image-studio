@@ -64,12 +64,14 @@ export function ModelPicker({
         >
           <div className="row" style={{ gap: 6 }}>
             <span className="name grow truncate">{m.name}</span>
+            {m.media === "video" ? <Badge tone="accent">{t("gen.video")}</Badge> : null}
             <Badge tone={m.content === "sfw" ? undefined : "accent"} title={t(`content.${m.content}.hint`)}>
               {t(`content.${m.content}`)}
             </Badge>
           </div>
           <div className="desc clamp-2">{t(`model.${m.key}.short`)}</div>
           <ModelPrice
+            video={m.media === "video"}
             price={prices?.prices[m.key]}
             supported={prices?.supported}
             loading={pricesLoading}
@@ -104,15 +106,19 @@ function ModelPrice({
   supported,
   loading,
   locale,
+  video,
 }: {
   price: number | null | undefined;
   supported: boolean | undefined;
   loading?: boolean;
   locale: string;
+  video?: boolean;
 }) {
   const t = useT();
   if (loading) return <div className="model-price subtle">…</div>;
   if (supported === undefined) return null;
+  // A video's price depends on its length and resolution: the confirmation shows it.
+  if (video) return <div className="model-price subtle">{t("price.cardVideo")}</div>;
   if (!supported) return <div className="model-price subtle">{t("price.cardNoApi")}</div>;
   if (price === null || price === undefined) return <div className="model-price subtle">{t("price.cardUnknown")}</div>;
   return (
@@ -236,12 +242,15 @@ export function ReferenceImages({
   onChange,
   max,
   offset = 0,
+  video = false,
 }: {
   refs: ReferenceImage[];
   onChange: (refs: ReferenceImage[]) => void;
   max: number;
   // Images sent before these (the AI model's), so the numbers match the order sent.
   offset?: number;
+  // Video from a photo: the first photo is the first frame, a second one the last frame.
+  video?: boolean;
 }) {
   const t = useT();
   const upload = useUploadReference();
@@ -397,7 +406,9 @@ export function ReferenceImages({
           </div>
         </button>
       )}
-      {refs.length > 1 ? (
+      {video ? (
+        <div className="hint">{t("refs.videoHint")}</div>
+      ) : refs.length > 1 ? (
         <div className="hint">{t(offset ? "refs.orderHintPersona" : "refs.orderHint", { n: offset })}</div>
       ) : null}
     </div>
@@ -412,6 +423,10 @@ export interface DraftSettings {
   output_format?: string;
   seed?: string;
   thinking_mode?: boolean;
+  // Video (Wan 3.0)
+  duration?: number;
+  generate_audio?: boolean;
+  enable_prompt_expansion?: boolean;
 }
 
 function RatioGlyph({ ratio }: { ratio: string }) {
@@ -483,16 +498,39 @@ export function SettingsControls({
             label={t("gen.resolution")}
             value={value.resolution}
             onChange={(v) => onChange({ resolution: v })}
-            options={variant.resolutions.map((r) => ({ value: r, label: r.toUpperCase() }))}
+            options={variant.resolutions.map((r) => ({ value: r, label: variant.durations ? r : r.toUpperCase() }))}
           />
         </div>
       ) : sizeLabel ? (
         <div className="hint">{sizeLabel}</div>
       ) : null}
 
+      {c.includes("duration") && variant.durations ? (
+        <div className="field">
+          <div className="row">
+            <label className="label grow" htmlFor="duration">
+              {t("gen.duration")}
+            </label>
+            <span className="small" style={{ fontWeight: 600 }}>
+              {t("gen.durationValue", { n: value.duration ?? variant.default_duration ?? 5 })}
+            </span>
+          </div>
+          <input
+            id="duration"
+            type="range"
+            min={variant.durations[0]}
+            max={variant.durations[1]}
+            step={1}
+            value={value.duration ?? variant.default_duration ?? 5}
+            onChange={(e) => onChange({ duration: Number(e.target.value) })}
+          />
+          <div className="hint">{t("gen.durationHint")}</div>
+        </div>
+      ) : null}
+
       <div className="field">
         <div className="row">
-          <div className="label grow">{t("gen.imageCount")}</div>
+          <div className="label grow">{t(variant.durations ? "gen.videoCount" : "gen.imageCount")}</div>
           <span className="tiny subtle">
             {variant.batched ? t("gen.oneRequest") : count > 1 ? t("gen.separateRequests", { n: count }) : ""}
           </span>
@@ -562,6 +600,38 @@ export function SettingsControls({
             label={t("gen.thinkingMode")}
             checked={value.thinking_mode ?? true}
             onChange={(v) => onChange({ thinking_mode: v })}
+          />
+        </div>
+      ) : null}
+
+      {c.includes("generate_audio") ? (
+        <div className="row" style={{ gap: 12 }}>
+          <div className="grow">
+            <div className="label" style={{ color: "var(--text)" }}>
+              {t("gen.audio")}
+            </div>
+            <div className="hint">{t("gen.audioHint")}</div>
+          </div>
+          <Switch
+            label={t("gen.audio")}
+            checked={value.generate_audio ?? true}
+            onChange={(v) => onChange({ generate_audio: v })}
+          />
+        </div>
+      ) : null}
+
+      {c.includes("enable_prompt_expansion") ? (
+        <div className="row" style={{ gap: 12 }}>
+          <div className="grow">
+            <div className="label" style={{ color: "var(--text)" }}>
+              {t("gen.expansion")}
+            </div>
+            <div className="hint">{t("gen.expansionHint")}</div>
+          </div>
+          <Switch
+            label={t("gen.expansion")}
+            checked={value.enable_prompt_expansion ?? false}
+            onChange={(v) => onChange({ enable_prompt_expansion: v })}
           />
         </div>
       ) : null}

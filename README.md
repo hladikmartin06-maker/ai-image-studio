@@ -47,6 +47,10 @@ Integrations and Settings.
     to its pricing) and starts only after you confirm it; Repeat asks the same way. Wan 2.7 and
     Wan 2.7 Pro have an **"18+ content"** switch at the bottom (off by default): off refuses
     explicit prompts, on allows adult content for fictional adults and marks the images 18+.
+    **Wan 3.0** and **Wan 3.0 Prime** (WaveSpeed) make **videos**: from a prompt, or from a
+    photo (photo 1 = first frame, an optional photo 2 = last frame); length 2–30 s, 480p–1080p,
+    sound on or off. The price depends on length and resolution and is shown before it starts.
+    Videos play in the results, the viewer and the Image Library.
   - **Krea 2** (open weights, RAW and Turbo) through ComfyUI, in three steps: **1** choose
     where it runs — **Rent a GPU** (pick an NVIDIA GPU with 24 GB or more; the studio starts it
     on your RunPod or Modal account with RunPod's ready-made ComfyUI image, so it is ready in

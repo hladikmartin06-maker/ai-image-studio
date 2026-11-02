@@ -124,8 +124,12 @@ def _state(pid: str) -> dict[str, Any] | None:
         return {"id": pid, "status": "processing", "outputs": []}
     if job["fail"]:
         return {"id": pid, "status": "failed", "outputs": [], "error": "Test failure requested"}
-    w, h = _size(job["body"])
-    outputs = [f"{BASE}/cdn/{pid}-{i}-{w}x{h}.png" for i in range(job["count"])]
+    if job["model"].endswith("-to-video"):
+        # A 2-second test pattern with a tone, clearly not AI output.
+        outputs = [f"{BASE}/cdn/{pid}-{i}-video.mp4" for i in range(job["count"])]
+    else:
+        w, h = _size(job["body"])
+        outputs = [f"{BASE}/cdn/{pid}-{i}-{w}x{h}.png" for i in range(job["count"])]
     return {
         "id": pid,
         "status": "completed",
@@ -232,6 +236,9 @@ async def atlas_upload(request: Request, file: UploadFile = File(...)):
 
 @app.get("/cdn/{name}")
 async def cdn(name: str):
+    if name.endswith(".mp4"):
+        video = Path(__file__).parent / "assets" / "test-video.mp4"
+        return Response(await asyncio.to_thread(video.read_bytes), media_type="video/mp4")
     stem = name.rsplit(".", 1)[0]
     size = stem.rsplit("-", 1)[-1]
     try:

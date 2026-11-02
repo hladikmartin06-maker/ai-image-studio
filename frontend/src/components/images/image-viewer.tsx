@@ -23,7 +23,7 @@ import { Badge, Button, IconButton, Notice, Segmented } from "@/components/ui";
 import { aspectLabel, formatBytes, formatDate } from "@/lib/format";
 import { useI18n } from "@/lib/i18n";
 import { StatusBadge } from "@/components/images/status";
-import type { StudioImage } from "@/lib/types";
+import { isVideo, MODE_LABELS, type StudioImage } from "@/lib/types";
 
 export function ImageViewer({
   images,
@@ -75,7 +75,7 @@ export function ImageViewer({
   const shown = original ? view : "result";
 
   const settingsRows: [string, string][] = [];
-  if (s.resolution) settingsRows.push([t("gen.resolution"), s.resolution.toUpperCase()]);
+  if (s.resolution) settingsRows.push([t("gen.resolution"), isVideo(image) ? s.resolution : s.resolution.toUpperCase()]);
   if (s.aspect_ratio)
     settingsRows.push([
       t("gen.aspectRatio"),
@@ -90,6 +90,11 @@ export function ImageViewer({
   if (s.upscale !== undefined) settingsRows.push([t("en.upscale"), `${s.upscale}×`]);
   if (s.denoise !== undefined) settingsRows.push([t("k2.denoiseShort"), s.denoise.toFixed(2)]);
   if (s.adult) settingsRows.push([t("k2.adultShort"), t("common.on")]);
+  // Video (Wan 3.0)
+  if (s.duration !== undefined) settingsRows.push([t("gen.duration"), t("gen.durationValue", { n: s.duration })]);
+  if (s.generate_audio !== undefined)
+    settingsRows.push([t("gen.audio"), s.generate_audio ? t("common.on") : t("common.off")]);
+  if (s.enable_prompt_expansion) settingsRows.push([t("gen.expansion"), t("common.on")]);
 
   const onDelete = async () => {
     const ok = await actions.deleteImage(image);
@@ -119,16 +124,22 @@ export function ImageViewer({
           />
         ) : (
           <>
-            {loadedId !== image.id ? (
-              <img className="thumb-layer" src={image.thumb_url} alt="" aria-hidden />
-            ) : null}
-            <img
-              key={image.id}
-              src={image.url}
-              alt={image.prompt}
-              onLoad={() => setLoadedId(image.id)}
-              style={{ opacity: loadedId === image.id ? 1 : 0, transition: "opacity 200ms" }}
-            />
+            {isVideo(image) ? (
+              <video key={image.id} src={image.url} controls autoPlay playsInline aria-label={image.prompt} />
+            ) : (
+              <>
+                {loadedId !== image.id ? (
+                  <img className="thumb-layer" src={image.thumb_url} alt="" aria-hidden />
+                ) : null}
+                <img
+                  key={image.id}
+                  src={image.url}
+                  alt={image.prompt}
+                  onLoad={() => setLoadedId(image.id)}
+                  style={{ opacity: loadedId === image.id ? 1 : 0, transition: "opacity 200ms" }}
+                />
+              </>
+            )}
           </>
         )}
         {index > 0 ? (
@@ -167,16 +178,22 @@ export function ImageViewer({
             >
               {t("images.regenerate")}
             </Button>
-            <Button size="sm" icon={<Sparkles />} onClick={() => actions.enhanceImage(image)}>
-              {t("images.enhance")}
-            </Button>
+            {isVideo(image) ? null : (
+              <Button size="sm" icon={<Sparkles />} onClick={() => actions.enhanceImage(image)}>
+                {t("images.enhance")}
+              </Button>
+            )}
             {!image.in_library ? (
               <Button size="sm" icon={<LibraryBig />} onClick={() => actions.saveToLibrary(image)}>
                 {t("images.saveToLibrary")}
               </Button>
             ) : null}
-            <AddToPersona imageIds={[image.id]} />
-            <AddToLora imageIds={[image.id]} />
+            {isVideo(image) ? null : (
+              <>
+                <AddToPersona imageIds={[image.id]} />
+                <AddToLora imageIds={[image.id]} />
+              </>
+            )}
           </div>
         </div>
         {input ? (
@@ -220,7 +237,7 @@ export function ImageViewer({
             <dt>{t("viewer.provider")}</dt>
             <dd>{image.provider_name}</dd>
             <dt>{t("viewer.mode")}</dt>
-            <dd>{image.mode === "image-edit" ? t("gen.modeEdit") : t("gen.modeText")}</dd>
+            <dd>{t(MODE_LABELS[image.mode as keyof typeof MODE_LABELS] ?? "gen.modeText")}</dd>
             {image.comfy ? (
               <>
                 <dt>{t("k2.workflow")}</dt>

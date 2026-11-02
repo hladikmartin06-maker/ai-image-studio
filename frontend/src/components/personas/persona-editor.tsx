@@ -493,7 +493,7 @@ function LibraryPicker({
 
 function LibraryPickerBody({ persona, room, onClose }: { persona: Persona; room: number; onClose: () => void }) {
   const t = useT();
-  const images = useImages({ limit: 60, scope: "library" });
+  const images = useImages({ limit: 60, scope: "library", media: "image" });
   const add = useAddPersonaImages();
   const [selected, setSelected] = useState<string[]>([]);
   const items = images.data?.pages.flatMap((p) => p.items) ?? [];

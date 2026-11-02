@@ -15,6 +15,7 @@ import {
 import Link from "next/link";
 import { useEffect, useState } from "react";
 
+import { MediaThumb } from "@/components/images/media-thumb";
 import { useImageActions } from "@/components/images/actions";
 import { GridSkeleton, ImageGrid } from "@/components/images/image-grid";
 import { ImageViewer } from "@/components/images/image-viewer";
@@ -193,7 +194,7 @@ function GenerationActivity() {
           items.map((g) => (
             <Link key={g.id} href={`/library/history?open=${g.id}`} className="activity-item">
               {g.images[0] ? (
-                <img className="mini-thumb" src={g.images[0].thumb_url} alt="" loading="lazy" />
+                <MediaThumb className="mini-thumb" image={g.images[0]} />
               ) : (
                 <span className="mini-thumb">
                   <ImageIcon />

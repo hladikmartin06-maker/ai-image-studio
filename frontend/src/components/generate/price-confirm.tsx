@@ -16,7 +16,7 @@ function PriceSummary({ estimate }: { estimate: PriceEstimate }) {
   return (
     <div className="col" style={{ gap: 10, marginTop: 8 }}>
       <div className="small">
-        {t("price.what", {
+        {t(estimate.mode.endsWith("-video") ? "price.whatVideo" : "price.what", {
           model: estimate.model_name,
           provider: estimate.provider_name,
           n: estimate.images,

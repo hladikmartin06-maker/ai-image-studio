@@ -7,9 +7,20 @@ export type ModelKey =
   | "seedream"
   | "wan-2.7"
   | "wan-2.7-pro"
+  | "wan-3.0"
+  | "wan-3.0-prime"
   | "krea-2-turbo"
   | "krea-2-raw";
-export type Mode = "text-to-image" | "image-edit";
+export type Mode = "text-to-image" | "image-edit" | "text-to-video" | "image-to-video";
+/** The label of each mode (i18n keys). */
+export const MODE_LABELS = {
+  "text-to-image": "gen.modeText",
+  "image-edit": "gen.modeEdit",
+  "text-to-video": "gen.modeTextVideo",
+  "image-to-video": "gen.modeImageVideo",
+} as const;
+/** The modes that send reference images (an edit, or a video from a photo). */
+export const REFERENCE_MODES: Mode[] = ["image-edit", "image-to-video"];
 export type GenerationStatus = "queued" | "processing" | "completed" | "failed" | "cancelled";
 export type Control =
   | "aspect_ratio"
@@ -17,7 +28,10 @@ export type Control =
   | "output_format"
   | "seed"
   | "thinking_mode"
-  | "negative_prompt";
+  | "negative_prompt"
+  | "duration"
+  | "generate_audio"
+  | "enable_prompt_expansion";
 
 export interface User {
   id: string;
@@ -101,6 +115,9 @@ export interface Variant {
   batched: boolean;
   notes: string[];
   pixel_presets: Record<string, Record<string, [number, number]>>;
+  // Video endpoints (Wan 3.0): [min, max] seconds.
+  durations?: [number, number] | null;
+  default_duration?: number | null;
 }
 
 export interface ModelInfo {
@@ -109,6 +126,8 @@ export interface ModelInfo {
   family: string;
   description: string;
   content: "sfw" | "sfw+nsfw";
+  // What it makes: images, or videos (Wan 3.0).
+  media?: "image" | "video";
   providers: ProviderKey[];
   variants: Variant[];
 }
@@ -184,6 +203,10 @@ export interface GenerationSettings {
   denoise?: number;
   // Krea 2 "18+ content" switch
   adult?: boolean;
+  // Video (Wan 3.0)
+  duration?: number;
+  generate_audio?: boolean;
+  enable_prompt_expansion?: boolean;
 }
 
 export interface StudioImage {
@@ -196,6 +219,8 @@ export interface StudioImage {
   width: number;
   height: number;
   mime_type: string;
+  // "video" for Wan 3.0 results (MP4/WebM).
+  media?: "image" | "video";
   size_bytes: number;
   nsfw: boolean | null;
   in_library: boolean;
@@ -1070,4 +1095,9 @@ export interface SecretInfo {
   set: boolean;
   masked: string | null;
   updated_at: string | null;
+}
+
+/** A Wan 3.0 result is a video, not a photo. */
+export function isVideo(img: { media?: string; mime_type?: string }) {
+  return img.media === "video" || Boolean(img.mime_type?.startsWith("video/"));
 }

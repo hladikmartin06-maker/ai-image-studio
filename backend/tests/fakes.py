@@ -15,12 +15,15 @@ import io
 import itertools
 import json
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 import httpx
 from PIL import Image as PILImage
 
 VALID_KEY = "test-key-1234567890"
+# A 2-second 320x180 test pattern with a tone (ffmpeg testsrc), for the video models.
+TEST_VIDEO = (Path(__file__).parent / "assets" / "test-video.mp4").read_bytes()
 
 
 def png_bytes(width: int = 64, height: int = 48, color=(120, 80, 200)) -> bytes:
@@ -71,7 +74,8 @@ class FakeProviders:
             return {"id": pid, "status": "processing", "outputs": []}
         if self.fail_message is not None:
             return {"id": pid, "status": "failed", "outputs": [], "error": self.fail_message}
-        outputs = [f"https://cdn.fake/{pid}-{i}.png" for i in range(pred["count"])]
+        ext = "mp4" if pred["model"].endswith("-to-video") else "png"
+        outputs = [f"https://cdn.fake/{pid}-{i}.{ext}" for i in range(pred["count"])]
         return {
             "id": pid,
             "status": "completed",
@@ -81,6 +85,8 @@ class FakeProviders:
 
     def handle(self, request: httpx.Request) -> httpx.Response:
         url = request.url
+        if url.host == "cdn.fake" and url.path.endswith(".mp4"):
+            return httpx.Response(200, content=TEST_VIDEO, headers={"content-type": "video/mp4"})
         if url.host == "cdn.fake":
             return httpx.Response(
                 200, content=png_bytes(96, 72), headers={"content-type": "image/png"}

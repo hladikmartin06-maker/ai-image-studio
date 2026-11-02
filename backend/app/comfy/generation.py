@@ -502,6 +502,8 @@ async def source_input(db: AsyncSession, user: User, ref: SourceImage) -> dict[s
         base = f"/api/images/{ref.id}"
     if row is None:
         raise GenerationRejected("not_found", "That photo no longer exists.", 404)
+    if (row.mime_type or "").startswith("video/"):
+        raise GenerationRejected("video_not_photo", "A video cannot be used as a photo.")
     return {
         "kind": ref.kind,
         "id": str(ref.id),

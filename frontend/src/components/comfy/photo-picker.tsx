@@ -70,7 +70,7 @@ export function PhotoPicker({
 /** Pick one of the user's generated images. */
 function LibraryPicker({ onClose, onPick }: { onClose: () => void; onPick: (p: PickedPhoto) => void }) {
   const { t } = useI18n();
-  const images = useImages({});
+  const images = useImages({ media: "image" });
   const items = (images.data?.pages ?? []).flatMap((p) => p.items);
   return (
     <Modal open wide onClose={onClose} title={t("en.fromLibrary")} description={t("en.fromLibraryHint")}>

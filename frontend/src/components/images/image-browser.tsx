@@ -45,7 +45,7 @@ import {
   usePersonas,
   useSettings,
 } from "@/lib/queries";
-import type { ModelKey, ProviderKey, StudioImage } from "@/lib/types";
+import { isVideo, type ModelKey, type ProviderKey, type StudioImage } from "@/lib/types";
 
 type DateRange = "any" | "today" | "7d" | "30d";
 type StatusFilter = "any" | "complete" | "partial" | "processing" | "failed";
@@ -153,6 +153,11 @@ export function ImageBrowser({
   );
 
   const ids = [...selection];
+  // Videos cannot become photos of an AI model or a LoRA.
+  const photoIds = ids.filter((id) => {
+    const item = items.find((i) => i.id === id);
+    return !item || !isVideo(item);
+  });
   const clear = () => {
     setSelection(new Set());
     setLastSelected(null);
@@ -389,8 +394,12 @@ export function ImageBrowser({
               {t("images.saveToLibrary")}
             </Button>
           ) : null}
-          <AddToPersona imageIds={ids} />
-          <AddToLora imageIds={ids} />
+          {photoIds.length ? (
+            <>
+              <AddToPersona imageIds={photoIds} />
+              <AddToLora imageIds={photoIds} />
+            </>
+          ) : null}
           <Button size="sm" variant="danger" icon={<Trash2 />} onClick={() => runBulk("delete")}>
             {t("common.delete")}
           </Button>

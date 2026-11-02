@@ -14,8 +14,12 @@ from dataclasses import dataclass, field
 from typing import Any, Literal
 
 ProviderKey = Literal["wavespeed", "atlas"]
-ModelKey = Literal["nano-banana-pro", "seedream", "wan-2.7", "wan-2.7-pro"]
-Mode = Literal["text-to-image", "image-edit"]
+ModelKey = Literal[
+    "nano-banana-pro", "seedream", "wan-2.7", "wan-2.7-pro", "wan-3.0", "wan-3.0-prime"
+]
+Mode = Literal["text-to-image", "image-edit", "text-to-video", "image-to-video"]
+# The modes that send reference images (an edit, or a video from a photo).
+REFERENCE_MODES = ("image-edit", "image-to-video")
 
 PROVIDERS: dict[str, dict[str, Any]] = {
     "wavespeed": {
@@ -122,6 +126,15 @@ class Variant:
     min_reference_images: int = 0
     max_reference_images: int = 0
     notes: tuple[str, ...] = ()
+    # Video endpoints: duration range in seconds, and the documented switches.
+    durations: tuple[int, int] | None = None
+    default_duration: int = 5
+    audio: bool = False  # generate_audio
+    prompt_expansion: bool = False  # enable_prompt_expansion
+
+    @property
+    def video(self) -> bool:
+        return self.mode in ("text-to-video", "image-to-video")
 
     def controls(self) -> list[str]:
         out: list[str] = []
@@ -137,6 +150,12 @@ class Variant:
             out.append("thinking_mode")
         if self.negative_prompt:
             out.append("negative_prompt")
+        if self.durations:
+            out.append("duration")
+        if self.audio:
+            out.append("generate_audio")
+        if self.prompt_expansion:
+            out.append("enable_prompt_expansion")
         return out
 
 
@@ -148,6 +167,13 @@ class ModelInfo:
     description: str
     content: Literal["sfw", "sfw+nsfw"]
     variants: tuple[Variant, ...] = field(default_factory=tuple)
+    # What it makes: images, or videos (Wan 3.0).
+    media: Literal["image", "video"] = "image"
+
+    def mode_for(self, has_references: bool) -> str:
+        if self.media == "video":
+            return "image-to-video" if has_references else "text-to-video"
+        return "image-edit" if has_references else "text-to-image"
 
     def variant(self, provider: str, mode: str) -> Variant | None:
         for v in self.variants:
@@ -161,6 +187,51 @@ class ModelInfo:
 
 WS = "https://wavespeed.ai/docs/docs-api"
 AT = "https://www.atlascloud.ai/models"
+
+# Wan 3.0 video (WaveSpeed). Verified 2026-11-02 from WaveSpeed's API docs pages
+# docs-api/alibaba/alibaba-wan-3.0[-prime]-{text,image}-to-video: prompt (required),
+# resolution 480p/720p/1080p (default 720p), aspect_ratio 16:9/9:16/1:1/4:3/3:4 (text: default
+# 16:9; image: optional, else it follows the photo), duration 2-30 s (default 5),
+# enable_prompt_expansion (default false), generate_audio (default true), seed (-1 = random);
+# image to video: image (first frame, required), last_image (last frame, optional).
+WAN3_RATIOS = ("16:9", "9:16", "1:1", "4:3", "3:4")
+WAN3_RESOLUTIONS = ("480p", "720p", "1080p")
+
+
+def _wan3(model_id: str, slug: str) -> tuple[Variant, Variant]:
+    common: dict[str, Any] = dict(
+        provider="wavespeed",
+        size_mode="aspect+resolution",
+        aspect_ratios=WAN3_RATIOS,
+        resolutions=WAN3_RESOLUTIONS,
+        default_resolution="720p",
+        default_aspect_ratio="16:9",
+        seed=True,
+        seed_min=-1,
+        durations=(2, 30),
+        default_duration=5,
+        audio=True,
+        prompt_expansion=True,
+    )
+    return (
+        Variant(
+            mode="text-to-video",
+            model_id=f"{model_id}/text-to-video",
+            docs_url=f"{WS}/alibaba/alibaba-{slug}-text-to-video",
+            **common,
+        ),
+        Variant(
+            mode="image-to-video",
+            model_id=f"{model_id}/image-to-video",
+            docs_url=f"{WS}/alibaba/alibaba-{slug}-image-to-video",
+            allow_match_input=True,
+            # The first reference is the first frame; a second one the last frame.
+            min_reference_images=1,
+            max_reference_images=2,
+            **common,
+        ),
+    )
+
 
 MODELS: dict[str, ModelInfo] = {
     "nano-banana-pro": ModelInfo(
@@ -402,6 +473,25 @@ MODELS: dict[str, ModelInfo] = {
             ),
         ),
     ),
+    "wan-3.0": ModelInfo(
+        key="wan-3.0",
+        name="Wan 3.0",
+        family="Alibaba Wan 3.0 (video)",
+        description="Alibaba's video model: 2–30 s clips from a prompt or from a photo (first "
+        "and last frame), with sound.",
+        content="sfw",
+        media="video",
+        variants=_wan3("alibaba/wan-3.0", "wan-3.0"),
+    ),
+    "wan-3.0-prime": ModelInfo(
+        key="wan-3.0-prime",
+        name="Wan 3.0 Prime",
+        family="Alibaba Wan 3.0 Prime (video)",
+        description="The higher-quality Wan 3.0 video model, at a higher price per second.",
+        content="sfw",
+        media="video",
+        variants=_wan3("alibaba/wan-3.0-prime", "wan-3.0-prime"),
+    ),
 }
 
 
@@ -425,10 +515,10 @@ def resolve_variant(model_key: str, provider: str, has_references: bool) -> Vari
     model = get_model(model_key)
     if provider not in PROVIDERS:
         raise CatalogError("unsupported_provider", f"Unknown provider “{provider}”.")
-    mode = "image-edit" if has_references else "text-to-image"
+    mode = model.mode_for(has_references)
     variant = model.variant(provider, mode)
     if variant is None:
-        what = "reference images" if has_references else "text-to-image"
+        what = "reference images" if has_references else mode.replace("-", " ")
         raise CatalogError(
             "unsupported_model",
             f"{model.name} with {what} is not available through {PROVIDERS[provider]['name']}.",
@@ -495,6 +585,22 @@ def normalize_settings(variant: Variant, raw: dict[str, Any]) -> dict[str, Any]:
         value = raw.get("thinking_mode")
         out["thinking_mode"] = True if value is None else bool(value)
 
+    if variant.durations:
+        low, high = variant.durations
+        value = raw.get("duration")
+        try:
+            seconds = variant.default_duration if value in (None, "") else int(value)
+        except (TypeError, ValueError) as exc:
+            raise CatalogError("invalid_parameter", "Duration must be whole seconds.") from exc
+        if not low <= seconds <= high:
+            raise CatalogError("invalid_parameter", f"Duration must be {low} to {high} seconds.")
+        out["duration"] = seconds
+    if variant.audio:
+        value = raw.get("generate_audio")
+        out["generate_audio"] = True if value is None else bool(value)
+    if variant.prompt_expansion:
+        out["enable_prompt_expansion"] = bool(raw.get("enable_prompt_expansion", False))
+
     return out
 
 
@@ -544,7 +650,16 @@ def build_payload(
         payload["seed"] = settings["seed"]
     if "thinking_mode" in settings:
         payload["thinking_mode"] = settings["thinking_mode"]
-    if image_urls:
+    for key in ("duration", "generate_audio", "enable_prompt_expansion"):
+        if key in settings:
+            payload[key] = settings[key]
+    if variant.video:
+        # Image to video: the first photo is the first frame, a second one the last frame.
+        if image_urls:
+            payload["image"] = image_urls[0]
+        if len(image_urls) > 1:
+            payload["last_image"] = image_urls[1]
+    elif image_urls:
         payload["images"] = image_urls
     if variant.count_param and count > 1:
         payload[variant.count_param] = count
@@ -582,6 +697,8 @@ def catalog_json() -> dict[str, Any]:
             "max_images": MAX_IMAGES_PER_GENERATION,
             "batched": v.count_param is not None,
             "notes": list(v.notes),
+            "durations": list(v.durations) if v.durations else None,
+            "default_duration": v.default_duration if v.durations else None,
             "pixel_presets": {
                 r: {a: list(PIXEL_PRESETS[r][a]) for a in v.aspect_ratios}
                 for r in v.resolutions
@@ -598,6 +715,7 @@ def catalog_json() -> dict[str, Any]:
                 "family": m.family,
                 "description": m.description,
                 "content": m.content,
+                "media": m.media,
                 "providers": m.providers(),
                 "variants": [variant_json(v) for v in m.variants],
             }

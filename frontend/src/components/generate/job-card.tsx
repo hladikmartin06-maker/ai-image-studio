@@ -14,7 +14,7 @@ import { Button, IconButton, Notice, Skeleton } from "@/components/ui";
 import { formatDuration, formatRelative } from "@/lib/format";
 import { useI18n } from "@/lib/i18n";
 import { useCancelGeneration, useRegenerate } from "@/lib/queries";
-import type { Generation } from "@/lib/types";
+import { type Generation, isVideo } from "@/lib/types";
 
 function ratioOf(gen: Generation) {
   const first = gen.images[0];
@@ -160,7 +160,7 @@ export function JobCard({
               onOpen={() => onOpen(gen, i)}
               onDownload={() => actions.download(img)}
               onDelete={() => quick.deleteImageQuick(img)}
-              extra={<AddToLora imageIds={[img.id]} compact />}
+              extra={isVideo(img) ? undefined : <AddToLora imageIds={[img.id]} compact />}
               showPrompt={false}
               blurNsfw={blurNsfw}
             />

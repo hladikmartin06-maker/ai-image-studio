@@ -107,6 +107,8 @@ async def from_library_file(
     db: AsyncSession, user_id: uuid.UUID, relative_path: str, name: str
 ) -> tuple[ReferenceImage, bool]:
     """A reference made from a generated image (copied, so deleting either keeps the other)."""
+    if relative_path.rsplit(".", 1)[-1].lower() in ("mp4", "webm", "mov"):
+        raise ReferenceRejected(400, "video_not_photo", "A video cannot be used as a photo.")
     data = await asyncio.to_thread(storage.absolute(relative_path).read_bytes)
     data = await asyncio.to_thread(storage.fit_for_reference, data, max_bytes(), MAX_EDGE)
     return await store(db, user_id, data, name)

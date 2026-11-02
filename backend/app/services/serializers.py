@@ -5,7 +5,14 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
-from app.catalog import MODELS, PROVIDERS, get_model, resolve_variant, size_label
+from app.catalog import (
+    MODELS,
+    PROVIDERS,
+    REFERENCE_MODES,
+    get_model,
+    resolve_variant,
+    size_label,
+)
 from app.comfy import enhance
 from app.comfy.krea2 import MODEL_KEYS
 from app.models import Generation, Image, ProviderTask, ReferenceImage
@@ -44,6 +51,8 @@ def image_json(image: Image, generation: Generation | None = None) -> dict[str, 
         "width": image.width,
         "height": image.height,
         "mime_type": image.mime_type,
+        # "video" for Wan 3.0 results (an MP4/WebM file), else "image".
+        "media": "video" if (image.mime_type or "").startswith("video/") else "image",
         "size_bytes": image.size_bytes,
         "nsfw": image.nsfw,
         "in_library": image.in_library,
@@ -126,7 +135,7 @@ def generation_json(gen: Generation, *, images: list[Image] | None = None) -> di
             target = f"{gen.settings['width']}×{gen.settings['height']}"
     else:
         try:
-            variant = resolve_variant(gen.model_key, gen.provider, gen.mode == "image-edit")
+            variant = resolve_variant(gen.model_key, gen.provider, gen.mode in REFERENCE_MODES)
             target = size_label(variant, gen.settings)
         except ValueError:
             pass

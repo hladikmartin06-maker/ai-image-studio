@@ -126,6 +126,10 @@ async def estimate(user: User, prepared: Prepared, count: int) -> dict[str, Any]
                         raise
                     by_size[size] = None
             price = by_size[size]
+            if price is None and p.variant.video:
+                # A video's price depends on its length and resolution: without the
+                # provider's estimate it stays unknown (a list price would mislead).
+                return out
             if price is None:
                 listed = (await _list(user, p.integration)).get(p.variant.model_id)
                 if listed is None:

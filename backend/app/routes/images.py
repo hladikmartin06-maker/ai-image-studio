@@ -92,6 +92,8 @@ async def list_images(
     date_from: datetime | None = None,
     date_to: datetime | None = None,
     scope: Literal["library", "all", "unsaved"] = "library",
+    # Only images or only videos (Wan 3.0); both when not given.
+    media: Literal["image", "video"] | None = None,
     generation_id: uuid.UUID | None = None,
     persona: uuid.UUID | None = None,
     lora_version: uuid.UUID | None = None,
@@ -122,6 +124,10 @@ async def list_images(
             conditions.append(Generation.provider.in_(keys))
     if favorite is not None:
         conditions.append(Image.is_favorite.is_(favorite))
+    if media == "video":
+        conditions.append(Image.mime_type.like("video/%"))
+    elif media == "image":
+        conditions.append(Image.mime_type.not_like("video/%"))
     if status == "complete":
         conditions.append(Generation.error_message.is_(None))
     elif status == "partial":
@@ -310,7 +316,8 @@ async def thumb(
     image = await _owned(db, user, image_id)
     return FileResponse(
         storage.absolute(image.thumb_path),
-        media_type="image/webp",
+        # A video has no picture of its own: its "thumbnail" is the video (first frame).
+        media_type=image.mime_type if storage.is_video(image.mime_type) else "image/webp",
         headers={"Cache-Control": "private, max-age=604800, immutable"},
     )
 

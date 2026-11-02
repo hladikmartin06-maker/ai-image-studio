@@ -1,12 +1,12 @@
 "use client";
 
-import { Check, Download, EyeOff, Trash2 } from "lucide-react";
+import { Check, Download, EyeOff, Play, Trash2 } from "lucide-react";
 import type { CSSProperties, KeyboardEvent, MouseEvent, ReactNode } from "react";
 
 import { IconButton, cx } from "@/components/ui";
 import { formatRelative } from "@/lib/format";
 import { useI18n } from "@/lib/i18n";
-import type { StudioImage } from "@/lib/types";
+import { isVideo, type StudioImage } from "@/lib/types";
 
 export function ImageTile({
   image,
@@ -63,7 +63,25 @@ export function ImageTile({
         }
       }}
     >
-      <img src={image.thumb_url} alt="" loading="lazy" decoding="async" draggable={false} />
+      {isVideo(image) ? (
+        <>
+          {/* A video has no picture of its own: its first frame, played while hovered. */}
+          <video
+            src={`${image.url}#t=0.1`}
+            muted
+            loop
+            playsInline
+            preload="metadata"
+            onMouseEnter={(e) => void e.currentTarget.play().catch(() => undefined)}
+            onMouseLeave={(e) => e.currentTarget.pause()}
+          />
+          <span className="tile-video" aria-label={t("gen.video")}>
+            <Play size={12} /> {t("gen.video")}
+          </span>
+        </>
+      ) : (
+        <img src={image.thumb_url} alt="" loading="lazy" decoding="async" draggable={false} />
+      )}
       {blurred ? (
         <div className="tile-nsfw">
           <span className="row gap-4">

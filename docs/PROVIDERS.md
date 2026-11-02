@@ -121,6 +121,30 @@ default; `adult` in the request): off, explicit prompts are refused on Wan as we
 run is marked 18+. The switch is not a provider parameter and is never sent; it is disabled on
 the SFW-only models.
 
+### Wan 3.0 and Wan 3.0 Prime (video, SFW) — Alibaba Wan 3.0
+
+Verified 2026-11-02 from WaveSpeed's API docs (the session's network allowed wavespeed.ai):
+https://wavespeed.ai/docs/docs-api/alibaba/alibaba-wan-3.0-text-to-video,
+…-wan-3.0-image-to-video, …-wan-3.0-prime-text-to-video and …-wan-3.0-prime-image-to-video.
+
+| Provider | Endpoint | Parameters sent |
+|---|---|---|
+| WaveSpeed | `alibaba/wan-3.0/text-to-video` | prompt, resolution (480p/720p/1080p, default 720p), aspect_ratio (16:9, 9:16, 1:1, 4:3, 3:4; default 16:9), duration (2–30 s, default 5), generate_audio (default true), enable_prompt_expansion (default false), seed (−1 = random) |
+| WaveSpeed | `alibaba/wan-3.0/image-to-video` | the same, plus image (first frame, required) and last_image (optional); aspect_ratio optional (else it follows the photo) |
+| WaveSpeed | `alibaba/wan-3.0-prime/text-to-video` | as Wan 3.0 text-to-video |
+| WaveSpeed | `alibaba/wan-3.0-prime/image-to-video` | as Wan 3.0 image-to-video |
+
+Results come back like images (`data.outputs[]`, URLs); the studio stores the file as it is
+(MP4, its size read from the file's `tkhd` box, up to 1 GB) and shows it with a player. No
+negative prompt is documented, so none is sent. Prices on those pages (per second of billed
+duration, rounded up; the studio shows WaveSpeed's own estimate before a run): Wan 3.0 480p
+$0.05, 720p $0.10, 1080p $0.20; Prime 480p $0.075, 720p $0.15, 1080p $0.30. Treated as SFW
+(explicit prompts refused); WaveSpeed lists a separate "spicy" image-to-video model, not used.
+Atlas Cloud lists Wan 3.0 too (`alibaba/wan-3.0/image-to-video` via
+`/api/v1/model/generateVideo`, from search results only): **not added** — its pages
+(www.atlascloud.ai) are still blocked from the sandbox, so nothing there is verified.
+**Not yet run against the real API.**
+
 ## Reference images and AI models
 
 Reference images reach a provider only through an editing endpoint above, and never more than

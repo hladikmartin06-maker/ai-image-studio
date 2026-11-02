@@ -28,7 +28,7 @@ import httpx
 from sqlalchemy import delete, select, update
 from sqlalchemy.orm import selectinload
 
-from app.catalog import MODELS, build_payload, resolve_variant
+from app.catalog import MODELS, REFERENCE_MODES, build_payload, resolve_variant
 from app.config import get_settings
 from app.db import SessionLocal
 from app.models import (
@@ -51,6 +51,9 @@ log = logging.getLogger("studio.worker")
 
 TRANSIENT = ("network_error", "rate_limited", "provider_error")
 MAX_DOWNLOAD_BYTES = 80 * 1024 * 1024
+# A Wan 3.0 video (up to 30 s at 1080p) is far larger than an image.
+MAX_VIDEO_BYTES = 1024 * 1024 * 1024
+VIDEO_MODES = ("text-to-video", "image-to-video")
 
 
 def utcnow() -> datetime:
@@ -178,7 +181,7 @@ class JobWorker:
 
         try:
             api_key = await self._api_key(gen)
-            variant = resolve_variant(gen.model_key, gen.provider, gen.mode == "image-edit")
+            variant = resolve_variant(gen.model_key, gen.provider, gen.mode in REFERENCE_MODES)
             image_urls = await self._reference_urls(gen, api_key)
         except ProviderError as exc:
             await self._fail_open_tasks(gen_id, exc.code, exc.user_message)
@@ -323,7 +326,12 @@ class JobWorker:
                 urls.append(url)
             row = await db.get(Generation, gen.id)
             if row is not None:
-                row.request_payload = {**row.request_payload, "images": urls}
+                # History shows the request as sent (a video: first and last frame).
+                if gen.mode in VIDEO_MODES:
+                    sent = {"image": urls[0], **({"last_image": urls[1]} if len(urls) > 1 else {})}
+                else:
+                    sent = {"images": urls}
+                row.request_payload = {**row.request_payload, **sent}
                 await db.commit()
         return urls
 
@@ -411,6 +419,7 @@ class JobWorker:
             delay = min(delay * 1.3, self.poll_max)
 
     async def _download(self, gen: Generation, output: str) -> bytes:
+        limit = MAX_VIDEO_BYTES if gen.mode in VIDEO_MODES else MAX_DOWNLOAD_BYTES
         if output.startswith("data:"):
             try:
                 return base64.b64decode(output.split(",", 1)[1], validate=False)
@@ -423,7 +432,7 @@ class JobWorker:
                 raise ProviderError("provider_error", gen.provider, "Bad image output") from exc
         # Output URLs are public CDN links: the API key is never sent with them.
         async with httpx.AsyncClient(
-            timeout=httpx.Timeout(120, connect=20),
+            timeout=httpx.Timeout(600 if gen.mode in VIDEO_MODES else 120, connect=20),
             follow_redirects=True,
             transport=self.download_transport,
         ) as client:
@@ -440,7 +449,7 @@ class JobWorker:
                         total = 0
                         async for chunk in response.aiter_bytes():
                             total += len(chunk)
-                            if total > MAX_DOWNLOAD_BYTES:
+                            if total > limit:
                                 raise ProviderError(
                                     "provider_error", gen.provider, "Image is too large"
                                 )
@@ -466,13 +475,19 @@ class JobWorker:
     async def store_outputs(
         self, gen: Generation, task: ProviderTask, datas: list[bytes], nsfw_flags: list[bool]
     ) -> None:
-        """Stores finished images (originals byte for byte + thumbnails) in the library."""
+        """Stores finished images (originals byte for byte + thumbnails) and videos (as
+        delivered) in the library."""
         async with SessionLocal() as db:
             prefs = await preferences.load(db, gen.user_id)
         for i, data in enumerate(datas):
             image_id = uuid.uuid4()
             try:
-                stored = await storage.store_image(gen.user_id, image_id, data)
+                if gen.mode in VIDEO_MODES:
+                    stored = await storage.store_video(
+                        gen.user_id, image_id, data, storage.expected_size(gen.settings)
+                    )
+                else:
+                    stored = await storage.store_image(gen.user_id, image_id, data)
             except storage.InvalidImage as exc:
                 raise ProviderError("provider_error", gen.provider, str(exc)) from exc
             async with SessionLocal() as db:

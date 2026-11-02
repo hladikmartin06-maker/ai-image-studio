@@ -28,13 +28,72 @@ ALLOWED_KEYS = {
 }
 
 
-def test_exactly_four_models():
-    assert list(MODELS) == ["nano-banana-pro", "seedream", "wan-2.7", "wan-2.7-pro"]
+IMAGE_MODELS = [k for k, m in MODELS.items() if m.media == "image"]
+
+
+def test_the_models():
+    assert list(MODELS) == [
+        "nano-banana-pro",
+        "seedream",
+        "wan-2.7",
+        "wan-2.7-pro",
+        "wan-3.0",
+        "wan-3.0-prime",
+    ]
+    assert IMAGE_MODELS == ["nano-banana-pro", "seedream", "wan-2.7", "wan-2.7-pro"]
     assert {m.content for m in MODELS.values()} == {"sfw", "sfw+nsfw"}
     assert MODELS["wan-2.7"].content == MODELS["wan-2.7-pro"].content == "sfw+nsfw"
+    # Wan 3.0 makes videos, on WaveSpeed only (verified there); SFW.
+    for key in ("wan-3.0", "wan-3.0-prime"):
+        assert MODELS[key].media == "video" and MODELS[key].content == "sfw"
+        assert MODELS[key].providers() == ["wavespeed"]
 
 
-@pytest.mark.parametrize("model", list(MODELS))
+@pytest.mark.parametrize("model", ["wan-3.0", "wan-3.0-prime"])
+def test_wan3_video_payloads(model):
+    """Only the documented Wan 3.0 fields; a photo is the first frame, a second the last."""
+    allowed = {
+        "prompt",
+        "resolution",
+        "aspect_ratio",
+        "duration",
+        "enable_prompt_expansion",
+        "generate_audio",
+        "seed",
+        "image",
+        "last_image",
+    }
+    t2v = resolve_variant(model, "wavespeed", False)
+    assert t2v.model_id == f"alibaba/{model}/text-to-video" and t2v.mode == "text-to-video"
+    settings = normalize_settings(t2v, {"steps": 4, "negative_prompt": "x"})
+    assert settings == {
+        "aspect_ratio": "16:9",
+        "resolution": "720p",
+        "duration": 5,
+        "generate_audio": True,
+        "enable_prompt_expansion": False,
+    }
+    payload = build_payload(t2v, prompt="p", settings=settings, image_urls=[], count=1)
+    assert set(payload) <= allowed and "image" not in payload
+    i2v = resolve_variant(model, "wavespeed", True)
+    assert i2v.model_id == f"alibaba/{model}/image-to-video" and i2v.max_reference_images == 2
+    settings = normalize_settings(
+        i2v, {"resolution": "1080p", "duration": 30, "generate_audio": False, "seed": -1}
+    )
+    payload = build_payload(i2v, prompt="p", settings=settings, image_urls=["a", "b"], count=1)
+    assert set(payload) <= allowed
+    assert payload["image"] == "a" and payload["last_image"] == "b"
+    # Without a ratio the video follows the photo.
+    assert "aspect_ratio" not in payload and payload["duration"] == 30 and payload["seed"] == -1
+    assert payload["generate_audio"] is False
+    for bad in ({"duration": 1}, {"duration": 31}, {"resolution": "4K"}, {"aspect_ratio": "21:9"}):
+        with pytest.raises(CatalogError):
+            normalize_settings(t2v, bad)
+    with pytest.raises(CatalogError):
+        resolve_variant(model, "atlas", False)
+
+
+@pytest.mark.parametrize("model", IMAGE_MODELS)
 @pytest.mark.parametrize("provider", ["wavespeed", "atlas"])
 @pytest.mark.parametrize("refs", [False, True])
 def test_every_variant_builds_a_documented_payload(model, provider, refs):

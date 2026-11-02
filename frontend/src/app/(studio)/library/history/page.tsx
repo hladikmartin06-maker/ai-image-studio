@@ -16,6 +16,7 @@ import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 
+import { MediaThumb } from "@/components/images/media-thumb";
 import { copyText } from "@/components/images/actions";
 import { ImageViewer } from "@/components/images/image-viewer";
 import { LibraryTabs } from "@/components/images/library-tabs";
@@ -31,6 +32,7 @@ import {
   Skeleton,
   useConfirm,
 } from "@/components/ui";
+import { MODE_LABELS } from "@/lib/types";
 import { formatDate, formatDuration, formatRelative } from "@/lib/format";
 import { useDebounced } from "@/lib/hooks";
 import { useI18n } from "@/lib/i18n";
@@ -164,7 +166,7 @@ function GenerationDetails({ id, onClose }: { id: string | null; onClose: () => 
                       onClick={() => setViewer(i)}
                       aria-label={t("viewer.title")}
                     >
-                      <img src={img.thumb_url} alt="" loading="lazy" />
+                      <MediaThumb image={img} />
                     </button>
                   ))}
                 </div>
@@ -202,7 +204,7 @@ function GenerationDetails({ id, onClose }: { id: string | null; onClose: () => 
               <dt>{t("hist.endpoint")}</dt>
               <dd className="mono">{g.provider_model_id}</dd>
               <dt>{t("viewer.mode")}</dt>
-              <dd>{g.mode === "image-edit" ? t("gen.modeEdit") : t("gen.modeText")}</dd>
+              <dd>{t(MODE_LABELS[g.mode as keyof typeof MODE_LABELS] ?? "gen.modeText")}</dd>
               {g.persona?.name ? (
                 <>
                   <dt>{t("pm.section")}</dt>
@@ -416,7 +418,7 @@ export default function HistoryPage() {
             >
               <div className="strip">
                 {g.images.slice(0, 3).map((img) => (
-                  <img key={img.id} className="mini-thumb" src={img.thumb_url} alt="" loading="lazy" />
+                  <MediaThumb key={img.id} className="mini-thumb" image={img} />
                 ))}
                 {g.images.length === 0 ? (
                   <span className="mini-thumb">

@@ -111,6 +111,88 @@ async def store_reference(user_id: uuid.UUID, file_id: uuid.UUID, data: bytes) -
     return await asyncio.to_thread(_store, user_id, file_id, data, "refs")
 
 
+# --- videos (Wan 3.0) ------------------------------------------------------------------------
+
+
+def video_kind(data: bytes) -> tuple[str, str] | None:
+    """(mime, extension) of an MP4/MOV or WebM file, else None."""
+    if len(data) >= 12 and data[4:8] == b"ftyp":
+        return "video/mp4", "mp4"
+    if data[:4] == b"\x1a\x45\xdf\xa3":
+        return "video/webm", "webm"
+    return None
+
+
+def mp4_size(data: bytes) -> tuple[int, int] | None:
+    """Width and height of the first video track of an MP4 (its `tkhd` box), else None."""
+
+    def boxes(start: int, end: int):
+        pos = start
+        while pos + 8 <= end:
+            size = int.from_bytes(data[pos : pos + 4], "big")
+            kind = data[pos + 4 : pos + 8]
+            header = 8
+            if size == 1 and pos + 16 <= end:
+                size = int.from_bytes(data[pos + 8 : pos + 16], "big")
+                header = 16
+            elif size == 0:
+                size = end - pos
+            if size < header or pos + size > end:
+                return
+            yield kind, pos + header, pos + size
+            pos += size
+
+    def search(start: int, end: int) -> tuple[int, int] | None:
+        for kind, body, stop in boxes(start, end):
+            if kind == b"tkhd" and stop - body >= 8:
+                width = int.from_bytes(data[stop - 8 : stop - 4], "big") >> 16
+                height = int.from_bytes(data[stop - 4 : stop], "big") >> 16
+                if width and height:
+                    return width, height
+            elif kind in (b"moov", b"trak"):
+                found = search(body, stop)
+                if found:
+                    return found
+        return None
+
+    return search(0, len(data))
+
+
+def expected_size(settings: dict) -> tuple[int, int]:
+    """The size a video was asked for (resolution + aspect ratio), when the file says none."""
+    short = {"480p": 480, "720p": 720, "1080p": 1080}.get(str(settings.get("resolution")), 720)
+    try:
+        w, h = (int(x) for x in str(settings.get("aspect_ratio") or "16:9").split(":"))
+    except ValueError:
+        w, h = 16, 9
+    if w >= h:
+        return round(short * w / h / 2) * 2, short
+    return short, round(short * h / w / 2) * 2
+
+
+def _store_video(
+    user_id: uuid.UUID, file_id: uuid.UUID, data: bytes, fallback: tuple[int, int]
+) -> StoredFile:
+    kind = video_kind(data)
+    if kind is None:
+        raise InvalidImage("The provider returned no video file.")
+    mime, ext = kind
+    width, height = (mp4_size(data) if ext == "mp4" else None) or fallback
+    file_path = _write(user_id, "images", f"{file_id}.{ext}", data)
+    # No picture is made from a video: the browser shows its first frame.
+    return StoredFile(file_path, file_path, mime, width, height, len(data))
+
+
+async def store_video(
+    user_id: uuid.UUID, file_id: uuid.UUID, data: bytes, fallback: tuple[int, int]
+) -> StoredFile:
+    return await asyncio.to_thread(_store_video, user_id, file_id, data, fallback)
+
+
+def is_video(mime_type: str | None) -> bool:
+    return bool(mime_type and mime_type.startswith("video/"))
+
+
 def fit_for_reference(data: bytes, max_bytes: int, max_edge: int) -> bytes:
     """Keeps an image as it is when it fits the reference limits; otherwise re-encodes it
     as a high-quality JPEG, scaled down only as far as needed."""

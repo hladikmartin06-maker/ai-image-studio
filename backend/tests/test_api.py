@@ -5,14 +5,15 @@ from __future__ import annotations
 import os
 import uuid
 
+import pytest
 from sqlalchemy import select
 
 from app.config import get_settings
 from app.db import SessionLocal
-from app.models import Generation, Integration, ProviderTask, User
+from app.models import Generation, Image, Integration, ProviderTask, User
 from app.services.worker import worker
 from tests.conftest import Api, make_user, wait_done
-from tests.fakes import VALID_KEY, png_bytes
+from tests.fakes import TEST_VIDEO, VALID_KEY, png_bytes
 
 
 async def test_health(user: Api):
@@ -531,3 +532,108 @@ async def test_prices_and_estimate_before_a_run(connected: Api, fake):
     assert again.json()["total"] == fake.unit_price and again.json()["images"] == 1
     # Only the run's own two requests (one image each) were submitted, never an estimate.
     assert len(fake.submits) == 2
+
+
+async def test_wan3_videos(connected: Api, fake):
+    """Wan 3.0 makes videos: from a prompt, or from a photo (first frame) and a second photo
+    (last frame). The video is stored as delivered and listed with the images."""
+    body = {
+        "model": "wan-3.0",
+        "provider": "wavespeed",
+        "prompt": "a lighthouse in a storm, slow drone shot",
+        "settings": {
+            "aspect_ratio": "9:16",
+            "resolution": "1080p",
+            "duration": 12,
+            "generate_audio": False,
+        },
+    }
+    est = (await connected.post("/api/generations/estimate", json=body)).json()
+    assert est["total"] is not None and fake.pricing_calls[-1]["inputs"]["duration"] == 12
+    r = await connected.post("/api/generations", json=body)
+    assert r.status_code == 201, r.text
+    gen = await wait_done(connected, r.json()["id"])
+    assert gen["status"] == "completed" and gen["mode"] == "text-to-video", gen
+    sent = fake.submits[-1]
+    assert sent["model"] == "alibaba/wan-3.0/text-to-video"
+    assert sent["body"] == {
+        "prompt": body["prompt"],
+        "aspect_ratio": "9:16",
+        "resolution": "1080p",
+        "duration": 12,
+        "generate_audio": False,
+        "enable_prompt_expansion": False,
+    }
+    video = gen["images"][0]
+    assert video["media"] == "video" and video["mime_type"] == "video/mp4"
+    assert (video["width"], video["height"]) == (320, 180)  # read from the MP4 itself
+    file = await connected.get(video["url"])
+    assert file.status_code == 200 and file.content == TEST_VIDEO
+    assert file.headers["content-type"] == "video/mp4"
+    assert (await connected.get(video["thumb_url"])).headers["content-type"] == "video/mp4"
+    listed = (await connected.get("/api/images", params={"media": "video"})).json()
+    assert [i["id"] for i in listed["items"]] == [video["id"]]
+    photos = (await connected.get("/api/images", params={"media": "image"})).json()
+    assert video["id"] not in [i["id"] for i in photos["items"]]
+
+    # From photos: the first is the first frame, the second the last frame.
+    refs = [
+        (
+            await connected.post(
+                "/api/reference-images",
+                files={"file": (f"{n}.png", png_bytes(300 + n, 400), "image/png")},
+            )
+        ).json()["id"]
+        for n in (1, 2)
+    ]
+    r = await connected.post(
+        "/api/generations",
+        json={**body, "model": "wan-3.0-prime", "reference_image_ids": refs, "settings": {}},
+    )
+    assert r.status_code == 201, r.text
+    gen = await wait_done(connected, r.json()["id"])
+    assert gen["status"] == "completed" and gen["mode"] == "image-to-video"
+    sent = fake.submits[-1]
+    assert sent["model"] == "alibaba/wan-3.0-prime/image-to-video"
+    assert (
+        sent["body"]["image"] == fake.uploads[-2] and sent["body"]["last_image"] == fake.uploads[-1]
+    )
+    assert "aspect_ratio" not in sent["body"] and "images" not in sent["body"]
+    assert gen["request_payload"]["image"] == fake.uploads[-2]
+
+    # SFW only, WaveSpeed only, 2-30 seconds.
+    refused = await connected.post(
+        "/api/generations", json={**body, "prompt": "nude woman on a beach"}
+    )
+    assert refused.status_code == 422
+    atlas = await connected.post("/api/generations", json={**body, "provider": "atlas"})
+    assert atlas.status_code == 400
+    long = await connected.post("/api/generations", json={**body, "settings": {"duration": 31}})
+    assert long.status_code == 400
+
+    # A video is never used as a photo (references, AI models, LoRA photos, Krea 2).
+    from app.services import references
+
+    async with SessionLocal() as db:
+        row = await db.get(Image, uuid.UUID(video["id"]))
+        with pytest.raises(references.ReferenceRejected) as err:
+            await references.from_library_file(db, row.user_id, row.file_path, "v.mp4")
+    assert err.value.code == "video_not_photo"
+    # Deleting it removes the file.
+    async with SessionLocal() as db:
+        path = (await db.get(Image, uuid.UUID(video["id"]))).file_path
+    assert (await connected.delete(f"/api/images/{video['id']}")).status_code == 200
+    from app.services import storage
+
+    assert not storage.absolute(path).exists()
+
+
+def test_mp4_size_and_expected_size():
+    from app.services import storage
+
+    assert storage.mp4_size(TEST_VIDEO) == (320, 180)
+    assert storage.video_kind(TEST_VIDEO) == ("video/mp4", "mp4")
+    assert storage.video_kind(png_bytes(10, 10)) is None
+    assert storage.mp4_size(b"\0\0\0\x08moov") is None
+    assert storage.expected_size({"resolution": "1080p", "aspect_ratio": "9:16"}) == (1080, 1920)
+    assert storage.expected_size({"resolution": "480p", "aspect_ratio": "16:9"}) == (854, 480)

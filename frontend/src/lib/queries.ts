@@ -199,6 +199,8 @@ export function useStorage() {
 
 export interface ImageFilters {
   q?: string;
+  // Only images or only videos (Wan 3.0).
+  media?: "image" | "video";
   model?: string;
   provider?: string;
   favorite?: boolean;

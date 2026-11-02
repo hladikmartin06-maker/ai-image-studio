@@ -459,7 +459,7 @@ function ItemEditor({
 
 function LibraryImport({ lora, onClose }: { lora: LoraDetail; onClose: () => void }) {
   const t = useT();
-  const images = useImages({ limit: 60, scope: "library" });
+  const images = useImages({ limit: 60, scope: "library", media: "image" });
   const add = useAddDatasetImages(lora.id);
   const [selected, setSelected] = useState<string[]>([]);
   const items = images.data?.pages.flatMap((p) => p.items) ?? [];
