@@ -31,7 +31,13 @@ from app.gpu import service as gpu_service
 from app.gpu.agent import AGENT_PORT, BOOT, agent_env, new_token
 from app.gpu.agent_client import AgentClient, AgentError
 from app.gpu.base import GPUError, WorkloadSpec
-from app.gpu.modal_provider import SANDBOX_CPU, SANDBOX_MEMORY_MB, hourly_estimate
+from app.gpu.modal_provider import (
+    CAPACITY_PAUSES,
+    CAPACITY_WAIT,
+    SANDBOX_CPU,
+    SANDBOX_MEMORY_MB,
+    hourly_estimate,
+)
 from app.gpu.registry import get_gpu_adapter
 from app.lora.aitoolkit import run_name, run_paths
 from app.lora.presets import ARCHITECTURES
@@ -237,7 +243,40 @@ def _spec(v: LoraVersion, lora: Lora, token: str, hf: str | None) -> WorkloadSpe
     )
 
 
+async def _wait_for_capacity(db, v: LoraVersion, exc: GPUError) -> bool:
+    """Modal has no free GPU of this type right now: the version waits (nothing exists or is
+    billed) and the next ticks ask again after a pause. False = give up."""
+    if exc.code != "unavailable" or v.gpu_provider != "modal":
+        return False
+    progress = dict(v.progress or {})
+    first = progress.get("capacity_since") or now().isoformat()
+    if now() - datetime.fromisoformat(first) >= CAPACITY_WAIT:
+        exc.detail = (
+            f"Modal had no free {v.gpu_type} for {int(CAPACITY_WAIT.total_seconds() // 60)} "
+            "minutes; nothing was billed. Pick another GPU and start again"
+        )
+        return False
+    tries = int(progress.get("capacity_tries") or 0) + 1
+    pause = CAPACITY_PAUSES[min(tries, len(CAPACITY_PAUSES)) - 1]
+    progress.update(
+        capacity_since=first,
+        capacity_tries=tries,
+        retry_at=(now() + timedelta(seconds=pause)).isoformat(),
+    )
+    v.progress = progress
+    v.stage_detail = (
+        f"Modal has no free {v.gpu_type} right now. Trying again (attempt {tries + 1}); "
+        "nothing is billed while waiting."
+    )
+    await db.commit()
+    publish(v)
+    return True
+
+
 async def _launch(db, v: LoraVersion, lora: Lora) -> None:
+    retry_at = (v.progress or {}).get("retry_at")
+    if retry_at and now() < datetime.fromisoformat(retry_at):
+        return  # waiting for a free GPU at Modal
     token = new_token()
     v.encrypted_agent_token = encrypt_secret(token, associated=token_assoc(v))
     v.stage_detail = "Starting the GPU"
@@ -262,8 +301,14 @@ async def _launch(db, v: LoraVersion, lora: Lora) -> None:
             db, v.user_id, v.gpu_provider or "", spec, "lora-training"
         )
     except GPUError as exc:
+        if await _wait_for_capacity(db, v, exc):
+            return
         await _fail(db, v, exc.code, exc.message)
         return
+    progress = dict(v.progress or {})
+    for key in ("capacity_since", "capacity_tries", "retry_at"):
+        progress.pop(key, None)
+    v.progress = progress
     await _set(
         db,
         v,

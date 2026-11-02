@@ -635,6 +635,8 @@ export interface ComfyInfo {
 export interface ComfyDeploy {
   stage?: "creating" | "starting" | "booting" | "installing" | "ready" | "stopped" | "error";
   provider?: "runpod" | "modal";
+  // Modal had no free GPU of the type ("Insufficient capacity"): how often it was asked again.
+  capacity_tries?: number;
   gpu_type?: string;
   gpu_count?: number;
   cloud_type?: string;

@@ -858,6 +858,59 @@ async def test_deploy_on_modal_uses_the_same_image_and_start(user: Api, no_poll_
             await db.commit()
 
 
+async def test_modal_waits_for_a_free_gpu(user: Api, no_poll_wait, monkeypatch):
+    """Modal had no free GPU ("Insufficient capacity to create sandbox"): nothing is billed,
+    the connection says it is waiting and asks again, and starts once a GPU is free. After
+    the waiting limit it gives up with a clear message."""
+    from app.comfy import deploy
+    from app.gpu.modal_provider import ModalProvider
+    from tests.test_gpu import FakeModalSDK
+
+    monkeypatch.setattr(deploy, "CAPACITY_PAUSES", [0.05])
+    sdk = FakeModalSDK()
+    sdk.no_capacity = 2
+    set_gpu_adapter("modal", ModalProvider(sdk=sdk))
+    try:
+        await user.put(
+            "/api/gpu/providers/modal",
+            json={"token_id": "ak-123456", "token_secret": "as-secret-123456"},
+        )
+        body = {"name": "Modal", "provider": "modal", "gpu_type": "L40S", "confirm_billing": True}
+        r = await user.post("/api/comfy/deployments", json=body)
+        assert r.status_code == 201, r.text
+        waited = 0
+        for _ in range(200):
+            conn = (await user.get("/api/comfy/connections")).json()["items"][0]
+            waited = max(waited, conn["deploy"].get("capacity_tries") or 0)
+            if conn["deploy"]["stage"] != "creating":
+                break
+            await asyncio.sleep(0.02)
+        assert conn["status"] == "deploying" and conn["deploy"]["stage"] == "starting", conn
+        assert waited == 2 and conn["workload_id"] == "sb-1" and len(sdk.created) == 1
+        assert conn["last_error"] is None and conn["deploy"]["capacity_tries"] == 0
+
+        # Still no GPU after the waiting limit: a clear message, nothing created.
+        async with SessionLocal() as db:
+            await db.execute(ComfyConnection.__table__.delete())
+            await db.commit()
+        monkeypatch.setattr(deploy, "CAPACITY_WAIT", deploy.timedelta(0))
+        sdk.no_capacity = 1
+        r = await user.post("/api/comfy/deployments", json=body)
+        for _ in range(200):
+            conn = (await user.get("/api/comfy/connections")).json()["items"][0]
+            if conn["deploy"]["stage"] != "creating":
+                break
+            await asyncio.sleep(0.02)
+        assert conn["status"] == "error"
+        assert conn["last_error"].startswith("No GPU of this type is free right now.")
+        assert "Modal had no free L40S" in conn["last_error"] and len(sdk.created) == 1
+    finally:
+        set_gpu_adapter("modal", None)
+        async with SessionLocal() as db:
+            await db.execute(ComfyConnection.__table__.delete())
+            await db.commit()
+
+
 async def test_modal_uses_its_live_rates_and_refuses_a_changed_price(user: Api, no_poll_wait):
     """With the workspace's rates readable, the GPU's price and the running cost are Modal's
     own; a start at a price the owner did not confirm is refused, like on RunPod."""

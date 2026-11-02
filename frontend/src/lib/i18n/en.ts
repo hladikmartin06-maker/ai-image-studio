@@ -1499,6 +1499,8 @@ export const en = {
   "ls.memoryChange.quantize": "quantization on",
   "ls.memoryChange.low_vram": "low-VRAM mode",
   "ls.memoryChange.batch_size": "batch size 1",
+  "cf.setupNoCapacity": "Waiting for a free {gpu} on Modal…",
+  "cf.setupNoCapacityHint": "Modal has no free GPU of this type right now (“Insufficient capacity”). The studio asks again every 20–60 seconds (tried {n}×) for up to 20 minutes; nothing is billed while waiting. You can also stop it and pick another GPU.",
 } as const;
 
 export type MessageKey = keyof typeof en;

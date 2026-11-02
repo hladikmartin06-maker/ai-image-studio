@@ -120,7 +120,8 @@ repositories.
   huggingface.co only, as .part then renamed, into `/workspace/runpod-slim/ComfyUI/models/…`,
   only after ComfyUI answers. Modal: the same image with `.entrypoint([])`, agent,
   `cpu=4, memory=32768`, one Volume "ais-comfyui" at /workspace, `workdir="/"`, `timeout` =
-  session + 10 min; created in the background and found again by its tag, never twice. Its
+  session + 10 min; created in the background and found again by its tag, never twice; "no
+  free GPU" (Insufficient capacity) = wait and ask again (`modal_provider.CAPACITY_*`). Its
   start command (`COMFY_BOOT_MODAL`) runs ComfyUI from the image (not `/start.sh`) with only
   `models` on the Volume; an ended sandbox's exit code and last lines are shown.
 - Prices before anything starts: RunPod live from the catalog; Modal live from the workspace's

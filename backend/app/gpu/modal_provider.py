@@ -24,6 +24,7 @@ import math
 import re
 import time
 from dataclasses import dataclass, field
+from datetime import timedelta
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
@@ -52,6 +53,13 @@ GPU_TYPES: list[tuple[str, str, int, float | None]] = [
     ("H200", "NVIDIA H200", 141, None),
     ("B200", "NVIDIA B200", 180, 6.25),
 ]
+# Modal answers "Insufficient capacity to create sandbox" (ResourceExhaustedError) when it has
+# no free GPU of the type for the workspace right now. Nothing exists or is billed then, so
+# the studio asks again after these pauses (seconds; the last one repeats) for up to
+# CAPACITY_WAIT, then gives up with a clear message (comfy/deploy.py, lora/runner.py).
+CAPACITY_PAUSES = [20, 40, 60]
+CAPACITY_WAIT = timedelta(minutes=20)
+
 # CPU and memory are billed on top (last known: per physical core-hour, per GiB-hour).
 CPU_CORE_HOUR = 0.0472
 MEMORY_GIB_HOUR = 0.008
@@ -214,6 +222,10 @@ def _error(exc: Exception) -> GPUError:
     name = type(exc).__name__
     text = str(exc)
     lowered = f"{name} {text}".lower()
+    # "Insufficient capacity to create sandbox" (ResourceExhaustedError): Modal has no free
+    # GPU of this type for the workspace right now. Nothing was created or billed.
+    if "resourceexhausted" in lowered or "insufficient capacity" in lowered:
+        return GPUError("unavailable", text or name)
     if "auth" in lowered or "token" in lowered or "unauthenticated" in lowered:
         return GPUError("invalid_credentials", text)
     if "notfound" in lowered or "not found" in lowered:

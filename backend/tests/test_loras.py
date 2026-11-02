@@ -648,6 +648,63 @@ async def test_out_of_memory_trains_again_with_memory_saving(user: Api, tmp_path
         set_gpu_adapter("runpod", None)
 
 
+async def test_training_on_modal_waits_for_a_free_gpu(user: Api, monkeypatch):
+    """Modal had no free GPU for the training: the version waits (nothing billed) and asks
+    again, then rents the GPU once one is free; after the waiting limit it fails clearly."""
+    from app.gpu.modal_provider import ModalProvider
+    from app.lora import runner
+    from tests.test_gpu import FakeModalSDK
+
+    monkeypatch.setattr(runner, "CAPACITY_PAUSES", [0])
+    sdk = FakeModalSDK()
+    sdk.no_capacity = 2
+    set_gpu_adapter("modal", ModalProvider(sdk=sdk))
+    try:
+        await user.put(
+            "/api/gpu/providers/modal",
+            json={"token_id": "ak-123456", "token_secret": "as-secret-123456"},
+        )
+        await user.put("/api/secrets/huggingface", json={"value": "hf_testtoken123"})
+        lora = await create(user, trigger_word="mrx")
+        await upload_dataset(user, lora["id"], 10, start=20)
+        body = {
+            "preset": "fast_experiment",
+            "config": {**preset_config("fast_experiment", "raw"), "steps": 100},
+            "provider": "modal",
+            "gpu_type": "L40S",
+            "confirm_billing": True,
+        }
+        r = await user.post(f"/api/loras/{lora['id']}/versions", json=body)
+        assert r.status_code == 201, r.text
+        details = []
+        for _ in range(20):
+            await gpu_runner.tick()
+            v = (await user.get(f"/api/loras/{lora['id']}")).json()["versions"][0]
+            details.append(v["stage_detail"])
+            if v["status"] != "queued":
+                break
+        assert v["status"] == "preparing" and len(sdk.created) == 1, v
+        assert any(d.startswith("Modal has no free L40S right now") for d in details)
+        await user.post(f"/api/loras/{lora['id']}/versions/{v['id']}/cancel", json={})
+
+        monkeypatch.setattr(runner, "CAPACITY_WAIT", runner.timedelta(0))
+        sdk.no_capacity = 1
+        r = await user.post(f"/api/loras/{lora['id']}/versions", json=body)
+        for _ in range(20):
+            await gpu_runner.tick()
+            v = next(
+                x
+                for x in (await user.get(f"/api/loras/{lora['id']}")).json()["versions"]
+                if x["id"] == r.json()["id"]
+            )
+            if v["status"] != "queued":
+                break
+        assert v["status"] == "failed" and "Modal had no free L40S" in v["error_message"]
+        assert len(sdk.created) == 1
+    finally:
+        set_gpu_adapter("modal", None)
+
+
 async def test_import_lora_with_architecture_checks(user: Api):
     krea = safetensors(
         {"training_info": json.dumps({"studio_architecture": "krea2"}), "name": "lena"}

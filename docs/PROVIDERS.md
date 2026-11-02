@@ -237,6 +237,14 @@ signatures checked against `modal` 1.6.3; not run against Modal's servers here.
   pulls RunPod's ComfyUI image), which can take many minutes, so the request answers at once
   (stage "creating") and the studio shows the progress; after a restart of the app the
   sandbox is found again by its tag and never created twice. Start limit 45 minutes.
+- **No free GPU**: `Sandbox.create` can fail with "Insufficient capacity to create sandbox"
+  (`ResourceExhaustedError`; seen by the owner on 2026-11-02 and described as transient
+  capacity exhaustion in https://github.com/dryingpaint/biomodelbench-private-eval/pull/44 —
+  not in Modal's docs). Nothing exists or is billed then. The studio maps it to "unavailable"
+  (not "internal problem") and asks again after 20, 40, then every 60 seconds for up to 20
+  minutes (ComfyUI: the connection shows "Waiting for a free GPU"; LoRA training: the
+  version stays queued), then gives up with "Modal had no free <GPU>… pick another GPU". The
+  session time starts only when the sandbox exists.
 - **Prices (live)**: `modal.Workspace.from_context(client=…).billing.rates()` — "current
   pricing rates for the given workspace", a mapping of rate name → `Decimal` (the CLI's
   `modal billing rates`). Source: the `modal` SDK 1.6.3 itself (`modal/_workspace.py`,

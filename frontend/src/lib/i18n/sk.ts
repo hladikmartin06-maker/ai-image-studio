@@ -1500,4 +1500,6 @@ export const sk: Record<MessageKey, string> = {
   "ls.memoryChange.quantize": "zapnutá kvantizácia",
   "ls.memoryChange.low_vram": "režim pre málo VRAM",
   "ls.memoryChange.batch_size": "dávka 1",
+  "cf.setupNoCapacity": "Čakám na voľnú {gpu} na Modale…",
+  "cf.setupNoCapacityHint": "Modal teraz nemá voľnú GPU tohto typu („Insufficient capacity“). Štúdio to skúša znova každých 20–60 sekúnd (zatiaľ {n}×), najviac 20 minút; kým čaká, nič sa neplatí. Môžeš to aj zastaviť a vybrať inú GPU.",
 };

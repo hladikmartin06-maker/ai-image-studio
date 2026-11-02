@@ -117,6 +117,8 @@ export function ComfyConnectionBar({
   // starting: the GPU boots and the studio agent comes up; booting: ComfyUI starts (the first
   // start copies it onto the GPU's disk).
   const stage = d.stage === "booting" ? "booting" : d.stage === "creating" ? "creating" : "starting";
+  // Modal has no free GPU of this type right now: the studio asks again (nothing is billed).
+  const waitingForGpu = stage === "creating" && (d.capacity_tries ?? 0) > 0;
   const since = secondsSince(d.started_at);
 
   return (
@@ -144,7 +146,9 @@ export function ComfyConnectionBar({
           <div className="row" style={{ gap: 8 }}>
             <span className="dot pulse" style={{ color: "var(--accent)" }} />
             <span className="small grow" style={{ fontWeight: 600 }}>
-              {t(stage === "booting" ? "cf.setupBooting" : stage === "creating" ? "cf.setupCreating" : "cf.setupStarting")}
+              {waitingForGpu
+                ? t("cf.setupNoCapacity", { gpu: d.gpu_type ?? "GPU" })
+                : t(stage === "booting" ? "cf.setupBooting" : stage === "creating" ? "cf.setupCreating" : "cf.setupStarting")}
             </span>
             {since !== null ? <span className="tiny subtle">{formatElapsed(since)}</span> : null}
           </div>
@@ -153,7 +157,11 @@ export function ComfyConnectionBar({
             <li data-state={stage === "booting" ? "active" : "todo"}>{t("cf.setupStep2")}</li>
             <li data-state="todo">{t("cf.setupStep3")}</li>
           </ol>
-          <div className="tiny subtle">{t(stage === "creating" ? "cf.setupCreatingHint" : "cf.setupHint")}</div>
+          {waitingForGpu ? (
+            <Notice tone="warning">{t("cf.setupNoCapacityHint", { n: d.capacity_tries ?? 1 })}</Notice>
+          ) : (
+            <div className="tiny subtle">{t(stage === "creating" ? "cf.setupCreatingHint" : "cf.setupHint")}</div>
+          )}
           {selected.session ? <SessionLine conn={selected} /> : null}
           <div className="row wrap" style={{ gap: 8 }}>
             <Button size="sm" icon={<ScrollText />} onClick={() => setLog(true)}>

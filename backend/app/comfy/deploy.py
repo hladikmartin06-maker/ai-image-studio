@@ -39,7 +39,13 @@ from app.gpu.agent import (
 )
 from app.gpu.agent_client import AgentClient, AgentError
 from app.gpu.base import GPUError, WorkloadSpec
-from app.gpu.modal_provider import SANDBOX_CPU, SANDBOX_MEMORY_MB, hourly_estimate
+from app.gpu.modal_provider import (
+    CAPACITY_PAUSES,
+    CAPACITY_WAIT,
+    SANDBOX_CPU,
+    SANDBOX_MEMORY_MB,
+    hourly_estimate,
+)
 from app.gpu.registry import get_gpu_adapter
 from app.models import ComfyConnection, Generation, UserSecret
 from app.security import decrypt_secret, encrypt_secret
@@ -62,6 +68,7 @@ COMFY_SUBDIR = "runpod-slim/ComfyUI"
 # How long ComfyUI may take to answer after the GPU was started; then the GPU is stopped.
 # Modal's first start also pulls the image and copies ComfyUI onto its Volume.
 BOOT_LIMIT = {"runpod": timedelta(minutes=30), "modal": timedelta(minutes=45)}
+
 POLL_EVERY = timedelta(seconds=10)
 MODAL_VOLUME = "ais-comfyui"
 # A session: from the start request until the GPU is stopped. Its time limit (default 2 h)
@@ -264,6 +271,8 @@ async def launch(db, conn: ComfyConnection) -> None:
         "model_job": None,
         "started_at": now().isoformat(),
         "session_started_at": conn.deploy.get("session_started_at") or now().isoformat(),
+        "capacity_since": None,
+        "capacity_tries": 0,
         "polled_at": None,
         "cost_per_hour": workload.cost_per_hour
         if workload.cost_per_hour is not None
@@ -317,14 +326,20 @@ def create_later(conn_id: uuid.UUID) -> None:
 
     async def run() -> None:
         try:
-            async with SessionLocal() as db:
-                conn = await db.get(ComfyConnection, conn_id)
-                if conn is None or (conn.deploy or {}).get("stage") != "creating":
-                    return
-                try:
-                    await launch(db, conn)
-                except GPUError as exc:
-                    await _fail(db, conn, exc.message)
+            while True:
+                async with SessionLocal() as db:
+                    conn = await db.get(ComfyConnection, conn_id)
+                    if conn is None or (conn.deploy or {}).get("stage") != "creating":
+                        return
+                    try:
+                        await launch(db, conn)
+                        return
+                    except GPUError as exc:
+                        pause = await _no_capacity(db, conn, exc)
+                        if pause is None:
+                            await _fail(db, conn, exc.message)
+                            return
+                await asyncio.sleep(pause)
         except Exception:  # noqa: BLE001 - reported in the log; the stage times out
             log.exception("creating the GPU for %s failed", conn_id)
         finally:
@@ -333,6 +348,33 @@ def create_later(conn_id: uuid.UUID) -> None:
     task = asyncio.create_task(run())
     _tasks.add(task)
     task.add_done_callback(_tasks.discard)
+
+
+async def _no_capacity(db, conn: ComfyConnection, exc: GPUError) -> float | None:
+    """Modal has no free GPU of this type right now: the seconds to wait before asking again
+    (the connection shows that it is waiting), or None to give up."""
+    d = dict(conn.deploy or {})
+    if exc.code != "unavailable" or d.get("provider") != "modal":
+        return None
+    first = d.get("capacity_since") or now().isoformat()
+    if _since(first) >= CAPACITY_WAIT:
+        conn.deploy = {**d, "capacity_tries": int(d.get("capacity_tries") or 0)}
+        exc.detail = (
+            f"Modal had no free {d.get('gpu_type')} for {int(CAPACITY_WAIT.total_seconds() // 60)}"
+            " minutes; nothing was billed. Pick another GPU and start again"
+        )
+        return None
+    tries = int(d.get("capacity_tries") or 0) + 1
+    conn.deploy = {
+        **d,
+        "capacity_since": first,
+        "capacity_tries": tries,
+        # The session starts when the GPU exists, not while waiting for one.
+        "session_started_at": None,
+    }
+    conn.last_error = None
+    await db.commit()
+    return CAPACITY_PAUSES[min(tries, len(CAPACITY_PAUSES)) - 1]
 
 
 async def _adopt(db, conn: ComfyConnection, d: dict[str, Any]) -> None:

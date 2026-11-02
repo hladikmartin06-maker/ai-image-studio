@@ -222,6 +222,10 @@ class FakeSandbox:
         self.output = ""
 
 
+class ResourceExhaustedError(Exception):
+    """Named like the modal SDK's own error for "Insufficient capacity to create sandbox"."""
+
+
 class FakeModalSDK:
     def __init__(self):
         self.sandboxes: dict[str, FakeSandbox] = {}
@@ -230,6 +234,8 @@ class FakeModalSDK:
         # The workspace's rates (`billing.rates()`); None = they cannot be read.
         self.rates_value: dict[str, str] | None = None
         self.rate_reads = 0
+        # How many creates fail first like Modal does when it has no free GPU of the type.
+        self.no_capacity = 0
 
     async def rates(self, client):
         self.rate_reads += 1
@@ -253,6 +259,9 @@ class FakeModalSDK:
         ]
 
     async def create(self, client, app, spec):
+        if self.no_capacity > 0:
+            self.no_capacity -= 1
+            raise ResourceExhaustedError("Insufficient capacity to create sandbox.")
         sb = FakeSandbox(f"sb-{next(self._ids)}", spec.tags)
         self.sandboxes[sb.object_id] = sb
         self.created.append(spec)
@@ -416,6 +425,14 @@ MODAL_RATES = {
     "memory": "0.00000222",
     "something.else": "12",
 }
+
+
+def test_modal_no_capacity_is_unavailable():
+    from app.gpu.modal_provider import _error
+
+    err = _error(ResourceExhaustedError("Insufficient capacity to create sandbox."))
+    assert err.code == "unavailable" and "Insufficient capacity" in err.message
+    assert _error(RuntimeError("AuthError: invalid token")).code == "invalid_credentials"
 
 
 def test_modal_rates_are_read_safely():
