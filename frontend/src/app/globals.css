@@ -1662,10 +1662,12 @@ button.nav-item {
 }
 .models {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  /* minmax(0, …): long badges ("Downloading 72%") never push a card out of the panel. */
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 8px;
 }
 .model-card {
+  min-width: 0;
   position: relative;
   text-align: left;
   padding: 12px;
@@ -1688,6 +1690,9 @@ button.nav-item {
   border-color: rgba(143, 124, 255, 0.7);
   background: linear-gradient(180deg, var(--accent-soft), var(--accent-softer));
   box-shadow: 0 0 0 3px var(--accent-softer);
+}
+.model-card .model-badges {
+  flex-wrap: wrap;
 }
 .model-card .name {
   font-weight: 600;

@@ -8,6 +8,7 @@ import { toast } from "sonner";
 import { usePriceConfirm } from "@/components/generate/price-confirm";
 import { useConfirm } from "@/components/ui";
 import { ApiError, downloadUrl } from "@/lib/api";
+import { hideDeleted, showAgain } from "@/lib/pending-deletes";
 import { useT } from "@/lib/i18n";
 import {
   patchImageEverywhere,
@@ -50,10 +51,13 @@ export function useQuickDelete() {
   const removeGeneration = useDeleteGeneration();
 
   const later = useCallback(
-    (hide: () => void, commit: () => Promise<unknown>, message: string) => {
+    (id: string, hide: () => void, commit: () => Promise<unknown>, message: string) => {
+      // Hidden in every list until the delete is done, even if a refresh still returns it.
+      hideDeleted(id);
       hide();
       let undone = false;
       const restore = () => {
+        showAgain(id);
         qc.invalidateQueries({ queryKey: ["generations"] });
         qc.invalidateQueries({ queryKey: ["images"] });
       };
@@ -82,6 +86,7 @@ export function useQuickDelete() {
   const deleteImageQuick = useCallback(
     (img: StudioImage) =>
       later(
+        img.id,
         () => patchImageEverywhere(qc, img.id, () => null),
         () => removeImage.mutateAsync(img.id),
         t("images.deleted"),
@@ -92,6 +97,7 @@ export function useQuickDelete() {
   const deleteGenerationQuick = useCallback(
     (gen: Generation) =>
       later(
+        gen.id,
         () => removeGenerationEverywhere(qc, gen.id),
         () => removeGeneration.mutateAsync(gen.id),
         t("gen.deleted"),

@@ -316,7 +316,7 @@ export function ComfyPanel({
                       onClick={() => set({ variant: v.key, modelFile: "" })}
                     >
                       <span className="name">{v.name}</span>
-                      <div className="row" style={{ gap: 6 }}>
+                      <div className="row model-badges" style={{ gap: 6 }}>
                         {catalog.data?.krea2.content === "sfw+nsfw" ? (
                           <Badge tone="accent" title={t("content.sfw+nsfw.hint")}>{t("content.sfw+nsfw")}</Badge>
                         ) : null}

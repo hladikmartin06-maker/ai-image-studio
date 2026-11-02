@@ -8,8 +8,10 @@ import {
   useQuery,
   useQueryClient,
 } from "@tanstack/react-query";
+import { useCallback } from "react";
 
 import { api, query } from "@/lib/api";
+import { hiddenCount, hideDeleted, isHidden, showAgain, useHiddenVersion } from "@/lib/pending-deletes";
 import type {
   AIProviderList,
   AIUsage,
@@ -211,7 +213,35 @@ export interface ImageFilters {
   limit?: number;
 }
 
+/** Leaves out what the user just deleted (a refetch may still return it for a moment). */
+function withoutDeleted<T extends { id: string }>(
+  data: InfiniteData<Page<T>>,
+  inner?: (item: T) => T,
+): InfiniteData<Page<T>> {
+  if (!hiddenCount()) return data;
+  return {
+    ...data,
+    pages: data.pages.map((page) => {
+      const items = page.items.filter((item) => !isHidden(item.id)).map((item) => (inner ? inner(item) : item));
+      return { ...page, items, total: page.total - (page.items.length - items.length) };
+    }),
+  };
+}
+
+function withoutDeletedImages(gen: Generation): Generation {
+  return gen.images.some((img) => isHidden(img.id))
+    ? { ...gen, images: gen.images.filter((img) => !isHidden(img.id)) }
+    : gen;
+}
+
 export function useImages(filters: ImageFilters, enabled = true) {
+  const deleted = useHiddenVersion();
+  const select = useCallback(
+    (data: InfiniteData<Page<StudioImage>>) => withoutDeleted(data),
+    // The version is what changes when an item is hidden or shown again.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [deleted],
+  );
   return useInfiniteQuery({
     queryKey: keys.imageList(filters),
     queryFn: ({ pageParam, signal }) =>
@@ -223,6 +253,7 @@ export function useImages(filters: ImageFilters, enabled = true) {
     getNextPageParam: (last) => last.next_cursor ?? undefined,
     enabled,
     staleTime: 10_000,
+    select,
   });
 }
 
@@ -280,6 +311,8 @@ export function useDeleteImage() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (id: string) => api(`/api/images/${id}`, { method: "DELETE" }),
+    onMutate: (id) => hideDeleted(id),
+    onError: (_e, id) => showAgain(id),
     onSuccess: (_d, id) => {
       patchImageEverywhere(qc, id, () => null);
       qc.invalidateQueries({ queryKey: keys.images });
@@ -318,6 +351,12 @@ export interface GenerationFilters {
 }
 
 export function useGenerations(filters: GenerationFilters, enabled = true) {
+  const deleted = useHiddenVersion();
+  const select = useCallback(
+    (data: InfiniteData<Page<Generation>>) => withoutDeleted(data, withoutDeletedImages),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [deleted],
+  );
   return useInfiniteQuery({
     queryKey: keys.generationList(filters),
     queryFn: ({ pageParam, signal }) =>
@@ -329,6 +368,7 @@ export function useGenerations(filters: GenerationFilters, enabled = true) {
     getNextPageParam: (last) => last.next_cursor ?? undefined,
     enabled,
     staleTime: 10_000,
+    select,
   });
 }
 
@@ -436,6 +476,8 @@ export function useDeleteGeneration() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (id: string) => api(`/api/generations/${id}`, { method: "DELETE" }),
+    onMutate: (id) => hideDeleted(id),
+    onError: (_e, id) => showAgain(id),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: keys.generations });
       qc.invalidateQueries({ queryKey: keys.images });
