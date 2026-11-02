@@ -76,7 +76,9 @@ repositories.
   missing model file or node is an error, never a silent substitute.
 - LoRA training (ai-toolkit on RunPod/Modal through the studio agent, `gpu/agent`): billing
   needs `confirm_billing`; artifacts are copied to the Mac before the GPU is removed; progress
-  and loss only from the trainer's output; LoRAs only for fictional adults. A finished version
+  and loss only from the trainer's output; LoRAs only for fictional adults. Out of GPU memory
+  = train again on the same GPU with more memory saving (`runner.memory_fallback`, at most
+  twice), never a new GPU. A finished version
   can be continued (`continue_from`: its file → `network.pretrained_lora_path`, same
   rank/alpha, all current photos, a new version).
 - Three separate integration families, never mixed: image providers (`providers/`,

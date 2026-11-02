@@ -148,7 +148,7 @@ def test_faster_training_options():
     assert fast["train"]["gradient_checkpointing"] is False
     # Stored configs from before keep working (previews defaults to "during").
     assert TrainingConfig.model_validate({"steps": 1000}).previews == "during"
-    assert ARCHITECTURES["krea2"]["vram_no_checkpointing_gb"] == 80
+    assert ARCHITECTURES["krea2"]["vram_no_checkpointing_gb"] == 96
 
 
 async def test_project_rules_and_dataset_tools(user: Api):
@@ -520,7 +520,8 @@ async def test_training_failure_and_cancel(user: Api, tmp_path: Path):
             if v["status"] in ("completed", "failed"):
                 break
             await asyncio.sleep(0.05)
-        assert v["status"] == "failed" and "CUDA out of memory" in v["error_message"]
+        assert v["status"] == "failed" and "the dataset loader broke" in v["error_message"]
+        assert v["error_code"] == "training_failed" and not v["memory_retries"]
         assert fake.pods == {}  # cleaned up after the failure
 
         fake.extra_env.pop("FAKE_TRAIN_FAIL")
@@ -529,6 +530,104 @@ async def test_training_failure_and_cancel(user: Api, tmp_path: Path):
         await gpu_runner.tick()
         cancel = await user.post(f"/api/loras/{lora['id']}/versions/{v2['id']}/cancel", json={})
         assert cancel.json()["status"] == "cancelled"
+        assert fake.pods == {}
+    finally:
+        fake.close()
+        set_gpu_adapter("runpod", None)
+
+
+def test_memory_fallback_steps():
+    from app.lora.aitoolkit import build as build_config
+    from app.lora.runner import memory_fallback
+
+    def cfg(**changes):
+        config = TrainingConfig.model_validate(
+            {**preset_config("character_identity", "raw"), **changes}
+        )
+        return build_config(
+            dataset_dir="/d",
+            output_dir="/o",
+            architecture="krea2",
+            name="run",
+            trigger_word="mrx",
+            class_word="woman",
+            config=config,
+            sample_prompts=[],
+        )
+
+    # Memory saving off: it goes back on first (with quantization, if that was off too).
+    first, changes = memory_fallback(cfg(gradient_checkpointing=False, quantize=False))
+    assert changes == ["gradient_checkpointing", "quantize"]
+    process = first["config"]["process"][0]
+    assert process["train"]["gradient_checkpointing"] is True
+    assert process["model"]["quantize"] is True and process["model"]["quantize_te"] is True
+    # Then low-VRAM mode, then batch 1 with the same effective batch, then nothing is left.
+    second, changes = memory_fallback(cfg(batch_size=2, gradient_accumulation=2))
+    assert changes == ["low_vram"] and second["config"]["process"][0]["model"]["low_vram"]
+    third, changes = memory_fallback(second)
+    assert changes == ["batch_size"]
+    assert third["config"]["process"][0]["train"]["batch_size"] == 1
+    assert third["config"]["process"][0]["train"]["gradient_accumulation"] == 4
+    assert memory_fallback(third) is None
+
+
+async def test_out_of_memory_trains_again_with_memory_saving(user: Api, tmp_path: Path):
+    """An out-of-memory stop (here: an 80 GB GPU with memory saving off) is not the end: the
+    same GPU trains again with memory saving on, and the version shows the new settings.
+    When nothing is left to save, the run fails with a clear message."""
+    toolkit = make_toolkit(tmp_path / "image")
+    fake = SpawningRunPod(
+        tmp_path / "pods", {"STUDIO_AITK_DIR": str(toolkit), "FAKE_TRAIN_OOM": "no_checkpointing"}
+    )
+    set_gpu_adapter("runpod", LocalRunPodProvider(fake))
+    try:
+        await user.put("/api/gpu/providers/runpod", json={"api_key": RUNPOD_KEY})
+        await user.put("/api/secrets/huggingface", json={"value": "hf_testtoken123"})
+        lora = await create(user, trigger_word="mrx")
+        await upload_dataset(user, lora["id"], 10, start=20)
+        config = {**preset_config("fast_experiment", "raw"), "steps": 100}
+        body = {
+            "preset": "fast_experiment",
+            "config": {**config, "gradient_checkpointing": False},
+            "provider": "runpod",
+            "gpu_type": "NVIDIA L4",
+            "confirm_billing": True,
+        }
+
+        async def run(request: dict) -> dict:
+            r = await user.post(f"/api/loras/{lora['id']}/versions", json=request)
+            assert r.status_code == 201, r.text
+            for _ in range(400):
+                await gpu_runner.tick()
+                v = next(
+                    x
+                    for x in (await user.get(f"/api/loras/{lora['id']}")).json()["versions"]
+                    if x["id"] == r.json()["id"]
+                )
+                if v["status"] in ("completed", "failed"):
+                    return v
+                await asyncio.sleep(0.05)
+            raise AssertionError(v)
+
+        v = await run(body)
+        assert v["status"] == "completed", v.get("error_message")
+        retries = v["memory_retries"]
+        assert len(retries) == 1 and retries[0]["changes"] == ["gradient_checkpointing"]
+        assert v["config"]["gradient_checkpointing"] is True
+        pods = [c for c in fake.calls if c[0] == "POST" and c[1] == "/v2/pods"]
+        assert len(pods) == 1  # the same GPU, not a second one
+        log = (await user.get(f"/api/loras/{lora['id']}/versions/{v['id']}/logs")).json()["text"]
+        assert "OOM during training" in log and "starting again with gradient_checkpointing" in log
+
+        # Out of memory even with every saving on: a clear message, the GPU removed.
+        fake.extra_env["FAKE_TRAIN_OOM"] = "always"
+        v = await run(body)
+        assert v["status"] == "failed" and v["error_code"] == "out_of_memory"
+        assert v["error_message"].startswith("The GPU ran out of memory, even with memory saving")
+        assert [r["changes"] for r in v["memory_retries"]] == [
+            ["gradient_checkpointing"],
+            ["low_vram"],
+        ]
         assert fake.pods == {}
     finally:
         fake.close()

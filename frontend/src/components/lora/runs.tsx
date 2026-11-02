@@ -96,6 +96,17 @@ export function VersionCard({
             <Progress value={version.status === "running" ? percent : null} />
           </>
         ) : null}
+        {version.memory_retries?.length ? (
+          <Notice tone="warning">
+            {version.memory_retries.map((r, i) => (
+              <div key={i}>
+                {t("ls.memoryRetry", {
+                  changes: r.changes.map((c) => t(`ls.memoryChange.${c}` as MessageKey)).join(", "),
+                })}
+              </div>
+            ))}
+          </Notice>
+        ) : null}
         {version.error_message && !active ? (
           <Notice tone={version.status === "cancelled" ? undefined : "danger"}>
             <pre className="error-pre">{version.error_message}</pre>

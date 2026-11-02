@@ -35,8 +35,16 @@ images = [f for f in os.listdir(proc["datasets"][0]["folder_path"]) if not f.end
 captions = [f for f in os.listdir(proc["datasets"][0]["folder_path"]) if f.endswith(".txt")]
 print(f"dataset: {len(images)} images, {len(captions)} captions", flush=True)
 if os.environ.get("FAKE_TRAIN_FAIL"):
-    print("CUDA out of memory", flush=True)
+    print("RuntimeError: the dataset loader broke", flush=True)
     sys.exit(3)
+# Out of GPU memory like ai-toolkit reports it: "always", or "no_checkpointing" (only while
+# gradient checkpointing is off).
+oom = os.environ.get("FAKE_TRAIN_OOM")
+if oom == "always" or (oom == "no_checkpointing" and not proc["train"]["gradient_checkpointing"]):
+    sys.stdout.write(f"\r{name}:   0%|          | 3/{proc['train']['steps']} [00:10<45:05]")
+    print("[W] memory allocation failed with OOM on device 0", flush=True)
+    print("RuntimeError: OOM during training step 3 times in a row, aborting training", flush=True)
+    sys.exit(1)
 start = proc.get("network", {}).get("pretrained_lora_path")
 if start:
     # Like ai-toolkit: a missing starting LoRA is reported, an existing one is loaded.

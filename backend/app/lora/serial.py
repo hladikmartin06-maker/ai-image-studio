@@ -58,6 +58,8 @@ def version_json(v: LoraVersion) -> dict[str, Any]:
         "step": progress.get("step"),
         "total_steps": progress.get("total") or (v.config or {}).get("steps"),
         "loss": progress.get("loss", []),
+        # Out-of-memory restarts on the same GPU, each with what was changed.
+        "memory_retries": progress.get("memory_retries", []),
         "gpu": progress.get("gpu"),
         "samples": [
             {**s, "url": f"{base}/samples/{s['file']}"} for s in progress.get("samples", [])

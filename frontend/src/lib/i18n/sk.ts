@@ -1423,7 +1423,7 @@ export const sk: Record<MessageKey, string> = {
   "en.promptReset": "Vrátiť pôvodný text",
   "en.faceTarget": "Čo opraviť (po anglicky)",
   "ls.checkpointing": "Šetriť pamäť pri výpočte (gradient checkpointing)",
-  "ls.checkpointingHint": "Vypnuté = rýchlejší tréning s rovnakým výsledkom, ale potrebuje oveľa viac pamäte GPU: vyber GPU s {n} GB alebo viac (odhad, pre Krea 2 nezmeraný). Pri nedostatku pamäte tréning skončí chybou „out of memory“.",
+  "ls.checkpointingHint": "Vypnuté = rýchlejší tréning s rovnakým výsledkom, ale potrebuje oveľa viac pamäte GPU: vyber GPU s {n} GB alebo viac (80 GB GPU nestačila). Ak sa pamäť aj tak minie, tréning sa na tej istej GPU spustí znova so šetrením pamäte.",
   "ls.preservation": "Chrániť pôvodný model",
   "ls.preservationHint": "Iné osoby rovnakého typu („{cls}“) ostanú ako v pôvodnom modeli, nebudú vyzerať ako tvoja postava. Vypnuté = rýchlejšie (každý krok počíta menej), ale LoRA môže meniť aj iné osoby.",
   "ls.previews": "Testovacie obrázky počas tréningu",
@@ -1495,4 +1495,9 @@ export const sk: Record<MessageKey, string> = {
   "gen.adultSfwOnly": "{model} je len na SFW obrázky. 18+ obsah je na Wan 2.7 a Wan 2.7 Pro.",
   "gpu.modalLive": "Ceny z API Modalu (aktuálne sadzby tvojho workspace, účtuje sa po sekundách), vrátane 4 jadier CPU a 32 GB RAM sandboxu.",
   "gpu.modalLivePartly": "Ceny z API Modalu (aktuálne sadzby tvojho workspace, účtuje sa po sekundách); „≈“ = API Modalu sadzbu nevrátilo, je to odhad z jeho cenníka:",
+  "ls.memoryRetry": "GPU nemala dosť pamäte, preto sa tréning na tej istej GPU spustil znova s: {changes}.",
+  "ls.memoryChange.gradient_checkpointing": "zapnuté šetrenie pamäte",
+  "ls.memoryChange.quantize": "zapnutá kvantizácia",
+  "ls.memoryChange.low_vram": "režim pre málo VRAM",
+  "ls.memoryChange.batch_size": "dávka 1",
 };

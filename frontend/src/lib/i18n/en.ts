@@ -1422,7 +1422,7 @@ export const en = {
   "en.promptReset": "Back to the original text",
   "en.faceTarget": "What to fix (English)",
   "ls.checkpointing": "Save memory while computing (gradient checkpointing)",
-  "ls.checkpointingHint": "Off = faster training with the same result, but it needs much more GPU memory: choose a GPU with {n} GB or more (an estimate, not measured for Krea 2). Too little memory ends the run with “out of memory”.",
+  "ls.checkpointingHint": "Off = faster training with the same result, but it needs much more GPU memory: choose a GPU with {n} GB or more (an 80 GB GPU ran out of memory). If the memory runs out anyway, the training starts again on the same GPU with memory saving on.",
   "ls.preservation": "Protect the base model",
   "ls.preservationHint": "Keeps other people of the same kind (“{cls}”) looking like the base model, not like your character. Off = faster (each step computes less), but the LoRA may change other people too.",
   "ls.previews": "Test images during training",
@@ -1494,6 +1494,11 @@ export const en = {
   "gen.adultSfwOnly": "{model} is for SFW images only. 18+ content is available on Wan 2.7 and Wan 2.7 Pro.",
   "gpu.modalLive": "Prices from Modal's API (your workspace's current rates, billed per second), including the sandbox's 4 CPU cores and 32 GB RAM.",
   "gpu.modalLivePartly": "Prices from Modal's API (your workspace's current rates, billed per second); “≈” = Modal's API returned no rate, so it is an estimate from its list prices:",
+  "ls.memoryRetry": "The GPU ran out of memory, so training started again on the same GPU with: {changes}.",
+  "ls.memoryChange.gradient_checkpointing": "memory saving on",
+  "ls.memoryChange.quantize": "quantization on",
+  "ls.memoryChange.low_vram": "low-VRAM mode",
+  "ls.memoryChange.batch_size": "batch size 1",
 } as const;
 
 export type MessageKey = keyof typeof en;

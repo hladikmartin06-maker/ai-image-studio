@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import copy
 import json
 import logging
 import re
@@ -43,6 +44,16 @@ from app.services.events import broker
 log = logging.getLogger("studio.training")
 
 BOOT_TIMEOUT = timedelta(minutes=30)
+# Out of GPU memory, in torch's and ai-toolkit's own words ("CUDA out of memory",
+# OutOfMemoryError, "OOM during training step 3 times in a row").
+_OOM = re.compile(r"out of memory|OutOfMemoryError|OOM during training", re.IGNORECASE)
+# After an out-of-memory stop, training starts again on the same GPU (already running and
+# billed, models and latents already there) with more memory saving, at most this often.
+MAX_MEMORY_RETRIES = 2
+OOM_MESSAGE = (
+    "The GPU ran out of memory, even with memory saving on. Train at a lower resolution "
+    "(e.g. 768 px only) or choose a GPU with more memory."
+)
 MAX_SAMPLES = 60
 TRAINING_VOLUME = "ai-image-studio-training"
 
@@ -115,6 +126,83 @@ async def _fail(db, v: LoraVersion, code: str, message: str, status: str = "fail
     if v.auto_cleanup:
         await _cleanup(db, v)
     publish(v)
+
+
+def _job_id(v: LoraVersion, run: str) -> str:
+    """The agent job of this version's current training attempt."""
+    return str((v.progress or {}).get("job_id") or f"train-{run}")
+
+
+def memory_fallback(trainer_config: dict[str, Any]) -> tuple[dict[str, Any], list[str]] | None:
+    """The same ai-toolkit config with more memory saving, and what was changed (one step at
+    a time: gradient checkpointing and quantization first, then low-VRAM mode, then batch 1
+    with the same effective batch); None when nothing is left to save."""
+    config = copy.deepcopy(trainer_config)
+    process = config["config"]["process"][0]
+    train, model = process["train"], process["model"]
+    changes: list[str] = []
+    if not train.get("gradient_checkpointing"):
+        train["gradient_checkpointing"] = True
+        changes.append("gradient_checkpointing")
+    if not model.get("quantize"):
+        model["quantize"] = model["quantize_te"] = True
+        changes.append("quantize")
+    if not changes and not model.get("low_vram"):
+        model["low_vram"] = True
+        changes.append("low_vram")
+    if not changes and int(train.get("batch_size") or 1) > 1:
+        batch = int(train["batch_size"])
+        train["batch_size"] = 1
+        train["gradient_accumulation"] = int(train.get("gradient_accumulation") or 1) * batch
+        changes.append("batch_size")
+    return (config, changes) if changes else None
+
+
+async def _retry_with_less_memory(db, v: LoraVersion, agent: AgentClient, run: str) -> bool:
+    """Starts the training again on the same GPU with more memory saving (the settings shown
+    for this version change with it). False when there is nothing left to try."""
+    progress = dict(v.progress or {})
+    retries = list(progress.get("memory_retries") or [])
+    fallback = memory_fallback(v.trainer_config or {})
+    if len(retries) >= MAX_MEMORY_RETRIES or fallback is None:
+        return False
+    trainer_config, changes = fallback
+    paths = run_paths(run)
+    job_id = f"train-{run}-m{len(retries) + 1}"
+    try:
+        await agent.upload_bytes(paths["config_rel"], json.dumps(trainer_config, indent=2).encode())
+        await agent.start_job(job_id, "train", {"config": paths["config_rel"]})
+    except AgentError as exc:
+        log.warning("Training could not be started again: %s", exc.code)
+        return False
+    train = trainer_config["config"]["process"][0]["train"]
+    model = trainer_config["config"]["process"][0]["model"]
+    config = dict(v.config or {})
+    config.update(
+        gradient_checkpointing=bool(train.get("gradient_checkpointing")),
+        quantize=bool(model.get("quantize")),
+        low_vram=bool(model.get("low_vram")),
+        batch_size=int(train.get("batch_size") or 1),
+        gradient_accumulation=int(train.get("gradient_accumulation") or 1),
+    )
+    retries.append({"at_step": progress.get("step"), "changes": changes, "at": now().isoformat()})
+    progress.update(memory_retries=retries, job_id=job_id, log_offset=0, step=None, loss=[])
+    v.trainer_config = trainer_config
+    v.config = config
+    v.progress = progress
+    v.stage_detail = "The GPU ran out of memory: training again with more memory saving"
+    note = f"\n--- Out of GPU memory: starting again with {', '.join(changes)} ---\n"
+    path = storage.absolute(version_dir(v)) / "train.log"
+
+    def write() -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as f:
+            f.write(note)
+
+    await asyncio.to_thread(write)
+    await db.commit()
+    publish(v)
+    return True
 
 
 def _spec(v: LoraVersion, lora: Lora, token: str, hf: str | None) -> WorkloadSpec:
@@ -340,7 +428,7 @@ async def _samples(v: LoraVersion, agent: AgentClient, run: str) -> None:
 async def _monitor(db, v: LoraVersion, lora: Lora) -> None:
     agent = _agent(v)
     run = run_name(str(lora.id), v.number)
-    job_id = f"train-{run}"
+    job_id = _job_id(v, run)
     if agent is None:
         await _fail(db, v, "agent_missing", "The GPU agent address is missing.")
         return
@@ -389,6 +477,12 @@ async def _monitor(db, v: LoraVersion, lora: Lora) -> None:
         path = storage.absolute(version_dir(v)) / "train.log"
         if await asyncio.to_thread(path.exists):
             tail = (await asyncio.to_thread(path.read_text, "utf-8", "replace"))[-1500:]
+        # Only what the latest attempt wrote (the log keeps every attempt).
+        if _OOM.search(tail.rsplit("--- Out of GPU memory", 1)[-1]):
+            if await _retry_with_less_memory(db, v, agent, run):
+                return
+            await _fail(db, v, "out_of_memory", f"{OOM_MESSAGE}\n{tail}".strip())
+            return
         await _fail(
             db,
             v,
@@ -435,7 +529,7 @@ async def _collect(db, v: LoraVersion, lora: Lora) -> None:
                     "size": f["size"],
                 }
             )
-        await _append_log(v, agent, f"train-{run}")
+        await _append_log(v, agent, _job_id(v, run))
     except AgentError as exc:
         if exc.code == "unreachable":
             return  # resumes from the .part file next tick
@@ -488,7 +582,7 @@ async def cancel(version_id: uuid.UUID, stop_gpu: bool = True) -> None:
         agent = _agent(v)
         if agent is not None and lora is not None:
             with contextlib.suppress(AgentError):
-                await agent.cancel(f"train-{run_name(str(lora.id), v.number)}")
+                await agent.cancel(_job_id(v, run_name(str(lora.id), v.number)))
         v.status = "cancelled"
         v.error_code = "cancelled"
         v.error_message = "Cancelled."

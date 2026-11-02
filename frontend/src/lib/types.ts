@@ -910,6 +910,8 @@ export interface LoraVersion {
   step: number | null;
   total_steps: number | null;
   loss: [number, number][];
+  // Out-of-memory restarts on the same GPU, with what was changed each time.
+  memory_retries?: { at_step: number | null; changes: ("gradient_checkpointing" | "quantize" | "low_vram" | "batch_size")[]; at: string }[];
   gpu: AgentGpu | null;
   samples: { file: string; step: number | null; index: number | null; url: string }[];
   file_url: string | null;

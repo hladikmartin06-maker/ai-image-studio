@@ -59,11 +59,12 @@ ARCHITECTURES: dict[str, dict[str, Any]] = {
             "applies to the validation images.",
         },
         # Estimates for choosing a GPU (Krea publishes no training VRAM figures). Without
-        # gradient checkpointing all activations stay in memory: the studio asks for an
-        # 80 GB GPU (an estimate, not measured for Krea 2).
+        # gradient checkpointing all activations stay in memory: an 80 GB GPU ran out of
+        # memory in the owner's run (2026-11-02), so the studio asks for more than that (still
+        # an estimate). If it runs out anyway, training starts again with memory saving on.
         "vram_quantized_gb": 24,
         "vram_full_gb": 48,
-        "vram_no_checkpointing_gb": 80,
+        "vram_no_checkpointing_gb": 96,
         "bucketing": "ai-toolkit buckets images by aspect ratio automatically.",
     }
 }

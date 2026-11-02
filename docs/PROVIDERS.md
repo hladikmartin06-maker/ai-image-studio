@@ -478,8 +478,19 @@ the image): the same graph in API format, on the same ComfyUI connection as Krea
     prior prediction and the preservation prediction it runs every step, so steps are
     faster, but prompts with the class word may drift towards the character.
   - "Save memory while computing" off: `train.gradient_checkpointing: false` (ai-toolkit's
-    default is true). Same training math, faster, much more VRAM; the studio then asks for an
-    80 GB GPU — an estimate, not measured for Krea 2 — and refuses a smaller one.
+    default is true). Same training math, faster, much more VRAM. The owner's continued run
+    on an 80 GB GPU (2026-11-02) stopped with "OOM during training step 3 times in a row,
+    aborting training", so the studio now asks for 96 GB or more (still an estimate) and
+    refuses a smaller GPU.
+  - **Out of GPU memory** (torch "out of memory" / `OutOfMemoryError`, ai-toolkit "OOM during
+    training step"): the run is not lost. The studio writes a config with more memory saving
+    and starts the training again on the same GPU (already running; models and cached
+    latents are there), at most twice: 1) gradient checkpointing and quantization on (where
+    off), 2) `model.low_vram`, 3) batch 1 with the same effective batch (gradient
+    accumulation × old batch). The version's settings show the change and the run shows a
+    note; when nothing is left to save it fails with "The GPU ran out of memory…" (lower
+    resolution or a bigger GPU). A checkpoint saved before the stop is where ai-toolkit
+    resumes.
 
 - **Continue training** (LoRA › Runs › "Continue training", or Training › "Start from"):
   `network.pretrained_lora_path` (ai-toolkit `toolkit/config_modules.py` NetworkConfig;
