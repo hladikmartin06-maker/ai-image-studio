@@ -10,6 +10,8 @@ Workloads are Modal Sandboxes created in one app ("ai-image-studio-gpu") and tag
   modal.Sandbox.list(app_id=…, tags=…, client=…), Sandbox.from_id(…).poll()/.terminate()
   sandbox.tunnels() -> {port: Tunnel(url)} for exposed ports (the workload's endpoints)
   sandbox.logs.tail(n) -> the last stdout / stderr / system log entries (also after it ended)
+  modal.Workspace.from_context(client=…).billing.rates() -> the workspace's current pricing
+      rates, a mapping of rate name -> Decimal (modal SDK 1.6, `modal billing rates`)
 Sandboxes cannot be paused: they run until they finish, time out or are terminated.
 Modal has no balance API; usage is shown from the workloads started here.
 """
@@ -17,7 +19,12 @@ Modal has no balance API; usage is shown from the workloads started here.
 from __future__ import annotations
 
 import asyncio
+import logging
+import math
 import re
+import time
+from dataclasses import dataclass, field
+from decimal import Decimal, InvalidOperation
 from typing import Any
 
 from app.gpu.base import Endpoint, GPUError, GpuType, Workload, WorkloadSpec
@@ -25,11 +32,14 @@ from app.gpu.base import Endpoint, GPUError, GpuType, Workload, WorkloadSpec
 APP_NAME = "ai-image-studio-gpu"
 TAGS = {"created-by": "ai-image-studio"}
 
+log = logging.getLogger(__name__)
+
 # GPU names accepted by Modal's `gpu=` argument (modal.com/docs/guide/gpu; the same names are
 # used in modal-labs/modal-examples), VRAM in GB, and Modal's list price in USD per hour
-# (billed per second). Modal has no price API: these are the owner's last known values from
-# https://modal.com/pricing (2026-11-01; the page could not be opened from the build sandbox),
-# always shown as an estimate with that link. H200: no known value, so none is shown.
+# (billed per second): the owner's last known values from https://modal.com/pricing
+# (2026-11-01; the page could not be opened from the build sandbox). The live price comes from
+# the workspace's rates (`live_rates`); this table is the fallback, shown as an estimate with
+# that link, and the yardstick that rejects a rate read the wrong way. H200: no known value.
 PRICING_URL = "https://modal.com/pricing"
 GPU_TYPES: list[tuple[str, str, int, float | None]] = [
     ("T4", "NVIDIA T4", 16, 0.59),
@@ -51,6 +61,138 @@ SANDBOX_MEMORY_MB = 32768
 SANDBOX_EXTRA_PER_HOUR = round(
     SANDBOX_CPU * CPU_CORE_HOUR + SANDBOX_MEMORY_MB / 1024 * MEMORY_GIB_HOUR, 4
 )
+
+
+# --- live rates (Workspace.billing.rates) ---------------------------------------------------
+#
+# The SDK documents only "a single mapping containing cost values" (Decimal), not the names of
+# the rates or their unit. So the names are matched loosely (GPU names with or without
+# "gpu"/"nvidia", memory, punctuation), the unit comes from the name when it says so ("sec",
+# "hour") and otherwise from what fits the known list prices, and a value that is far from the
+# list price is ignored (that GPU then falls back to the table). Nothing is ever made up: a
+# price is either Modal's own rate or the labelled list price.
+
+RATES_TTL = 600  # seconds; failures are retried after RATES_RETRY
+RATES_RETRY = 120
+_NOISE = {
+    "gpu", "gpus", "nvidia", "price", "prices", "rate", "rates", "cost", "usd", "per", "unit",
+    "sec", "secs", "second", "seconds", "hour", "hours", "hr", "hrs", "hourly",
+}  # fmt: skip
+_PER_SECOND = {"sec", "secs", "second", "seconds"}
+_PER_HOUR = {"hour", "hours", "hr", "hrs", "hourly"}
+_CPU_NAMES = {
+    "cpu",
+    "cpus",
+    "core",
+    "cores",
+    "cpucore",
+    "cpucores",
+    "physicalcore",
+    "cpuphysicalcore",
+}
+_MEMORY_NAMES = {"memory", "mem", "ram", "memorygib", "memorygb", "gibmemory", "memorygibs"}
+
+
+def _aliases() -> dict[str, str]:
+    out: dict[str, str] = {}
+    for gpu_id, _, memory, _ in GPU_TYPES:
+        base = re.sub(r"[^a-z0-9]", "", gpu_id.lower())
+        out[base] = gpu_id
+        out[f"{base}{memory}gb"] = gpu_id
+        out[base.removesuffix("gb")] = gpu_id  # a10040gb -> a10040
+    out["a10"] = "A10G"  # Modal's pricing page says "A10"; `gpu=` takes "A10G"
+    out["a1024gb"] = "A10G"
+    return out
+
+
+_GPU_ALIASES = _aliases()
+
+
+@dataclass
+class LiveRates:
+    """Modal's current rates for the workspace, in USD per hour."""
+
+    gpu_hour: dict[str, float] = field(default_factory=dict)
+    # CPU + memory of the studio's sandbox per hour, when both rates were found.
+    extra_hour: float | None = None
+    # Which rate name each price came from, and the unit used (for the logs and the docs).
+    keys: dict[str, str] = field(default_factory=dict)
+    unit: str = ""
+
+
+def _number(value: Any) -> float | None:
+    try:
+        number = float(Decimal(str(value)))
+    except (InvalidOperation, ValueError, TypeError):
+        return None
+    return number if math.isfinite(number) and number >= 0 else None
+
+
+def _plausible(hourly: float, reference: float | None) -> bool:
+    if reference is None:
+        return 0.05 <= hourly <= 100
+    return reference / 3 <= hourly <= reference * 3
+
+
+def parse_rates(raw: dict[str, Any]) -> LiveRates | None:
+    """GPU, CPU and memory prices per hour from the workspace's rates, or None when nothing
+    can be read safely."""
+    table = {i: p for i, _, _, p in GPU_TYPES}
+    found: list[tuple[str, str, float, str | None]] = []  # (what, key, value, unit hint)
+    for key, value in raw.items():
+        number = _number(value)
+        if number is None:
+            continue
+        tokens = re.findall(r"[a-z0-9]+", str(key).lower())
+        hint = (
+            "second" if _PER_SECOND & set(tokens) else "hour" if _PER_HOUR & set(tokens) else None
+        )
+        name = "".join(t for t in tokens if t not in _NOISE)
+        if name in _GPU_ALIASES:
+            found.append((_GPU_ALIASES[name], str(key), number, hint))
+        elif name in _CPU_NAMES:
+            found.append(("cpu", str(key), number, hint))
+        elif name in _MEMORY_NAMES:
+            found.append(("memory", str(key), number, hint))
+
+    # The unit of rates whose name does not say it: the one that fits the known list prices.
+    votes = {"second": 0, "hour": 0}
+    for what, _, number, hint in found:
+        reference = table.get(what)
+        if hint is None and reference:
+            votes["second"] += _plausible(number * 3600, reference)
+            votes["hour"] += _plausible(number, reference)
+    default_unit = (
+        "second"
+        if votes["second"] > votes["hour"]
+        else "hour"
+        if votes["hour"] > votes["second"]
+        else None
+    )
+
+    rates = LiveRates(unit=default_unit or "")
+    extras: dict[str, float] = {}
+    for what, key, number, hint in found:
+        unit = hint or default_unit
+        if unit is None:
+            continue
+        hourly = number * 3600 if unit == "second" else number
+        if what == "cpu":
+            if _plausible(hourly, CPU_CORE_HOUR):
+                extras["cpu"] = hourly
+                rates.keys["cpu"] = key
+        elif what == "memory":
+            if _plausible(hourly, MEMORY_GIB_HOUR):
+                extras["memory"] = hourly
+                rates.keys["memory"] = key
+        elif what not in rates.gpu_hour and _plausible(hourly, table.get(what)):
+            rates.gpu_hour[what] = round(hourly, 4)
+            rates.keys[what] = key
+    if "cpu" in extras and "memory" in extras:
+        rates.extra_hour = round(
+            SANDBOX_CPU * extras["cpu"] + SANDBOX_MEMORY_MB / 1024 * extras["memory"], 4
+        )
+    return rates if rates.gpu_hour else None
 
 
 def hourly_estimate(gpu: str) -> float | None:
@@ -85,6 +227,14 @@ def _error(exc: Exception) -> GPUError:
 
 class ModalSDK:
     """The few SDK calls used, in one place (tests replace this class with a fake)."""
+
+    async def rates(self, client: Any) -> dict[str, str]:
+        """The workspace's current pricing rates (`modal billing rates`)."""
+        import modal
+
+        workspace = modal.Workspace.from_context(client=client)
+        rates = await workspace.billing.rates.aio()
+        return {str(k): str(v) for k, v in rates.items()}
 
     async def client(self, creds: dict[str, str]) -> Any:
         import modal
@@ -186,6 +336,53 @@ class ModalProvider:
 
     def __init__(self, sdk: ModalSDK | None = None):
         self.sdk = sdk or ModalSDK()
+        # Live rates per token id: (time read, rates or None when they could not be read).
+        self._rates: dict[str, tuple[float, LiveRates | None]] = {}
+
+    async def live_rates(self, creds: dict[str, str]) -> LiveRates | None:
+        """Modal's current rates for this workspace (cached), or None (then the list prices
+        are used). Never raises: prices must not block the GPU list."""
+        token_id = creds.get("token_id", "")
+        cached = self._rates.get(token_id)
+        if cached and time.monotonic() - cached[0] < (RATES_TTL if cached[1] else RATES_RETRY):
+            return cached[1]
+        rates: LiveRates | None = None
+        client = None
+        try:
+            client = await self._client(creds)
+            rates = parse_rates(await self.sdk.rates(client))
+            if rates is None:
+                log.warning("Modal rates: no GPU price could be read; using list prices")
+        except Exception as exc:  # noqa: BLE001 - SDK raises its own error classes
+            log.warning("Modal rates could not be read (%s); using list prices", type(exc).__name__)
+        finally:
+            if client is not None:
+                await self.sdk.close(client)
+        self._rates[token_id] = (time.monotonic(), rates)
+        return rates
+
+    async def hourly(self, creds: dict[str, str], gpu: str, count: int = 1) -> float | None:
+        """USD per hour of the studio's sandbox with this GPU: Modal's live rates where they
+        were read, the list prices otherwise (an estimate either way: billed per second)."""
+        rates = await self.live_rates(creds)
+        live = rates.gpu_hour.get(gpu) if rates else None
+        price = (
+            live if live is not None else next((p for i, _, _, p in GPU_TYPES if i == gpu), None)
+        )
+        if price is None:
+            return None
+        extra = rates.extra_hour if rates and rates.extra_hour is not None else None
+        return round(
+            price * max(1, count) + (extra if extra is not None else SANDBOX_EXTRA_PER_HOUR), 4
+        )
+
+    async def offer(
+        self, creds: dict[str, str], gpu_id: str, cloud: str
+    ) -> tuple[None, float | None]:
+        """The GPU's live price per hour (for "the price changed since you confirmed it"), or
+        None when Modal's rates cannot be read (then nothing is compared)."""
+        rates = await self.live_rates(creds)
+        return None, (rates.gpu_hour.get(gpu_id) if rates else None)
 
     async def _client(self, creds: dict[str, str]) -> Any:
         try:
@@ -200,18 +397,26 @@ class ModalProvider:
         await self.sdk.close(client)
 
     async def gpu_types(self, creds: dict[str, str]) -> list[GpuType]:
-        return [
-            GpuType(
-                id=i,
-                name=n,
-                memory_gb=m,
-                price_secure=price,
-                price_estimate=True,
-                price_extra=SANDBOX_EXTRA_PER_HOUR,
-                manufacturer="NVIDIA",
+        """Modal's GPUs with the workspace's live rates; the list price where a rate is missing
+        (labelled an estimate)."""
+        rates = await self.live_rates(creds)
+        extra = rates.extra_hour if rates and rates.extra_hour is not None else None
+        out = []
+        for i, n, m, listed in GPU_TYPES:
+            live = rates.gpu_hour.get(i) if rates else None
+            out.append(
+                GpuType(
+                    id=i,
+                    name=n,
+                    memory_gb=m,
+                    price_secure=live if live is not None else listed,
+                    price_estimate=live is None or extra is None,
+                    price_extra=extra if extra is not None else SANDBOX_EXTRA_PER_HOUR,
+                    price_source="api" if live is not None else "list",
+                    manufacturer="NVIDIA",
+                )
             )
-            for i, n, m, price in GPU_TYPES
-        ]
+        return out
 
     async def _describe(self, sandbox: Any, records: dict[str, dict[str, Any]]) -> Workload:
         sandbox_id = sandbox.object_id
@@ -289,6 +494,8 @@ class ModalProvider:
             gpu_type=spec.gpu_type,
             gpu_count=spec.gpu_count,
             image=spec.image,
+            # Modal's live rates (list prices where a rate is missing), GPU + CPU + memory.
+            cost_per_hour=await self.hourly(creds, spec.gpu_type, spec.gpu_count),
             dashboard_url="https://modal.com/apps",
         )
 

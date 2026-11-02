@@ -120,6 +120,8 @@ export interface GpuChoice {
   price_per_hour?: number | null;
   price_extra?: number | null;
   price_estimate?: boolean;
+  // Modal: "api" = its live rates (then the confirmed price is checked again at the start).
+  price_source?: "api" | "list" | null;
   // GPU memory of the chosen type, to refuse a GPU that is too small for the task.
   memory_gb?: number | null;
 }
@@ -198,6 +200,7 @@ export function GpuPicker({
         .map((g) => ({ key: `${g.id}|busy`, gpu: g, cloud: "SECURE", price: g.price_secure, stock: "NONE", busy: true }))
     : [];
   const estimates = all.some((g) => g.price_estimate);
+  const livePrices = all.some((g) => g.price_source === "api");
   const currentKey = reportsStock ? (value.gpu_type ? `${value.gpu_type}|${value.cloud_type}` : "") : value.gpu_type;
   const selected = offers.find((o) => o.key === currentKey);
   const providerName = connected.find((p) => p.key === value.provider)?.name ?? value.provider;
@@ -246,6 +249,7 @@ export function GpuPicker({
                   price_per_hour: offer.price,
                   price_extra: offer.gpu.price_extra ?? null,
                   price_estimate: Boolean(offer.gpu.price_estimate),
+                  price_source: offer.gpu.price_source ?? null,
                   memory_gb: offer.gpu.memory_gb ?? null,
                 });
               }}
@@ -286,12 +290,17 @@ export function GpuPicker({
           </div>
         </Notice>
       ) : null}
-      {estimates && value.provider === "modal" ? (
+      {(estimates || livePrices) && value.provider === "modal" ? (
         <div className="hint">
-          {t("gpu.modalEstimate")}{" "}
-          <a href="https://modal.com/pricing" target="_blank" rel="noreferrer" style={{ color: "var(--accent-text)" }}>
-            modal.com/pricing
-          </a>
+          {livePrices ? t(estimates ? "gpu.modalLivePartly" : "gpu.modalLive") : t("gpu.modalEstimate")}
+          {estimates ? (
+            <>
+              {" "}
+              <a href="https://modal.com/pricing" target="_blank" rel="noreferrer" style={{ color: "var(--accent-text)" }}>
+                modal.com/pricing
+              </a>
+            </>
+          ) : null}
         </div>
       ) : null}
       {selected?.cloud === "COMMUNITY" && reportsStock ? <div className="hint">{t("gpu.communityHint")}</div> : null}

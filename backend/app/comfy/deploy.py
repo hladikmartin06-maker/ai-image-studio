@@ -194,6 +194,18 @@ def spec_for(
     )
 
 
+async def check_price(db, conn: ComfyConnection) -> list[str] | None:
+    """Nothing starts at a price the owner did not confirm (RunPod's catalog, Modal's live
+    rates; skipped when the price cannot be read). Returns RunPod's free CUDA versions."""
+    d = conn.deploy
+    cloud = d.get("cloud_type") or "SECURE"
+    free, price = await gpu_service.offer(db, conn.user_id, d["provider"], d["gpu_type"], cloud)
+    confirmed = d.get("confirmed_price")
+    if price is not None and confirmed is not None and abs(float(confirmed) - price) > 0.0005:
+        raise GPUError("price_changed", f"now {price:.3f} USD per hour")
+    return free
+
+
 async def _create(db, conn: ComfyConnection, token: str, hf: str | None):
     """Creates the pod with the first image a free machine fits. The CUDA versions come from
     RunPod's catalog (it matches them exactly, so a version without a free machine fails). A
@@ -202,11 +214,7 @@ async def _create(db, conn: ComfyConnection, token: str, hf: str | None):
     d = conn.deploy
     provider = d["provider"]
     cloud = d.get("cloud_type") or "SECURE"
-    free, price = await gpu_service.offer(db, conn.user_id, provider, d["gpu_type"], cloud)
-    confirmed = d.get("confirmed_price")
-    if price is not None and confirmed is not None and abs(float(confirmed) - price) > 0.0005:
-        # Nothing starts at a price the owner did not confirm.
-        raise GPUError("price_changed", f"now {price:.3f} USD per hour")
+    free = await check_price(db, conn)
     plan = image_plan(provider, d["gpu_type"], free)
     if not plan:
         raise GPUError(

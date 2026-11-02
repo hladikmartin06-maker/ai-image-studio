@@ -344,6 +344,9 @@ class SpawningModalSDK:
     async def close(self, client):
         return None
 
+    async def rates(self, client):
+        return {}  # no readable rates: the list prices are used
+
     def close_all(self) -> None:
         for sb in list(self.sandboxes.values()):
             proc = self.procs.pop(sb.object_id, None)

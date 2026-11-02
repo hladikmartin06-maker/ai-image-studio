@@ -321,6 +321,12 @@ async def deploy_comfyui(
             "confirmed_price": body.confirmed_price,
         },
     )
+    if deploy.creates_in_background(conn):
+        # Created in the background (Modal): the price is checked now, while the owner waits.
+        try:
+            await deploy.check_price(db, conn)
+        except GPUError as exc:
+            raise _gpu_fail(exc) from exc
     db.add(conn)
     await db.commit()
     if deploy.creates_in_background(conn):

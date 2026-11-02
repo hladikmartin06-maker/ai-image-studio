@@ -516,10 +516,11 @@ export interface GpuType {
   price_community: number | null;
   available: boolean | null;
   manufacturer?: string | null;
-  // Modal: prices from a fixed table of its list prices (no price API), plus the CPU and
-  // memory of the studio's sandbox per hour.
+  // Modal: the workspace's live rates ("api") or its list prices ("list", an estimate), plus
+  // the CPU and memory of the studio's sandbox per hour.
   price_estimate?: boolean;
   price_extra?: number | null;
+  price_source?: "api" | "list" | null;
   // RunPod: free machines right now per cloud (for the requested purpose), else null.
   stock_secure?: "NONE" | "LOW" | "MEDIUM" | "HIGH" | null;
   stock_community?: "NONE" | "LOW" | "MEDIUM" | "HIGH" | null;

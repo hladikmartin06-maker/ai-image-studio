@@ -63,10 +63,12 @@ class GpuType:
     manufacturer: str | None = None
     # RunPod catalog, per cloud: stock right now (NONE/LOW/MEDIUM/HIGH) and the CUDA versions
     # of machines with free capacity. None when the provider reports no availability.
-    # Modal: list prices from a fixed table (no price API): price_secure is the GPU's price,
-    # price_extra the CPU and memory the studio's sandbox adds on top (USD per hour).
+    # Modal: price_secure is the GPU's price, price_extra the CPU and memory the studio's
+    # sandbox adds on top (USD per hour); from the workspace's live rates (price_source "api")
+    # or its list prices (price_source "list", an estimate).
     price_estimate: bool = False
     price_extra: float | None = None
+    price_source: str | None = None
     stock_secure: str | None = None
     stock_community: str | None = None
     cuda_secure: list[str] = field(default_factory=list)

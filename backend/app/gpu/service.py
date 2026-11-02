@@ -25,9 +25,9 @@ CUDA13 = ["13.0", "13.1", "13.2", "13.3"]
 async def offer(
     db: AsyncSession, user_id: uuid.UUID, provider: str, gpu_type: str, cloud: str
 ) -> tuple[list[str] | None, float | None]:
-    """RunPod's catalog for this GPU and cloud right now: the CUDA versions with a free
-    machine and the list price per hour; (None, None) when unknown (Modal, or the catalog
-    could not be read)."""
+    """The GPU's price per hour right now, and (RunPod) the CUDA versions with a free machine
+    in that cloud; None for what is unknown (Modal has no free list; its price comes from the
+    workspace's live rates, or None when they cannot be read)."""
     adapter = get_gpu_adapter(provider)
     if not hasattr(adapter, "offer"):
         return None, None

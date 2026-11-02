@@ -227,6 +227,15 @@ class FakeModalSDK:
         self.sandboxes: dict[str, FakeSandbox] = {}
         self.created: list[WorkloadSpec] = []
         self._ids = itertools.count(1)
+        # The workspace's rates (`billing.rates()`); None = they cannot be read.
+        self.rates_value: dict[str, str] | None = None
+        self.rate_reads = 0
+
+    async def rates(self, client):
+        self.rate_reads += 1
+        if self.rates_value is None:
+            raise RuntimeError("rates are not available")
+        return dict(self.rates_value)
 
     async def client(self, creds):
         if creds.get("token_secret") != "as-secret-123456":
@@ -394,6 +403,75 @@ async def test_modal_sandboxes(user: Api, modal_sdk: FakeModalSDK):
     after = (await user.get("/api/gpu/modal/workloads")).json()["items"]
     assert after[0]["status"] == "exited"
     assert (await user.get("/api/gpu/modal/endpoints")).json()["supported"] is False
+
+
+# Rates per second as Modal publishes them (test values). The names of the rates are not
+# documented, so the usual spellings must all work.
+MODAL_RATES = {
+    "gpu.nvidia-l40s": "0.000542",
+    "gpu.nvidia-h100": "0.001097",
+    "gpu.a100-80gb": "0.000694",
+    "gpu.l4": "0.000222",
+    "cpu": "0.0000131",
+    "memory": "0.00000222",
+    "something.else": "12",
+}
+
+
+def test_modal_rates_are_read_safely():
+    from app.gpu.modal_provider import parse_rates
+
+    rates = parse_rates(MODAL_RATES)
+    assert rates is not None and rates.unit == "second"
+    # L4 and L40S are not mixed up; per second is turned into per hour.
+    assert rates.gpu_hour == {"L40S": 1.9512, "H100": 3.9492, "A100-80GB": 2.4984, "L4": 0.7992}
+    # The studio's sandbox: 4 cores and 32 GiB on top.
+    assert rates.extra_hour == round(4 * 0.0000131 * 3600 + 32 * 0.00000222 * 3600, 4)
+    assert rates.keys["L40S"] == "gpu.nvidia-l40s" and rates.keys["cpu"] == "cpu"
+    # A unit in the name wins; "A10" (Modal's pricing page) is the A10G.
+    assert parse_rates({"L40S per hour": "1.95"}).gpu_hour == {"L40S": 1.95}
+    assert parse_rates({"a10": "1.10", "l40s": "n/a"}).gpu_hour == {"A10G": 1.1}
+    # H200 has no list price: it takes the unit the other rates show.
+    assert parse_rates({"h100": "0.001097", "h200": "0.001261"}).gpu_hour["H200"] == 4.5396
+    # A value that fits no unit (e.g. cents) is ignored, never shown; nothing readable = None.
+    assert parse_rates({"h100": "395"}) is None
+    assert parse_rates({"foo": "1"}) is None and parse_rates({}) is None
+    # CPU and memory only count when both are found.
+    assert parse_rates({"h100": "0.001097", "cpu": "0.0000131"}).extra_hour is None
+
+
+async def test_modal_prices_from_the_workspace_rates(user: Api, modal_sdk: FakeModalSDK):
+    modal_sdk.rates_value = MODAL_RATES
+    await user.put(
+        "/api/gpu/providers/modal",
+        json={"token_id": "ak-123456", "token_secret": "as-secret-123456"},
+    )
+    types = {t["id"]: t for t in (await user.get("/api/gpu/modal/gpu-types")).json()["items"]}
+    l40s = types["L40S"]
+    assert l40s["price_secure"] == 1.9512 and l40s["price_source"] == "api"
+    assert l40s["price_extra"] == 0.4444 and l40s["price_estimate"] is False
+    # No rate for this GPU: its list price, labelled an estimate.
+    assert types["T4"]["price_secure"] == 0.59 and types["T4"]["price_source"] == "list"
+    assert types["T4"]["price_estimate"] is True
+    # Read once and kept for a while (the list is not slowed down by every view).
+    await user.get("/api/gpu/modal/gpu-types")
+    assert modal_sdk.rate_reads == 1
+    created = await user.post(
+        "/api/gpu/modal/workloads",
+        json={"name": "x", "image": "img", "gpu_type": "L40S", "confirm_billing": True},
+    )
+    assert created.status_code == 201, created.text
+    assert created.json()["cost_per_hour"] == round(1.9512 + 0.4444, 4)
+
+
+async def test_modal_prices_fall_back_to_the_list(user: Api, modal_sdk: FakeModalSDK):
+    await user.put(
+        "/api/gpu/providers/modal",
+        json={"token_id": "ak-123456", "token_secret": "as-secret-123456"},
+    )
+    types = {t["id"]: t for t in (await user.get("/api/gpu/modal/gpu-types")).json()["items"]}
+    assert types["L40S"]["price_secure"] == 1.95 and types["L40S"]["price_source"] == "list"
+    assert types["L40S"]["price_estimate"] is True and types["L40S"]["price_extra"] == 0.4448
 
 
 async def test_gpu_is_private(user: Api, runpod: FakeRunPod):

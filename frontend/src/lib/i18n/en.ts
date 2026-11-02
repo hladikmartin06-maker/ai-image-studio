@@ -637,7 +637,6 @@ export const en = {
   "gpu.deleteEndpointBody": "The serverless endpoint is deleted at the provider.",
   "gpu.catalog": "Available GPUs",
   "gpu.memory": "Memory",
-  "gpu.modalPricesNote": "Modal publishes prices on its website, not in its API",
   "gpu.history": "Started from the studio",
 
   // AI models (saved characters)
@@ -817,7 +816,7 @@ export const en = {
   "gpu.noneFree": "{provider} has no GPU with {n} GB or more free right now for this. Try again in a few minutes.",
   "gpu.booked": "fully booked right now",
   "gpu.cpuRam": "CPU/RAM",
-  "gpu.modalEstimate": "Modal has no price API: these are estimates from Modal's list prices (billed per second; the sandbox's 4 CPU cores and 32 GB RAM are billed on top). Current prices:",
+  "gpu.modalEstimate": "Modal's API returned no rates: these are estimates from Modal's list prices (billed per second; the sandbox's 4 CPU cores and 32 GB RAM are billed on top). Current prices:",
   "gpu.typesFailed": "The GPU list could not be loaded from {provider}.",
   "gpu.noGpus": "{provider} offers no GPU with {n} GB or more right now.",
   "gpu.tooSmall": "This GPU has less than the recommended {n} GB of VRAM.",
@@ -870,7 +869,7 @@ export const en = {
   "cf.maxSession": "This session costs at most {max} ({hours}; spending limit: {limit}).",
   "cf.storageRunpod": "Disk (RunPod's prices, approx.): the {gb} GB volume ≈ {running} per month while the GPU runs, ≈ {stopped} per month while it is stopped; the {disk} GB container disk ≈ {diskRunning} per month while it runs. Deleting the GPU deletes the disk.",
   "cf.storageModal": "Modal bills its Volume storage separately (see modal.com/pricing); it is not in this estimate.",
-  "cf.estimateNote": "An estimate from Modal's list prices: the cloud's own billing counts.",
+  "cf.estimateNote": "An estimate from Modal's list prices (its API returned no rate): the cloud's own billing counts.",
   "cf.session": "Session length",
   "cf.sessionHint": "The GPU stops by itself after this time.",
   "cf.spendLimit": "Spending limit",
@@ -1253,7 +1252,7 @@ export const en = {
   "jb.elapsed": "Elapsed",
   "jb.costEstimate": "estimated",
   "jb.costFinal": "final",
-  "jb.noPriceApi": "no price API",
+  "jb.noPriceApi": "price unknown",
   "jb.queue": "queue #{n}",
   "jb.empty": "No jobs",
   "jb.emptyBody": "Training runs and generations appear here.",
@@ -1493,6 +1492,8 @@ export const en = {
   "refs.orderHint": "Click the photo that should be first. They are sent in this order, so the prompt can say “image 1”, “image 2”.",
   "refs.orderHintPersona": "Click the photo that should be first among yours. The AI model's photos are sent before them (numbers 1–{n}).",
   "gen.adultSfwOnly": "{model} is for SFW images only. 18+ content is available on Wan 2.7 and Wan 2.7 Pro.",
+  "gpu.modalLive": "Prices from Modal's API (your workspace's current rates, billed per second), including the sandbox's 4 CPU cores and 32 GB RAM.",
+  "gpu.modalLivePartly": "Prices from Modal's API (your workspace's current rates, billed per second); “≈” = Modal's API returned no rate, so it is an estimate from its list prices:",
 } as const;
 
 export type MessageKey = keyof typeof en;

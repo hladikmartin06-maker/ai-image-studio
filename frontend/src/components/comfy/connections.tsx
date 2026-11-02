@@ -350,7 +350,9 @@ export function ConnectForm({
             session_minutes: session,
             spend_limit: limit || null,
             // Nothing starts at another price than the one just confirmed.
-            confirmed_price: gpu.provider === "runpod" ? gpu.price_per_hour ?? null : null,
+            // RunPod's catalog and Modal's live rates are checked again at the start.
+            confirmed_price:
+              gpu.provider === "runpod" || gpu.price_source === "api" ? (gpu.price_per_hour ?? null) : null,
             confirm_billing: true,
           });
         } catch (e) {

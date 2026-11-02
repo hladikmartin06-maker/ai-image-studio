@@ -237,20 +237,36 @@ signatures checked against `modal` 1.6.3; not run against Modal's servers here.
   pulls RunPod's ComfyUI image), which can take many minutes, so the request answers at once
   (stage "creating") and the studio shows the progress; after a restart of the app the
   sandbox is found again by its tag and never created twice. Start limit 45 minutes.
-- **Prices**: Modal has no price API. The studio uses a fixed table of Modal's list prices
-  (USD per hour, billed per second), the owner's last known values from
-  https://modal.com/pricing (2026-11-01; the page could not be opened from the build sandbox,
-  **not re-checked**): T4 0.59, L4 0.80, A10G 1.10, L40S 1.95, A100-40GB 2.10, A100-80GB 2.50,
-  H100 3.95, B200 6.25 (H200: none known, none shown); CPU 0.0472 per core-hour and memory
-  0.008 per GiB-hour on top (the sandbox's 4 cores and 32 GiB ≈ 0.4448 per hour). Always
-  labelled an estimate with a link to the pricing page; Volume storage is not in it.
+- **Prices (live)**: `modal.Workspace.from_context(client=…).billing.rates()` — "current
+  pricing rates for the given workspace", a mapping of rate name → `Decimal` (the CLI's
+  `modal billing rates`). Source: the `modal` SDK 1.6.3 itself (`modal/_workspace.py`,
+  `_WorkspaceBillingManager.rates`, RPC `WorkspaceBillingRates`). The SDK does **not** document
+  the names of the rates or their unit, and modal.com could not be opened from the sandbox, so
+  `parse_rates` reads them defensively: names are matched loosely (GPU names with or without
+  "gpu"/"nvidia", memory and punctuation; "A10" = A10G; "cpu"/"core", "memory"/"ram"), the unit
+  comes from the name when it says "sec"/"hour", otherwise from the unit that fits the list
+  prices below, and a value outside ⅓–3× of the list price is ignored. Cached 10 minutes per
+  token (failures: retried after 2 minutes); any failure falls back to the list prices.
+  **Not yet run against Modal's servers**: the first real GPU list shows whether the prices
+  say "from Modal's API" (no "≈") or fall back.
+  With live rates: the GPU list shows them without "≈", the running cost uses them
+  (GPU + the sandbox's CPU and memory), and a ComfyUI start is refused when the GPU's rate
+  changed since the owner confirmed it (`price_changed`, checked before the background
+  creation).
+- **Prices (fallback)**: a fixed table of Modal's list prices (USD per hour, billed per
+  second), the owner's last known values from https://modal.com/pricing (2026-11-01; the page
+  could not be opened from the build sandbox, **not re-checked**): T4 0.59, L4 0.80, A10G 1.10,
+  L40S 1.95, A100-40GB 2.10, A100-80GB 2.50, H100 3.95, B200 6.25 (H200: none known, none
+  shown); CPU 0.0472 per core-hour and memory 0.008 per GiB-hour on top (the sandbox's 4 cores
+  and 32 GiB ≈ 0.4448 per hour). Used per GPU when no rate was read, always labelled an
+  estimate with a link to the pricing page; Volume storage is not in it.
 
 ## Sessions and spending (both clouds)
 
 Before a GPU starts, the confirmation shows the hourly price, the most the session can cost
 (hourly × session length, capped by the spending limit) and the storage prices. While it runs
 the studio shows "spent so far" and "time left": billable seconds since the start request ×
-the pod's own rate (RunPod: `cost` of the pod; Modal: the estimate above) — always labelled an
+the pod's own rate (RunPod: `cost` of the pod; Modal: its live rate, else the list price) — always labelled an
 estimate (the cloud's own billing counts). The GPU is stopped at the session's time limit
 (default 2 h), at the spending limit, or after inactivity.
 

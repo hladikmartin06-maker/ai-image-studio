@@ -639,7 +639,6 @@ export const sk: Record<MessageKey, string> = {
   "gpu.deleteEndpointBody": "Serverless endpoint sa u poskytovateľa vymaže.",
   "gpu.catalog": "Dostupné GPU",
   "gpu.memory": "Pamäť",
-  "gpu.modalPricesNote": "Modal zverejňuje ceny na webe, nie v API",
   "gpu.history": "Spustené zo štúdia",
 
   // AI models (saved characters)
@@ -819,7 +818,7 @@ export const sk: Record<MessageKey, string> = {
   "gpu.noneFree": "{provider} teraz nemá na toto voľné žiadne GPU s {n} GB a viac. Skús to znova o pár minút.",
   "gpu.booked": "teraz obsadené",
   "gpu.cpuRam": "CPU/RAM",
-  "gpu.modalEstimate": "Modal nemá API s cenami: toto sú odhady z jeho cenníka (účtuje sa po sekundách; 4 jadrá CPU a 32 GB RAM sandboxu sa platia navyše). Aktuálne ceny:",
+  "gpu.modalEstimate": "API Modalu nevrátilo sadzby: toto sú odhady z jeho cenníka (účtuje sa po sekundách; 4 jadrá CPU a 32 GB RAM sandboxu sa platia navyše). Aktuálne ceny:",
   "gpu.typesFailed": "Zoznam GPU sa z {provider} nepodarilo načítať.",
   "gpu.noGpus": "{provider} teraz neponúka žiadne GPU s {n} GB alebo viac.",  "gpu.tooSmall": "Toto GPU má menej ako odporúčaných {n} GB VRAM.",
   "gpu.utilization": "GPU",
@@ -871,7 +870,7 @@ export const sk: Record<MessageKey, string> = {
   "cf.maxSession": "Táto relácia stojí najviac {max} ({hours}; limit útraty: {limit}).",
   "cf.storageRunpod": "Disk (ceny RunPodu, približne): {gb} GB volume ≈ {running} mesačne, kým GPU beží, ≈ {stopped} mesačne, keď je zastavené; {disk} GB kontajnerový disk ≈ {diskRunning} mesačne, kým beží. Zmazaním GPU sa zmaže aj disk.",
   "cf.storageModal": "Úložisko Volume účtuje Modal zvlášť (pozri modal.com/pricing); v tomto odhade nie je.",
-  "cf.estimateNote": "Odhad z cenníka Modalu: platí vyúčtovanie samotného cloudu.",
+  "cf.estimateNote": "Odhad z cenníka Modalu (jeho API sadzbu nevrátilo): platí vyúčtovanie samotného cloudu.",
   "cf.session": "Dĺžka relácie",
   "cf.sessionHint": "GPU sa po tomto čase zastaví samo.",
   "cf.spendLimit": "Limit útraty",
@@ -1254,7 +1253,7 @@ export const sk: Record<MessageKey, string> = {
   "jb.elapsed": "Trvanie",
   "jb.costEstimate": "odhad",
   "jb.costFinal": "konečná",
-  "jb.noPriceApi": "bez cenového API",
+  "jb.noPriceApi": "cena neznáma",
   "jb.queue": "poradie #{n}",
   "jb.empty": "Žiadne úlohy",
   "jb.emptyBody": "Tu sa zobrazia behy tréningu a generovania.",
@@ -1494,4 +1493,6 @@ export const sk: Record<MessageKey, string> = {
   "refs.orderHint": "Klikni na fotku, ktorá má byť prvá. Posielajú sa v tomto poradí, takže v prompte môžeš písať „obrázok 1“, „obrázok 2“.",
   "refs.orderHintPersona": "Klikni na fotku, ktorá má byť prvá z tvojich. Fotky AI modelu sa posielajú pred nimi (čísla 1–{n}).",
   "gen.adultSfwOnly": "{model} je len na SFW obrázky. 18+ obsah je na Wan 2.7 a Wan 2.7 Pro.",
+  "gpu.modalLive": "Ceny z API Modalu (aktuálne sadzby tvojho workspace, účtuje sa po sekundách), vrátane 4 jadier CPU a 32 GB RAM sandboxu.",
+  "gpu.modalLivePartly": "Ceny z API Modalu (aktuálne sadzby tvojho workspace, účtuje sa po sekundách); „≈“ = API Modalu sadzbu nevrátilo, je to odhad z jeho cenníka:",
 };

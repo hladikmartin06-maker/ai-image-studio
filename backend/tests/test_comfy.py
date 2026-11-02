@@ -819,6 +819,40 @@ async def test_deploy_on_modal_uses_the_same_image_and_start(user: Api, no_poll_
             await db.commit()
 
 
+async def test_modal_uses_its_live_rates_and_refuses_a_changed_price(user: Api, no_poll_wait):
+    """With the workspace's rates readable, the GPU's price and the running cost are Modal's
+    own; a start at a price the owner did not confirm is refused, like on RunPod."""
+    from app.gpu.modal_provider import ModalProvider
+    from tests.test_gpu import MODAL_RATES, FakeModalSDK
+
+    sdk = FakeModalSDK()
+    sdk.rates_value = MODAL_RATES
+    set_gpu_adapter("modal", ModalProvider(sdk=sdk))
+    try:
+        await user.put(
+            "/api/gpu/providers/modal",
+            json={"token_id": "ak-123456", "token_secret": "as-secret-123456"},
+        )
+        body = {"name": "Modal", "provider": "modal", "gpu_type": "L40S", "confirm_billing": True}
+        changed = await user.post("/api/comfy/deployments", json={**body, "confirmed_price": 1.95})
+        assert changed.status_code == 409 and changed.json()["error"]["code"] == "price_changed"
+        assert "1.951" in changed.json()["error"]["message"] and sdk.created == []
+        r = await user.post("/api/comfy/deployments", json={**body, "confirmed_price": 1.9512})
+        assert r.status_code == 201, r.text
+        for _ in range(100):
+            conn = (await user.get("/api/comfy/connections")).json()["items"][0]
+            if conn["deploy"]["stage"] != "creating":
+                break
+            await asyncio.sleep(0.02)
+        assert conn["deploy"]["stage"] == "starting", conn
+        assert conn["deploy"]["cost_per_hour"] == round(1.9512 + 0.4444, 4)
+    finally:
+        set_gpu_adapter("modal", None)
+        async with SessionLocal() as db:
+            await db.execute(ComfyConnection.__table__.delete())
+            await db.commit()
+
+
 async def test_modal_runs_comfyui_through_the_agent(user: Api, tmp_path: Path, no_poll_wait):
     """A (fake) Modal sandbox really runs the Modal start command: the agent starts, ComfyUI
     runs from the image with its models folder on the Volume, the studio reaches it only

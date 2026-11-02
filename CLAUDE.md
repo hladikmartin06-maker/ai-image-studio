@@ -120,8 +120,10 @@ repositories.
   session + 10 min; created in the background and found again by its tag, never twice. Its
   start command (`COMFY_BOOT_MODAL`) runs ComfyUI from the image (not `/start.sh`) with only
   `models` on the Volume; an ended sandbox's exit code and last lines are shown.
-- Prices before anything starts: RunPod live from the catalog; Modal from a fixed table of its
-  list prices, always labelled an estimate with a link to modal.com/pricing (no price API).
+- Prices before anything starts: RunPod live from the catalog; Modal live from the workspace's
+  rates (`billing.rates()` in the SDK; names and units undocumented, read defensively in
+  `gpu/modal_provider.parse_rates`), falling back per GPU to a fixed table of its list prices,
+  labelled an estimate with a link to modal.com/pricing.
   The confirmation shows the hourly price, the session's maximum (hourly × session length,
   capped by the spending limit) and storage; the confirmed price is sent and a changed price
   refuses the start (`price_changed`). While running: "spent so far" and "time left"
