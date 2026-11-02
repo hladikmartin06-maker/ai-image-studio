@@ -31,6 +31,18 @@ function elapsed(v: LoraVersion) {
 export const CONTINUE_STEPS = 1000;
 export const CONTINUE_LR = 0.00006;
 
+/** A version's training settings without what belongs to that run only (trainer image,
+ * cloud, the version it continued), so they can be used for a new run. */
+export function trainingSettings<T extends Partial<TrainingConfig>>(
+  config: T & { image?: string | null; cloud_type?: string; continue_from_number?: number },
+): Omit<T, "image" | "cloud_type" | "continue_from_number"> {
+  const { image: _image, cloud_type: _cloud, continue_from_number: _from, ...settings } = config;
+  void _image;
+  void _cloud;
+  void _from;
+  return settings;
+}
+
 export function VersionCard({
   lora,
   version,
@@ -233,14 +245,14 @@ export function VersionCard({
               size="sm"
               icon={<FastForward />}
               onClick={() =>
-                onNewExperiment({ ...version.config, continue_from: version.id, steps: CONTINUE_STEPS, learning_rate: CONTINUE_LR })
+                onNewExperiment({ ...trainingSettings(version.config), continue_from: version.id, steps: CONTINUE_STEPS, learning_rate: CONTINUE_LR })
               }
             >
               {t("ls.continueTraining")}
             </Button>
           ) : null}
           {onNewExperiment && version.config.rank ? (
-            <Button size="sm" variant="ghost" icon={<CopyPlus />} onClick={() => onNewExperiment({ ...version.config, continue_from: null })}>
+            <Button size="sm" variant="ghost" icon={<CopyPlus />} onClick={() => onNewExperiment({ ...trainingSettings(version.config), continue_from: null })}>
               {t("ls.newExperiment")}
             </Button>
           ) : null}

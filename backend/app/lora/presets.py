@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 ARCHITECTURES: dict[str, dict[str, Any]] = {
     "krea2": {
@@ -70,6 +70,10 @@ ARCHITECTURES: dict[str, dict[str, Any]] = {
 }
 
 
+# Stored next to the training settings of a version (routes/loras.py), not settings.
+RUN_FIELDS = ("image", "cloud_type", "continue_from_number")
+
+
 class TrainingConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -107,6 +111,16 @@ class TrainingConfig(BaseModel):
     validation_prompts: list[str] = Field(default_factory=list, max_length=6)
     seed: int = Field(default=42, ge=0, le=2**31 - 1)
     save_dtype: Literal["float16", "bf16"] = "float16"
+
+    @model_validator(mode="before")
+    @classmethod
+    def _without_run_fields(cls, data: Any) -> Any:
+        # A version's saved settings also hold what belongs to that run only (trainer image,
+        # cloud, the version it continued). Copying them into a new run must not fail;
+        # anything else unknown is still refused.
+        if isinstance(data, dict):
+            return {k: v for k, v in data.items() if k not in RUN_FIELDS}
+        return data
 
     @field_validator("resolutions")
     @classmethod

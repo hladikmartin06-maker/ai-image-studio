@@ -7,7 +7,7 @@ import { useState } from "react";
 import { toast } from "sonner";
 
 import { hfProblem } from "@/components/integrations/huggingface";
-import { CONTINUE_LR, CONTINUE_STEPS } from "@/components/lora/runs";
+import { CONTINUE_LR, CONTINUE_STEPS, trainingSettings } from "@/components/lora/runs";
 import { formatMoney, type GpuChoice, GpuPicker, hourlyPrice, newRequestId } from "@/components/studio/common";
 import { Button, Field, Notice, Segmented, Select, Skeleton, Switch, useConfirm } from "@/components/ui";
 import { ApiError } from "@/lib/api";
@@ -84,7 +84,7 @@ export function TrainingTab({ lora, onStarted, initial }: { lora: LoraDetail; on
       await start.mutateAsync({
         preset,
         config: {
-          ...cfg,
+          ...trainingSettings(cfg),
           validation_prompts: prompts
             .split("\n")
             .map((p) => p.trim())

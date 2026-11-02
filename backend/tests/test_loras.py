@@ -149,6 +149,12 @@ def test_faster_training_options():
     # Stored configs from before keep working (previews defaults to "during").
     assert TrainingConfig.model_validate({"steps": 1000}).previews == "during"
     assert ARCHITECTURES["krea2"]["vram_no_checkpointing_gb"] == 96
+    # A version's saved settings can be used again: its run-only fields are left out, other
+    # unknown fields are still refused.
+    saved = {"steps": 1000, "image": None, "cloud_type": "SECURE", "continue_from_number": 1}
+    assert TrainingConfig.model_validate(saved).steps == 1000
+    with pytest.raises(ValueError):
+        TrainingConfig.model_validate({"steps": 1000, "unknown": 1})
 
 
 async def test_project_rules_and_dataset_tools(user: Api):
@@ -351,9 +357,17 @@ async def test_training_on_runpod_end_to_end(user: Api, tmp_path: Path, hub: Fak
         # size is kept (the requested rank is ignored).
         lora = await upload_dataset(user, lora["id"], 2, start=11)
         assert len(lora["dataset"]) == 12
+        # Like "Continue training" in the app: v1's saved settings (with its run's own fields:
+        # trainer image, cloud) are the starting point.
+        assert {"image", "cloud_type"} <= set(version["config"])
         cont = {
             **body,
-            "config": {**config, "continue_from": version["id"], "rank": 64, "alpha": 64},
+            "config": {
+                **version["config"],
+                "continue_from": version["id"],
+                "rank": 64,
+                "alpha": 64,
+            },
             "client_request_id": "train-continue",
             "confirm_billing": True,
         }
