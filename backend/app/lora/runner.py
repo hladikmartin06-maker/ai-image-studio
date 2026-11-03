@@ -60,7 +60,8 @@ OOM_MESSAGE = (
     "The GPU ran out of memory, even with memory saving on. Train at a lower resolution "
     "(e.g. 768 px only) or choose a GPU with more memory."
 )
-MAX_SAMPLES = 60
+# Validation images kept per run: every 100 steps of a long run with several prompts fits.
+MAX_SAMPLES = 600
 TRAINING_VOLUME = "ai-image-studio-training"
 
 

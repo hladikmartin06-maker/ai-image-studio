@@ -278,13 +278,18 @@ export function TrainingTab({ lora, onStarted, initial }: { lora: LoraDetail; on
                 <div className="hint">{t("ls.preservationHint", { cls: lora.class_word || "woman" })}</div>
               </div>
             </div>
-            <Field label={t("ls.previews")} hint={t(cfg.previews === "end" ? "ls.previewsEndHint" : "ls.previewsDuringHint", { n: cfg.sample_every })}>
-              <Segmented
+            <Field
+              label={t("ls.previews")}
+              hint={cfg.previews === "end" ? t("ls.previewsEndHint") : t("ls.previewsEveryHint", { n: cfg.sample_every })}
+            >
+              <Select
                 label={t("ls.previews")}
-                value={cfg.previews ?? "during"}
-                onChange={(v) => set({ previews: v })}
+                value={cfg.previews === "end" ? "end" : String(cfg.sample_every)}
+                onChange={(v) => (v === "end" ? set({ previews: "end" }) : set({ previews: "during", sample_every: Number(v) }))}
                 options={[
-                  { value: "during", label: t("ls.previewsDuring") },
+                  ...[...new Set([100, 250, 500, 1000, ...(cfg.sample_every > 0 ? [cfg.sample_every] : [])])]
+                    .sort((a, b) => a - b)
+                    .map((n) => ({ value: String(n), label: t("ls.previewsEvery", { n }) })),
                   { value: "end", label: t("ls.previewsEnd") },
                 ]}
               />

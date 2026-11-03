@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import base64
 import io
-from typing import Literal
+from typing import Any, Literal
 
 from PIL import Image as PILImage
 from PIL import ImageOps
@@ -60,6 +60,52 @@ def apply_template(template: str, caption: str, trigger: str, class_word: str) -
     return " ".join(result.replace(" ,", ",").split()).strip(" ,")
 
 
+# Output token budgets: the first try, and one more when the answer was cut off.
+CAPTION_BUDGETS = (1024, 4096)
+
+
+def complete_part(text: str) -> str:
+    """The caption up to its last finished phrase (comma, semicolon or full stop)."""
+    text = text.strip()
+    cut = max(text.rfind(","), text.rfind(";"), text.rfind("."))
+    return text[:cut].strip(" ,;.") if cut > 0 else ""
+
+
+def shorten(text: str, limit: int) -> str:
+    if len(text) <= limit:
+        return text
+    return complete_part(text[:limit]) or text[:limit].rsplit(" ", 1)[0]
+
+
+async def _ask(
+    spec: Any, api_key: str, base_url: str | None, model: str, data: bytes, budget: int
+) -> tuple[str, str | None, Usage]:
+    request = ChatRequest(
+        model=model,
+        system=CAPTION_SYSTEM,
+        messages=[
+            ChatTurn(
+                "user", "Caption this training image.", images=[("image/jpeg", small_jpeg(data))]
+            )
+        ],
+        max_tokens=budget,
+        effort="low",
+    )
+    text = ""
+    usage = Usage()
+    stop: str | None = None
+    try:
+        async for event in get_adapter(spec).stream(api_key, base_url, request):
+            if event.done:
+                usage = event.usage
+                stop = event.stop_reason
+            else:
+                text += event.text
+    except AIError as exc:
+        raise CaptionError(exc.code, exc.message) from exc
+    return text, stop, usage
+
+
 async def describe(
     db: AsyncSession,
     user: User,
@@ -85,44 +131,39 @@ async def describe(
         if integration.encrypted_key
         else ""
     )
-    request = ChatRequest(
-        model=str(model),
-        system=CAPTION_SYSTEM,
-        messages=[
-            ChatTurn(
-                "user", "Caption this training image.", images=[("image/jpeg", small_jpeg(data))]
-            )
-        ],
-        max_tokens=200,
-        effort="low",
-    )
-    text = ""
-    usage = Usage()
-    try:
-        async for event in get_adapter(spec).stream(api_key, integration.base_url, request):
-            if event.done:
-                usage = event.usage
-            else:
-                text += event.text
-    except AIError as exc:
-        raise CaptionError(exc.code, exc.message) from exc
-    db.add(
-        AIUsageEvent(
-            user_id=user.id,
-            provider=provider,
-            model=str(model),
-            tier=tier,
-            purpose="caption",
-            input_tokens=usage.input_tokens,
-            output_tokens=usage.output_tokens,
-            cached_tokens=usage.cached_tokens,
-            estimated=usage.estimated,
+    text, stop = "", None
+    for budget in CAPTION_BUDGETS:
+        # The budget also covers the model's own reasoning (newer models think before they
+        # answer): too small, and the caption stopped mid-sentence.
+        text, stop, usage = await _ask(
+            spec, api_key, integration.base_url, str(model), data, budget
         )
-    )
-    await db.commit()
+        db.add(
+            AIUsageEvent(
+                user_id=user.id,
+                provider=provider,
+                model=str(model),
+                tier=tier,
+                purpose="caption",
+                input_tokens=usage.input_tokens,
+                output_tokens=usage.output_tokens,
+                cached_tokens=usage.cached_tokens,
+                estimated=usage.estimated,
+            )
+        )
+        await db.commit()
+        if stop != "max_tokens":
+            break
     caption = " ".join(text.strip().strip('"').split())
+    if stop == "max_tokens":
+        # Still cut off: keep only the complete parts, never half a word or phrase.
+        caption = complete_part(caption)
+        if not caption:
+            raise CaptionError(
+                "incomplete", "The model's answer was cut off. Try again or use another model."
+            )
     if not caption or caption.upper().startswith("REFUSED") or mentions_minors(caption):
         raise CaptionError(
             "refused", "The model did not caption this image. Write the caption yourself."
         )
-    return caption[:600], provider, str(model)
+    return shorten(caption, 600), provider, str(model)

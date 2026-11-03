@@ -16,6 +16,7 @@ import type {
   AIProviderList,
   AIUsage,
   AuthState,
+  DatasetFaces,
   Balance,
   Catalog,
   Conversation,
@@ -37,6 +38,7 @@ import type {
   JobItem,
   LoraCatalog,
   LoraDetail,
+  Likeness,
   LoraItem,
   LoraSummary,
   LoraTestGroup,
@@ -1090,9 +1092,15 @@ export function useBulkDataset(id: string) {
 }
 
 export function useCaptionItem(id: string) {
+  const qc = useQueryClient();
   return useMutation({
     mutationFn: ({ itemId, tier, overwrite }: { itemId: string; tier: string; overwrite: boolean }) =>
       api<LoraItem>(`/api/loras/${id}/dataset/${itemId}/caption`, { body: { tier, overwrite } }),
+    // Each caption shows as soon as it is written, not after the whole run.
+    onSuccess: (item) =>
+      qc.setQueryData<LoraDetail>(loraKeys.one(id), (old) =>
+        old ? { ...old, dataset: old.dataset.map((i) => (i.id === item.id ? { ...i, ...item } : i)) } : old,
+      ),
   });
 }
 
@@ -1127,6 +1135,26 @@ export function useVersionAction(id: string) {
       return api(`${base}/${action}`, { body: body ?? {} });
     },
   );
+}
+
+/** Measured on the Mac once per new set of validation images (kept with the version). */
+export function useVersionLikeness(loraId: string, version: LoraVersion, enabled: boolean) {
+  const stepped = version.samples.filter((s) => s.step !== null).length;
+  const cached = version.likeness && version.likeness.samples === stepped ? version.likeness : undefined;
+  return useQuery({
+    queryKey: ["loras", "likeness", version.id, stepped],
+    queryFn: () => api<Likeness>(`/api/loras/${loraId}/versions/${version.id}/likeness`),
+    enabled: enabled && stepped > 0,
+    initialData: cached,
+    staleTime: Infinity,
+    retry: false,
+  });
+}
+
+export function useCheckDatasetFaces(loraId: string) {
+  return useMutation({
+    mutationFn: () => api<DatasetFaces>(`/api/loras/${loraId}/dataset/faces`, { method: "POST" }),
+  });
 }
 
 export function useLoraLogs(id: string, versionId: string | null, live: boolean) {

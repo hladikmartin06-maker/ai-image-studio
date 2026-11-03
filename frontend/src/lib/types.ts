@@ -941,6 +941,7 @@ export interface LoraVersion {
   memory_retries?: { at_step: number | null; changes: ("gradient_checkpointing" | "quantize" | "low_vram" | "batch_size")[]; at: string }[];
   gpu: AgentGpu | null;
   samples: { file: string; step: number | null; index: number | null; url: string }[];
+  likeness?: Likeness | null;
   file_url: string | null;
   file_size: number | null;
   file_sha256: string | null;
@@ -1129,4 +1130,19 @@ export interface Spending {
     billed_error: string | null;
   }[];
   total: number;
+}
+
+/** Face likeness of a training run's validation images to the LoRA's photos, per step. */
+export interface Likeness {
+  reference_faces: number;
+  steps: { step: number; samples: number; faces: number; score: number | null }[];
+  best_step: number | null;
+  samples: number;
+  threshold?: number;
+}
+
+/** Is it the same face on every dataset photo (median similarity to the others). */
+export interface DatasetFaces {
+  threshold: number;
+  items: { item_id: string; face: boolean; score: number | null; outlier: boolean }[];
 }

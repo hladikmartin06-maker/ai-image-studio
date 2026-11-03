@@ -30,6 +30,9 @@ class FakeAI:
     fail_status: int | None = None
     reject_stream_options: bool = False
     refuse: bool = False
+    # Like a reasoning model: with fewer output tokens than this, the answer is cut off
+    # halfway (finish_reason "length").
+    truncate_below: int = 0
 
     # --- OpenAI-compatible (httpx) --------------------------------------------------------
 
@@ -48,11 +51,15 @@ class FakeAI:
         if self.reject_stream_options and "stream_options" in body:
             return httpx.Response(400, json={"error": {"message": "Unknown field stream_options"}})
         events: list[tuple[str | None, Any]] = []
-        for word in self.reply.split(" "):
+        words = self.reply.split(" ")
+        budget = body.get("max_completion_tokens") or body.get("max_tokens") or 0
+        cut = budget < self.truncate_below
+        for word in words[: len(words) // 2] if cut else words:
             events.append(
                 (None, {"model": body["model"], "choices": [{"delta": {"content": word + " "}}]})
             )
-        events.append((None, {"choices": [{"delta": {}, "finish_reason": "stop"}]}))
+        finish = "length" if cut else "stop"
+        events.append((None, {"choices": [{"delta": {}, "finish_reason": finish}]}))
         if "stream_options" in body:
             events.append(
                 (

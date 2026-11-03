@@ -101,7 +101,7 @@ def test_presets_are_architecture_aware():
         name="run1",
         trigger_word="lnx",
         class_word="woman",
-        config=TrainingConfig.model_validate(hq),
+        config=TrainingConfig.model_validate({**hq, "diff_output_preservation": True}),
         sample_prompts=["lnx woman portrait"],
     )
     proc = cfg["config"]["process"][0]
@@ -109,7 +109,8 @@ def test_presets_are_architecture_aware():
     assert proc["model"]["name_or_path"] == "krea/Krea-2-Turbo"
     assert "krea2_turbo_training_adapter" in proc["model"]["assistant_lora_path"]
     assert proc["train"]["diff_output_preservation_class"] == "woman"
-    assert proc["sample"]["sample_steps"] == 8 and proc["sample"]["guidance_scale"] == 1.0
+    # ai-toolkit's Turbo sample settings (its "krea2:turbo" entry).
+    assert proc["sample"]["sample_steps"] == 9 and proc["sample"]["guidance_scale"] == 1.0
     assert proc["network"] == {"type": "lora", "linear": 64, "linear_alpha": 32}
     with pytest.raises(ValueError):
         TrainingConfig.model_validate({**hq, "resolutions": [2048]})
@@ -139,7 +140,12 @@ def test_faster_training_options():
     # No baseline images of the untrained model (they came again after every restart).
     assert default["train"]["skip_first_sample"] is True
     assert "disable_sampling" not in default["train"]
-    assert default["train"]["diff_output_preservation"] is True
+    # The interval the user picks (every 100 … 1000 steps) is ai-toolkit's sample_every.
+    assert build(sample_every=100)["sample"]["sample_every"] == 100
+    # ai-toolkit's own Krea 2 choices: linear timesteps, preservation off unless switched on.
+    assert default["train"]["timestep_type"] == "linear"
+    assert "diff_output_preservation" not in default["train"]
+    assert build(diff_output_preservation=True)["train"]["diff_output_preservation"] is True
     assert default["train"]["gradient_checkpointing"] is True
     fast = build(previews="end", diff_output_preservation=False, gradient_checkpointing=False)
     assert fast["sample"]["sample_every"] == 0 and fast["train"]["skip_first_sample"] is True
@@ -277,6 +283,99 @@ async def test_copy_lora_with_photos_and_captions(user: Api):
     assert (await user.get(kept["dataset"][0]["url"])).status_code == 200
 
 
+async def test_likeness_per_step_and_dataset_faces(user: Api, monkeypatch):
+    """The face of each training photo against the others (another person stands out), the
+    validation images' likeness per step with the best step, and the hair-colour warning."""
+    from app.lora import runner
+    from app.models import Lora, LoraVersion
+    from app.services import faces, storage
+    from tests.fakes import png_bytes
+    from tests.test_faces import FakeEngine
+
+    engine = FakeEngine()
+
+    async def get_engine():
+        return engine
+
+    monkeypatch.setattr(faces, "_get_engine", get_engine)
+    faces._cache.clear()
+    lora = await create(user, trigger_word="lkn")
+    # FakeEngine: the colour of the first pixel is "the face". Ten photos of her, one of
+    # someone else, one without a face.
+    colours = [(200, 40, 40 + i) for i in range(10)] + [(10, 200, 10), (0, 0, 0)]
+    for i, colour in enumerate(colours):
+        files = {"file": (f"f{i}.png", png_bytes(64, 64, colour), "image/png")}
+        r = await user.post(f"/api/loras/{lora['id']}/dataset/upload", files=files)
+        assert r.status_code == 201, r.text
+        detail = r.json()["lora"]
+    items = detail["dataset"]
+    check = await user.post(f"/api/loras/{lora['id']}/dataset/faces")
+    assert check.status_code == 200, check.text
+    result = {x["item_id"]: x for x in check.json()["items"]}
+    assert [result[i["id"]]["outlier"] for i in items] == [False] * 10 + [True, False]
+    assert result[items[11]["id"]]["face"] is False and result[items[0]["id"]]["score"] > 0.9
+
+    # Hair colour named on most captions: not learned as hers.
+    for item in items[:10]:
+        await user.patch(
+            f"/api/loras/{lora['id']}/dataset/{item['id']}",
+            json={"caption": "lkn woman, long black hair, park"},
+        )
+    detail = (await user.get(f"/api/loras/{lora['id']}")).json()
+    assert "hair_in_captions" in {w["code"] for w in detail["analysis"]["warnings"]}
+
+    # A finished run with validation images at two steps: her face only at step 500.
+    async with SessionLocal() as db:
+        row = await db.get(Lora, uuid.UUID(lora["id"]))
+        v = LoraVersion(
+            lora_id=row.id,
+            user_id=row.user_id,
+            number=1,
+            status="completed",
+            config={},
+            trainer_config={},
+            progress={
+                "samples": [
+                    {"file": "1__000000250_0.jpg", "step": 250, "index": 0},
+                    {"file": "2__000000500_0.jpg", "step": 500, "index": 0},
+                    {"file": "3__000000500_1.jpg", "step": 500, "index": 1},
+                ]
+            },
+        )
+        db.add(v)
+        await db.commit()
+        folder = storage.absolute(runner.version_dir(v)) / "samples"
+        version_id = v.id
+    folder.mkdir(parents=True, exist_ok=True)
+    for name, colour in (
+        ("1__000000250_0.jpg", (10, 200, 10)),
+        ("2__000000500_0.jpg", (200, 40, 45)),
+        ("3__000000500_1.jpg", (200, 45, 40)),
+    ):
+        (folder / name).write_bytes(png_bytes(64, 64, colour))
+    url = f"/api/loras/{lora['id']}/versions/{version_id}/likeness"
+    r = await user.get(url)
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["best_step"] == 500 and body["reference_faces"] == 11  # 12 photos, 1 without a face
+    by_step = {x["step"]: x for x in body["steps"]}
+    assert by_step[500]["faces"] == 2 and by_step[500]["score"] > 0.9
+    assert by_step[250]["score"] < faces.MATCH_THRESHOLD
+    # Kept with the version; another user sees nothing.
+    version = next(
+        x
+        for x in (await user.get(f"/api/loras/{lora['id']}")).json()["versions"]
+        if x["id"] == str(version_id)
+    )
+    assert version["likeness"]["best_step"] == 500
+    other = await make_user("likeness-other")
+    try:
+        assert (await other.get(url)).status_code == 404
+        assert (await other.post(f"/api/loras/{lora['id']}/dataset/faces")).status_code == 404
+    finally:
+        await other.client.aclose()
+
+
 async def test_ai_captions(user: Api):
     ai = FakeAI(reply="wearing a red coat in a park, soft daylight")
     set_adapter(
@@ -305,6 +404,26 @@ async def test_ai_captions(user: Api):
         )
         usage = (await user.get("/api/ai/usage")).json()
         assert usage
+        url = f"/api/loras/{lora['id']}/dataset/{item['id']}/caption"
+        # A model that reasons first and runs out of tokens: asked again with more room,
+        # the caption is whole.
+        ai.reply = (
+            "standing by a window, cream knit sweater, soft daylight, half-body shot, "
+            "neutral expression, plain wall"
+        )
+        ai.truncate_below = 2000
+        r = await user.post(url, json={"overwrite": True})
+        assert r.json()["caption"] == "lnx woman, " + ai.reply
+        budgets = [c["body"]["max_completion_tokens"] for c in ai.calls[-2:]]
+        assert budgets == [1024, 4096]
+        # Cut off even then: only the finished phrases are kept, never half a phrase.
+        ai.truncate_below = 10_000
+        r = await user.post(url, json={"overwrite": True})
+        assert r.json()["caption"] == "lnx woman, standing by a window, cream knit sweater"
+        # Nothing finished at all: a clear error, nothing saved.
+        ai.reply = "standing by a window in a cream knit sweater"
+        r = await user.post(url, json={"overwrite": True})
+        assert r.status_code == 502 and r.json()["error"]["code"] == "incomplete"
     finally:
         for key in AI_PROVIDERS:
             set_adapter(key, None)

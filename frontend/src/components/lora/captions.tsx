@@ -1,6 +1,6 @@
 "use client";
 
-import { Sparkles, Square } from "lucide-react";
+import { Loader2, Sparkles, Square } from "lucide-react";
 import { useRef, useState } from "react";
 import { toast } from "sonner";
 
@@ -10,7 +10,7 @@ import { useT } from "@/lib/i18n";
 import { useCaptionItem, useUpdateDatasetItem, useUpdateLora } from "@/lib/queries";
 import type { LoraDetail, LoraItem } from "@/lib/types";
 
-function CaptionRow({ lora, item }: { lora: LoraDetail; item: LoraItem }) {
+function CaptionRow({ lora, item, writing }: { lora: LoraDetail; item: LoraItem; writing: boolean }) {
   const t = useT();
   const update = useUpdateDatasetItem(lora.id);
   const [text, setText] = useState(item.caption);
@@ -21,7 +21,7 @@ function CaptionRow({ lora, item }: { lora: LoraDetail; item: LoraItem }) {
     setText(item.caption);
   }
   return (
-    <div className="caption-row" data-excluded={item.excluded || undefined}>
+    <div className="caption-row" data-excluded={item.excluded || undefined} data-writing={writing || undefined}>
       <img src={item.thumb_url} alt="" loading="lazy" />
       <div className="col grow" style={{ gap: 4 }}>
         <textarea
@@ -37,7 +37,13 @@ function CaptionRow({ lora, item }: { lora: LoraDetail; item: LoraItem }) {
           }}
         />
         <div className="row tiny subtle" style={{ gap: 6 }}>
-          <Badge tone={item.caption_source === "ai" ? "accent" : undefined}>{t(`ds.source.${item.caption_source}`)}</Badge>
+          {writing ? (
+            <Badge tone="accent">
+              <Loader2 size={11} className="spin" /> {t("cap.writing")}
+            </Badge>
+          ) : (
+            <Badge tone={item.caption_source === "ai" ? "accent" : undefined}>{t(`ds.source.${item.caption_source}`)}</Badge>
+          )}
           {item.split === "validation" ? <Badge>{t("ds.val")}</Badge> : null}
           {item.excluded ? <Badge>{t("ds.excluded")}</Badge> : null}
         </div>
@@ -54,6 +60,7 @@ export function CaptionsTab({ lora }: { lora: LoraDetail }) {
   const [tier, setTier] = useState<"low" | "balanced" | "high">("low");
   const [overwrite, setOverwrite] = useState(false);
   const [running, setRunning] = useState<{ done: number; total: number } | null>(null);
+  const [writing, setWriting] = useState<string | null>(null);
   const stop = useRef(false);
   const targets = lora.dataset.filter((i) => !i.excluded && (overwrite || !i.caption.trim()));
 
@@ -63,6 +70,7 @@ export function CaptionsTab({ lora }: { lora: LoraDetail }) {
     let failed = 0;
     for (const [index, item] of targets.entries()) {
       if (stop.current) break;
+      setWriting(item.id);
       try {
         await caption.mutateAsync({ itemId: item.id, tier, overwrite });
       } catch (e) {
@@ -75,6 +83,7 @@ export function CaptionsTab({ lora }: { lora: LoraDetail }) {
       }
       setRunning({ done: index + 1, total: targets.length });
     }
+    setWriting(null);
     setRunning(null);
     await updateLora.mutateAsync({});
     if (failed) toast.warning(t("cap.someFailed", { n: failed }));
@@ -132,7 +141,7 @@ export function CaptionsTab({ lora }: { lora: LoraDetail }) {
       </div>
       <div className="col" style={{ gap: 8 }}>
         {lora.dataset.map((item) => (
-          <CaptionRow key={item.id} lora={lora} item={item} />
+          <CaptionRow key={item.id} lora={lora} item={item} writing={writing === item.id} />
         ))}
       </div>
     </div>

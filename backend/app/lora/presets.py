@@ -5,6 +5,10 @@ krea/Krea-2-Raw — gated on Hugging Face —, Turbo krea/Krea-2-Turbo with the 
 ostris/krea2_turbo_training_adapter). Options exposed are ai-toolkit config fields
 (toolkit/config_modules.py); what ai-toolkit cannot do for Krea 2 is listed as unavailable.
 The presets are the studio's starting points, not values published by Krea or ai-toolkit.
+Defaults that ai-toolkit itself sets (checked 2026-11-03 in its `main`): its training form uses
+`timestep_type: "linear"` for Krea 2 RAW and Turbo and 9 sample steps / guidance 1 for Turbo
+(extensions_built_in/diffusion_models/ui.tsx, entries "krea2" and "krea2:turbo"), and leaves
+differential output preservation off (ui/src/app/jobs/new/jobConfig.ts).
 """
 
 from __future__ import annotations
@@ -41,7 +45,7 @@ ARCHITECTURES: dict[str, dict[str, Any]] = {
                 "usable_on": ["turbo"],
                 "note": "Trains on the distilled model through ai-toolkit's adapter; use the "
                 "LoRA with Turbo only.",
-                "sample_steps": 8,
+                "sample_steps": 9,
                 "sample_guidance": 1.0,
             },
         },
@@ -94,9 +98,12 @@ class TrainingConfig(BaseModel):
     resolutions: list[int] = Field(default_factory=lambda: [768, 1024])
     quantize: bool = True
     low_vram: bool = False
-    timestep_type: Literal["sigmoid", "linear"] = "sigmoid"
+    # ai-toolkit's own choice for Krea 2 (see the module docstring); "sigmoid" was the
+    # studio's default before 2026-11-03.
+    timestep_type: Literal["sigmoid", "linear"] = "linear"
     caption_dropout_rate: float = Field(default=0.05, ge=0.0, le=0.5)
-    diff_output_preservation: bool = True
+    # Off like ai-toolkit's default: preservation slows how fast the character is learned.
+    diff_output_preservation: bool = False
     diff_output_preservation_multiplier: float = Field(default=1.0, ge=0.1, le=3.0)
     save_every: int = Field(default=250, ge=50, le=5000)
     max_checkpoints: int = Field(default=6, ge=1, le=12)
@@ -147,8 +154,7 @@ _BASE = TrainingConfig().model_dump()
 PRESETS: dict[str, dict[str, Any]] = {
     "character_identity": {
         "name": "Character Identity",
-        "summary": "Keeps a recognizable face and look. Output preservation keeps the base "
-        "model's other abilities.",
+        "summary": "Keeps a recognizable face and look, with ai-toolkit's Krea 2 settings.",
         "tradeoff": "Balanced time and cost; the default for a new character.",
         "config": {**_BASE},
     },

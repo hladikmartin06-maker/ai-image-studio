@@ -93,8 +93,9 @@ Integrations and Settings.
   test images only at the end, base-model protection and memory saving can be switched off
   for faster runs; a GPU with 80 GB or more trains in full precision, without memory
   saving; if the GPU runs out of memory, training starts again on the same GPU with one
-  memory saving turned on, the one that keeps the quality first). Validation images: the
-  newest set, one per test prompt. **Continue training**: add photos and train a finished version further —
+  memory saving turned on, the one that keeps the quality first). Validation images: every
+  100–1000 steps or only at the end (your choice), the newest set first and the earlier
+  steps on demand. AI captions appear one by one while they are written. **Continue training**: add photos and train a finished version further —
   the training starts from that LoRA instead of from zero and makes a new version. **Copy to
   a new LoRA** (top of a LoRA's page): a new LoRA with the same photos and captions (the
   trigger word in them is replaced), e.g. to train a Turbo LoRA again on RAW so it works on
@@ -114,7 +115,10 @@ Integrations and Settings.
   **History** tab with every request, its exact settings and "regenerate".
 - **Face match** (image viewer, and LoRA › Test & compare): how close the face is to the AI
   model's photos or the LoRA's photos — runs on this Mac with OpenCV's face models (YuNet +
-  SFace, about 39 MB, downloaded the first time); 36 % or more = the same person.
+  SFace, about 39 MB, downloaded the first time); 36 % or more = the same person. In LoRA,
+  **Check faces** marks dataset photos whose face differs from the others, and every training
+  run shows the likeness of its validation images per step with the best step (which can be
+  saved as its own version).
 - **Assistant** — chat that improves prompts, picks models and settings and explains failed
   generations; you can **attach photos** (button or paste) and ask it to describe them or write
   a prompt for a similar image. Works with Claude, GPT, Grok, Gemini or any OpenAI-compatible

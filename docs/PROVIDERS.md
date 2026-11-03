@@ -506,6 +506,17 @@ the image): the same graph in API format, on the same ComfyUI connection as Krea
   (13.0 alone if RunPod refuses the others); Modal sandboxes get `encrypted_ports`, a Secret for
   tokens and a named Volume. ComfyUI deployments: see "ComfyUI on a rented GPU" above.
 
+- **Defaults from ai-toolkit itself** (checked 2026-11-03 in its `main`): its training form
+  sets `train.timestep_type: "linear"` for Krea 2 RAW and Turbo, and 9 sample steps with
+  guidance 1 for Turbo (`extensions_built_in/diffusion_models/ui.tsx`, entries "krea2" and
+  "krea2:turbo"); differential output preservation is off by default
+  (`ui/src/app/jobs/new/jobConfig.ts`: `diff_output_preservation: false`, steps 3000, lr 1e-4,
+  rank/alpha 32, adamw8bit, caption dropout 0.05). The studio used `sigmoid` and preservation
+  on before 2026-11-03; both now follow ai-toolkit (preservation stays a switch). The owner's
+  runs (2026-11-03) also showed that captions naming the hair colour on every photo gave a
+  weaker likeness than the AI captions, which leave identity out: the dataset check warns
+  when more than half of the captions name it.
+
 - **Faster runs** (Advanced, checked 2026-11-01 in ai-toolkit's `main`:
   `jobs/process/BaseSDTrainProcess.py`, `extensions_built_in/sd_trainer/SDTrainer.py`,
   `toolkit/config_modules.py`):
@@ -597,6 +608,13 @@ downscaled to 1024 px JPEG in the provider's own image format (Anthropic image b
 training — and only with the message they belong to; later turns replay a short note instead
 of the image. Models without vision answer with the provider's error.
 
+AI captions (`lora/captions.py`): output budget 1024 tokens, because the token limit of newer
+models also covers their reasoning (OpenAI `max_completion_tokens`, Anthropic `max_tokens` with
+adaptive thinking, Gemini `maxOutputTokens`); with the old 200 a caption could stop
+mid-sentence. When a provider still reports the limit (`finish_reason: length`, `max_tokens`,
+`MAX_TOKENS`), the image is asked once more with 4096; if it is cut off again, only the
+finished phrases are kept (up to the last comma or full stop), or the image gets a clear error.
+
 # Face match (on this Mac)
 
 `backend/app/services/faces.py`, verified 2026-11-02:
@@ -611,6 +629,15 @@ of the image. Models without vision answer with the provider's error.
   as in the zoo's demo: the largest face, `alignCrop`, `feature`; the score is the cosine
   similarity, 0.363 or more = the same person (the zoo's `sface.py`). Checked here with real
   photos: the same face 0.91–0.96, a different person 0.13.
+
+- **LoRA checks with the same models** (since 2026-11-03): "Check faces" on a LoRA's dataset
+  (`POST /api/loras/{id}/dataset/faces`) gives every photo in use its median similarity to the
+  other photos' faces; below 0.363 it is marked (another person, or a face from the side,
+  which SFace compares less well). A run's validation images get a likeness per step
+  (`GET /api/loras/{id}/versions/{v}/likeness`): each image's median similarity to the
+  training photos (median, so one odd photo cannot decide it), the mean per step, and the
+  best step; it is kept in the version's progress until new images arrive. The validation
+  prompts are generic, so the numbers compare steps of one run, not runs with other prompts.
 
 # Spending this month
 

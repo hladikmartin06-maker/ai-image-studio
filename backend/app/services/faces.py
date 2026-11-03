@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
+import statistics
 import threading
 from collections import OrderedDict
 from dataclasses import dataclass
@@ -206,5 +207,66 @@ async def compare(images: list[Path], references: list[Path]) -> dict[str, Any]:
             score = round(_score([feature], refs), 3)
             out.append({"face": True, "score": score, "match": score >= MATCH_THRESHOLD})
         return {"reference_faces": len(refs), "items": out}
+
+    return await asyncio.to_thread(run)
+
+
+async def likeness(samples: list[tuple[int, Path]], references: list[Path]) -> dict[str, Any]:
+    """How close a training run's validation images are to its photos, per step: the mean of
+    the samples' scores at that step (each sample: its median similarity to the photos' faces,
+    so one odd photo cannot decide it), and the step with the highest score."""
+    engine = await _get_engine()
+
+    def run() -> dict[str, Any]:
+        refs = [f for f in (_feature_of(engine, p) for p in references) if f is not None]
+        counts: dict[int, int] = {}
+        scores: dict[int, list[float]] = {}
+        for step, path in samples:
+            counts[step] = counts.get(step, 0) + 1
+            feature = _feature_of(engine, path) if path.is_file() else None
+            if feature is not None and refs:
+                similarity = statistics.median(float((feature * r).sum()) for r in refs)
+                scores.setdefault(step, []).append(similarity)
+        rows = [
+            {
+                "step": step,
+                "samples": counts[step],
+                "faces": len(scores.get(step, [])),
+                "score": round(statistics.fmean(scores[step]), 3) if scores.get(step) else None,
+            }
+            for step in sorted(counts)
+        ]
+        scored = [r for r in rows if r["score"] is not None]
+        best = max(scored, key=lambda r: (r["score"], -r["step"]))["step"] if scored else None
+        return {"reference_faces": len(refs), "steps": rows, "best_step": best}
+
+    return await asyncio.to_thread(run)
+
+
+async def consistency(paths: list[Path]) -> list[dict[str, Any]]:
+    """For each photo of one character: is there a face, and how close it is to the faces
+    in the other photos (median similarity). Below the match threshold the photo may show
+    someone else — or a face from the side, which SFace compares less well."""
+    engine = await _get_engine()
+
+    def run() -> list[dict[str, Any]]:
+        features = [_feature_of(engine, p) for p in paths]
+        found = [(i, f) for i, f in enumerate(features) if f is not None]
+        out: list[dict[str, Any]] = []
+        for index, feature in enumerate(features):
+            others = (
+                [float((feature * g).sum()) for j, g in found if j != index]
+                if (feature is not None)
+                else []
+            )
+            score = round(statistics.median(others), 3) if others else None
+            out.append(
+                {
+                    "face": feature is not None,
+                    "score": score,
+                    "outlier": score is not None and score < MATCH_THRESHOLD,
+                }
+            )
+        return out
 
     return await asyncio.to_thread(run)

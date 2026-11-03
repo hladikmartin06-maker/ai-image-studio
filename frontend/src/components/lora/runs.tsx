@@ -17,7 +17,7 @@ import { ApiError, downloadUrl } from "@/lib/api";
 import { formatBytes, formatDate } from "@/lib/format";
 import { useI18n } from "@/lib/i18n";
 import type { MessageKey } from "@/lib/i18n";
-import { useComfyConnections, useLoraLogs, useUpdateLora, useVersionAction } from "@/lib/queries";
+import { useComfyConnections, useLoraLogs, useUpdateLora, useVersionAction, useVersionLikeness } from "@/lib/queries";
 import type { LoraDetail, LoraVersion, TrainingConfig } from "@/lib/types";
 
 function elapsed(v: LoraVersion) {
@@ -43,15 +43,122 @@ export function trainingSettings<T extends Partial<TrainingConfig>>(
   return settings;
 }
 
+/** One image per prompt at a step (the newest file wins, e.g. after a restart). */
+function samplesAt(samples: LoraVersion["samples"], step: number) {
+  const byIndex = new Map<number, LoraVersion["samples"][number]>();
+  for (const s of samples) if (s.step === step) byIndex.set(s.index ?? 0, s);
+  return [...byIndex.entries()].sort((a, b) => a[0] - b[0]).map(([, s]) => s);
+}
+
 /** The newest validation images: one per prompt from the latest step (older steps and
  *  images from before a restart are kept on the Mac but not shown). */
 export function latestSamples(samples: LoraVersion["samples"]) {
   const stepped = samples.filter((s) => s.step !== null);
   if (!stepped.length) return { step: null, items: samples.slice(-3) };
   const step = Math.max(...stepped.map((s) => s.step as number));
-  const byIndex = new Map<number, LoraVersion["samples"][number]>();
-  for (const s of stepped) if (s.step === step) byIndex.set(s.index ?? 0, s);
-  return { step, items: [...byIndex.entries()].sort((a, b) => a[0] - b[0]).map(([, s]) => s) };
+  return { step, items: samplesAt(stepped, step) };
+}
+
+/** Validation images: the newest step large, older steps on demand (history), each with
+ *  the face likeness of that step to the LoRA's photos; the best step's checkpoint can become
+ *  its own version. */
+function SamplesAndLikeness({
+  lora,
+  version,
+  onSaveStep,
+}: {
+  lora: LoraDetail;
+  version: LoraVersion;
+  onSaveStep: (step: number) => void;
+}) {
+  const { t } = useI18n();
+  const likeness = useVersionLikeness(lora.id, version, true);
+  const [history, setHistory] = useState(false);
+  const latest = latestSamples(version.samples);
+  if (!latest.items.length) return null;
+  const data = likeness.data;
+  const threshold = data?.threshold ?? 0.363;
+  const pct = (v: number) => Math.round(v * 100);
+  const scoreOf = new Map((data?.steps ?? []).map((r) => [r.step, r.score]));
+  const best = data?.best_step ?? null;
+  const bestScore = best !== null ? (scoreOf.get(best) ?? null) : null;
+  const steps = [...new Set(version.samples.filter((s) => s.step !== null).map((s) => s.step as number))].sort((a, b) => b - a);
+  const older = steps.filter((step) => step !== latest.step);
+  const finished = !isActive(version.status);
+  const hasCheckpoint = best !== null && version.checkpoints.some((c) => c.step === best);
+  const label = (step: number) => {
+    const score = scoreOf.get(step);
+    return `${t("ls.likenessStep", { step })}${score != null ? ` · ${pct(score)} %` : ""}`;
+  };
+  const strip = (items: LoraVersion["samples"]) => (
+    <div className="sample-strip">
+      {items.map((s) => (
+        <a key={s.file} href={s.url} target="_blank" rel="noreferrer" className="sample">
+          <img src={s.url} alt="" loading="lazy" />
+        </a>
+      ))}
+    </div>
+  );
+  return (
+    <div className="col" style={{ gap: 8 }}>
+      <div className="eyebrow row" style={{ gap: 6 }}>
+        {latest.step !== null ? (
+          <>
+            {latest.step === best ? <Star size={11} /> : null}
+            {t("ls.samples")} · {label(latest.step)}
+          </>
+        ) : (
+          t("ls.samples")
+        )}
+      </div>
+      {strip(latest.items)}
+      {bestScore !== null ? (
+        bestScore < threshold ? (
+          <Notice tone="warning">{t("ls.likenessWeak", { pct: pct(threshold) })}</Notice>
+        ) : (
+          <div className="row wrap small" style={{ gap: 8, alignItems: "center" }}>
+            <span>{t("ls.likenessBest", { step: best!, pct: pct(bestScore) })}</span>
+            {finished && best !== latest.step ? (
+              hasCheckpoint ? (
+                <Button size="sm" icon={<Star />} onClick={() => onSaveStep(best!)}>
+                  {t("ls.likenessSave", { step: best! })}
+                </Button>
+              ) : (
+                <span className="tiny subtle">{t("ls.likenessNoCheckpoint", { step: best! })}</span>
+              )
+            ) : null}
+          </div>
+        )
+      ) : null}
+      {data && data.steps.some((r) => r.score !== null) ? (
+        <div className="tiny subtle">{t("ls.likenessHint", { pct: pct(threshold) })}</div>
+      ) : likeness.isFetching ? (
+        <div className="tiny subtle">{t("ls.likenessMeasuring")}</div>
+      ) : likeness.error ? (
+        <div className="tiny subtle">{(likeness.error as Error).message}</div>
+      ) : null}
+      {older.length ? (
+        <>
+          <button type="button" className="link-button tiny" style={{ alignSelf: "flex-start" }} onClick={() => setHistory((v) => !v)} aria-expanded={history}>
+            {history ? t("ls.historyHide") : t("ls.historyShow", { n: older.length })}
+          </button>
+          {history ? (
+            <div className="sample-history">
+              {older.map((step) => (
+                <div key={step} className="sample-row">
+                  <div className="tiny subtle row" style={{ gap: 4 }}>
+                    {step === best ? <Star size={11} /> : null}
+                    {label(step)}
+                  </div>
+                  {strip(samplesAt(version.samples, step))}
+                </div>
+              ))}
+            </div>
+          ) : null}
+        </>
+      ) : null}
+    </div>
+  );
 }
 
 export function VersionCard({
@@ -67,7 +174,6 @@ export function VersionCard({
   const confirm = useConfirm();
   const action = useVersionAction(lora.id);
   const updateLora = useUpdateLora(lora.id);
-  const latest = latestSamples(version.samples);
   const conns = useComfyConnections();
   const [logs, setLogs] = useState(false);
   const [deployTo, setDeployTo] = useState("");
@@ -167,19 +273,14 @@ export function VersionCard({
           ) : null}
         </div>
         {active ? <GpuMeter gpu={version.gpu} /> : null}
-        {latest.items.length ? (
-          <div>
-            <div className="eyebrow" style={{ marginBottom: 6 }}>
-              {latest.step !== null ? t("ls.samplesAt", { step: latest.step }) : t("ls.samples")}
-            </div>
-            <div className="sample-strip">
-              {latest.items.map((s) => (
-                <a key={s.file} href={s.url} target="_blank" rel="noreferrer" className="sample">
-                  <img src={s.url} alt="" loading="lazy" />
-                </a>
-              ))}
-            </div>
-          </div>
+        {version.samples.length ? (
+          <SamplesAndLikeness
+            lora={lora}
+            version={version}
+            onSaveStep={(step) =>
+              run(() => action.mutateAsync({ versionId: version.id, action: `checkpoints/${step}/as-version` }), t("ls.checkpointSaved"))
+            }
+          />
         ) : null}
         {version.checkpoints.length ? (
           <div className="col" style={{ gap: 4 }}>

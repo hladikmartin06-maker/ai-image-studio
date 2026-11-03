@@ -64,6 +64,8 @@ def version_json(v: LoraVersion) -> dict[str, Any]:
         "samples": [
             {**s, "url": f"{base}/samples/{s['file']}"} for s in progress.get("samples", [])
         ],
+        # Face likeness of the validation images per step (GET …/likeness), when measured.
+        "likeness": progress.get("likeness"),
         "file_url": f"{base}/file" if v.file_path else None,
         "file_size": v.file_size,
         "file_sha256": v.file_sha256,

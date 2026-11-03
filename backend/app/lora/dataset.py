@@ -78,6 +78,13 @@ class ItemView:
     dhash: str | None
 
 
+HAIR_COLOUR = re.compile(
+    r"\b(black|brown|dark|light|blonde?|red|ginger|auburn|brunette|pink|blue|green|purple|"
+    r"white|gr[ae]y|silver|platinum|golden|copper|chestnut)\b(?:[ -][\w-]+){0,2}?[ -]hair\b",
+    re.IGNORECASE,
+)
+
+
 def analyze(items: list[ItemView], trigger_word: str) -> dict[str, Any]:
     used = [i for i in items if not i.excluded]
     train = [i for i in used if i.split == "train"]
@@ -108,6 +115,13 @@ def analyze(items: list[ItemView], trigger_word: str) -> dict[str, Any]:
         no_trigger = [i.id for i in train if i.caption.strip() and not pattern.search(i.caption)]
         if no_trigger:
             warnings.append({"code": "missing_trigger", "level": "warning", "items": no_trigger})
+    # A caption names what can change; what it leaves out is learned as the character. Hair
+    # colour named on most photos is not learned as hers (the studio's AI captions leave it
+    # out); naming it only where it differs keeps it changeable.
+    captioned = [i for i in train if i.caption.strip()]
+    hair = [i.id for i in captioned if HAIR_COLOUR.search(i.caption)]
+    if len(captioned) >= MIN_IMAGES and len(hair) * 2 > len(captioned):
+        warnings.append({"code": "hair_in_captions", "level": "warning", "items": hair})
     pairs: list[list[str]] = []
     hashed = [i for i in used if i.dhash]
     for a_index, a in enumerate(hashed):

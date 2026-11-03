@@ -6,6 +6,7 @@ import {
   EyeOff,
   Images,
   ImagePlus,
+  ScanFace,
   SquareUserRound,
   Trash2,
   TriangleAlert,
@@ -23,12 +24,13 @@ import type { MessageKey } from "@/lib/i18n";
 import {
   useAddDatasetImages,
   useBulkDataset,
+  useCheckDatasetFaces,
   useImages,
   usePersonas,
   useUpdateDatasetItem,
   useUploadDatasetImage,
 } from "@/lib/queries";
-import type { LoraDetail, LoraItem } from "@/lib/types";
+import type { DatasetFaces, LoraDetail, LoraItem } from "@/lib/types";
 
 const ACCEPT = ["image/png", "image/jpeg", "image/webp"];
 type Filter = "all" | "train" | "validation" | "excluded" | "warnings";
@@ -105,6 +107,18 @@ export function DatasetTab({ lora }: { lora: LoraDetail }) {
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [editing, setEditing] = useState<LoraItem | null>(null);
   const [picker, setPicker] = useState<"library" | "persona" | null>(null);
+  const checkFaces = useCheckDatasetFaces(lora.id);
+  const [faces, setFaces] = useState<DatasetFaces | null>(null);
+  const faceOf = useMemo(() => new Map((faces?.items ?? []).map((f) => [f.item_id, f])), [faces]);
+  const outliers = (faces?.items ?? []).filter((f) => f.outlier && lora.dataset.some((i) => i.id === f.item_id));
+  const noFace = (faces?.items ?? []).filter((f) => !f.face);
+  const runFaceCheck = async () => {
+    try {
+      setFaces(await checkFaces.mutateAsync());
+    } catch (e) {
+      toast.error(e instanceof ApiError ? e.message : t("errors.generic"));
+    }
+  };
 
   const flagged = useMemo(() => {
     const ids = new Set<string>();
@@ -206,6 +220,11 @@ export function DatasetTab({ lora }: { lora: LoraDetail }) {
         <Button icon={<SquareUserRound />} onClick={() => setPicker("persona")}>
           {t("ds.fromPersona")}
         </Button>
+        {lora.dataset.length > 1 ? (
+          <Button icon={<ScanFace />} onClick={runFaceCheck} loading={checkFaces.isPending}>
+            {t("ds.checkFaces")}
+          </Button>
+        ) : null}
         <span className="spacer" />
         <Segmented
           label={t("ds.filter")}
@@ -217,6 +236,21 @@ export function DatasetTab({ lora }: { lora: LoraDetail }) {
           }))}
         />
       </div>
+      {faces ? (
+        <Notice tone={outliers.length ? "warning" : "accent"}>
+          <div>
+            {outliers.length
+              ? t("ds.facesOutliers", { n: outliers.length })
+              : t("ds.facesAllSame", { n: faces.items.length - noFace.length })}
+          </div>
+          {noFace.length ? <div className="tiny" style={{ marginTop: 4 }}>{t("ds.facesNone", { n: noFace.length })}</div> : null}
+          {outliers.length ? (
+            <Button size="sm" style={{ marginTop: 8 }} onClick={() => setSelected(new Set(outliers.map((f) => f.item_id)))}>
+              {t("ds.facesSelect")}
+            </Button>
+          ) : null}
+        </Notice>
+      ) : null}
       {lora.dataset.length === 0 && !pending ? (
         <button type="button" className="dropzone" data-over={over || undefined} onClick={() => input.current?.click()} style={{ padding: 28 }}>
           <ImagePlus />
@@ -246,6 +280,15 @@ export function DatasetTab({ lora }: { lora: LoraDetail }) {
                 {item.excluded ? <Badge><EyeOff size={11} /></Badge> : null}
                 {item.crop ? <Badge><Crop size={11} /></Badge> : null}
                 {flagged.has(item.id) ? <Badge tone="warning"><TriangleAlert size={11} /></Badge> : null}
+                {faceOf.get(item.id)?.outlier ? (
+                  <Badge tone="danger" title={t("ds.faceScore", { n: Math.round((faceOf.get(item.id)?.score ?? 0) * 100) })}>
+                    <ScanFace size={11} /> {Math.round((faceOf.get(item.id)?.score ?? 0) * 100)} %
+                  </Badge>
+                ) : faceOf.has(item.id) && !faceOf.get(item.id)?.face ? (
+                  <Badge title={t("ds.noFace")}>
+                    <ScanFace size={11} /> —
+                  </Badge>
+                ) : null}
               </div>
               <div className="ds-meta">
                 <span className="tiny subtle">

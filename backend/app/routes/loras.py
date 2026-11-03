@@ -48,7 +48,7 @@ from app.models import (
     UserSecret,
 )
 from app.routes.secrets import hf_token
-from app.services import huggingface, personas, references, storage, uploads
+from app.services import faces, huggingface, personas, references, storage, uploads
 from app.services.generation import GenerationRejected
 from app.services.safety import mentions_minors
 from app.services.serializers import generation_json
@@ -637,6 +637,29 @@ async def bulk_items(
     return await _detail(db, lora)
 
 
+FACE_REFERENCES = 24
+
+
+@router.post("/{lora_id}/dataset/faces")
+async def dataset_faces(
+    lora_id: uuid.UUID, user: User = Depends(current_user), db: AsyncSession = Depends(get_db)
+):
+    """Is it the same face on every photo? For each photo in use: a face found or not, and
+    its median similarity to the other photos' faces (runs on this Mac)."""
+    lora = await _owned(db, user, lora_id)
+    items = [i for i in await _items(db, lora) if not i.excluded]
+    if not items:
+        raise api_error(409, "no_photos", "This LoRA has no photos to check.")
+    try:
+        result = await faces.consistency([storage.absolute(i.reference.file_path) for i in items])
+    except faces.FaceError as exc:
+        raise api_error(502, "face_model", exc.message) from exc
+    return {
+        "threshold": faces.MATCH_THRESHOLD,
+        "items": [{"item_id": str(i.id), **r} for i, r in zip(items, result, strict=True)],
+    }
+
+
 class CaptionBody(BaseModel):
     tier: Literal["low", "balanced", "high"] = "low"
     overwrite: bool = False
@@ -1040,6 +1063,47 @@ async def version_file(
     return FileResponse(
         storage.absolute(relative), media_type="application/octet-stream", filename=name
     )
+
+
+@router.get("/{lora_id}/versions/{version_id}/likeness")
+async def version_likeness(
+    lora_id: uuid.UUID,
+    version_id: uuid.UUID,
+    user: User = Depends(current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Face likeness of the validation images to the LoRA's photos, per step, and the best
+    step. Measured on this Mac and kept with the version until new images arrive."""
+    lora = await _owned(db, user, lora_id)
+    v = await _version(db, user, lora, version_id)
+    progress = dict(v.progress or {})
+    samples = [s for s in progress.get("samples", []) if s.get("step") is not None]
+    if not samples:
+        return {"reference_faces": 0, "steps": [], "best_step": None, "samples": 0}
+    cached = progress.get("likeness")
+    if cached and cached.get("samples") == len(samples):
+        return cached
+    refs = [
+        storage.absolute(i.reference.file_path)
+        for i in await _items(db, lora)
+        if not i.excluded and i.split == "train"
+    ][:FACE_REFERENCES]
+    if not refs:
+        raise api_error(409, "no_photos", "This LoRA has no photos to compare with.")
+    folder = storage.absolute(runner.version_dir(v)) / "samples"
+    try:
+        result = await faces.likeness([(int(s["step"]), folder / s["file"]) for s in samples], refs)
+    except faces.FaceError as exc:
+        raise api_error(502, "face_model", exc.message) from exc
+    result["samples"] = len(samples)
+    result["threshold"] = faces.MATCH_THRESHOLD
+    fresh = await db.get(LoraVersion, v.id, populate_existing=True)
+    if fresh is not None:
+        progress = dict(fresh.progress or {})
+        progress["likeness"] = result
+        fresh.progress = progress
+        await db.commit()
+    return result
 
 
 @router.get("/{lora_id}/versions/{version_id}/samples/{name}")
