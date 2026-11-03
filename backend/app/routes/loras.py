@@ -190,6 +190,18 @@ class LoraCreate(BaseModel):
     adult_confirmed: bool = False
 
 
+class LoraCopy(BaseModel):
+    """A new LoRA project with another LoRA's photos (and captions), e.g. on another base."""
+
+    name: str = Field(min_length=1, max_length=80)
+    trigger_word: str = Field(min_length=2, max_length=40)
+    class_word: str = Field(default="", max_length=40)
+    base_variant: Literal["raw", "turbo"] = "raw"
+    persona_id: uuid.UUID | None = None
+    captions: bool = True
+    adult_confirmed: bool = False
+
+
 class LoraPatch(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=80)
     class_word: str | None = Field(default=None, max_length=40)
@@ -199,6 +211,30 @@ class LoraPatch(BaseModel):
     persona_id: uuid.UUID | None = None
     preferred_version_id: uuid.UUID | None = None
     base_variant: Literal["raw", "turbo"] | None = None
+
+
+async def _check_new_lora(db: AsyncSession, user: User, body: LoraCreate | LoraCopy) -> str:
+    """Checks a new LoRA's confirmation, words, trigger and AI model; returns the trigger."""
+    if not body.adult_confirmed:
+        raise api_error(
+            400, "adult_confirmation_required", "Confirm that the character is a fictional adult."
+        )
+    trigger = body.trigger_word.strip()
+    if not TRIGGER_RE.match(trigger):
+        raise api_error(
+            400, "invalid_trigger", "Trigger word: one word of letters, digits, - or _ (2–40)."
+        )
+    _check_words(body.name, body.class_word, trigger)
+    exists = await db.scalar(
+        select(Lora.id).where(
+            Lora.user_id == user.id, func.lower(Lora.trigger_word) == trigger.lower()
+        )
+    )
+    if exists:
+        raise api_error(409, "trigger_taken", "Another LoRA already uses this trigger word.")
+    if body.persona_id and await personas.owned(db, user.id, body.persona_id) is None:
+        raise api_error(404, "not_found", "AI model not found.")
+    return trigger
 
 
 @router.get("")
@@ -258,25 +294,7 @@ async def list_loras(
 async def create_lora(
     body: LoraCreate, user: User = Depends(current_user), db: AsyncSession = Depends(get_db)
 ):
-    if not body.adult_confirmed:
-        raise api_error(
-            400, "adult_confirmation_required", "Confirm that the character is a fictional adult."
-        )
-    trigger = body.trigger_word.strip()
-    if not TRIGGER_RE.match(trigger):
-        raise api_error(
-            400, "invalid_trigger", "Trigger word: one word of letters, digits, - or _ (2–40)."
-        )
-    _check_words(body.name, body.class_word, trigger)
-    exists = await db.scalar(
-        select(Lora.id).where(
-            Lora.user_id == user.id, func.lower(Lora.trigger_word) == trigger.lower()
-        )
-    )
-    if exists:
-        raise api_error(409, "trigger_taken", "Another LoRA already uses this trigger word.")
-    if body.persona_id and await personas.owned(db, user.id, body.persona_id) is None:
-        raise api_error(404, "not_found", "AI model not found.")
+    trigger = await _check_new_lora(db, user, body)
     lora = Lora(
         user_id=user.id,
         name=body.name.strip(),
@@ -289,6 +307,57 @@ async def create_lora(
         tags=[],
     )
     db.add(lora)
+    await db.commit()
+    return await _detail(db, lora)
+
+
+@router.post("/{lora_id}/copy", status_code=201)
+async def copy_lora(
+    lora_id: uuid.UUID,
+    body: LoraCopy,
+    user: User = Depends(current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """New LoRA project with this one's dataset: the same photos (shared, not duplicated),
+    held-out and excluded marks, crops and, if asked, captions with the new trigger word.
+    Versions are not copied: the new project is trained on its own base model."""
+    source = await _owned(db, user, lora_id)
+    if source.architecture not in ARCHITECTURES:
+        raise api_error(409, "not_trainable", "This LoRA's model family cannot be trained here.")
+    items = await _items(db, source)
+    if not items:
+        raise api_error(409, "empty_dataset", "This LoRA has no photos to copy.")
+    trigger = await _check_new_lora(db, user, body)
+    lora = Lora(
+        user_id=user.id,
+        name=body.name.strip(),
+        trigger_word=trigger,
+        class_word=body.class_word.strip(),
+        architecture=source.architecture,
+        base_variant=body.base_variant,
+        persona_id=body.persona_id,
+        caption_template=source.caption_template,
+        tags=list(source.tags or []),
+    )
+    db.add(lora)
+    await db.flush()
+    old = re.compile(rf"(?<![\w]){re.escape(source.trigger_word)}(?![\w])", re.IGNORECASE)
+    for position, item in enumerate(items):
+        caption = old.sub(lambda _m: trigger, item.caption) if body.captions else ""
+        db.add(
+            LoraDatasetItem(
+                lora_id=lora.id,
+                user_id=user.id,
+                reference_image_id=item.reference_image_id,
+                caption=caption,
+                caption_source=item.caption_source if caption else "empty",
+                split=item.split,
+                excluded=item.excluded,
+                crop=dict(item.crop) if item.crop else None,
+                dhash=item.dhash,
+                position=position,
+            )
+        )
     await db.commit()
     return await _detail(db, lora)
 

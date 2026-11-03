@@ -1,13 +1,13 @@
 "use client";
 
-import { FileUp, Sparkles } from "lucide-react";
+import { Copy, FileUp, Sparkles } from "lucide-react";
 import { useRef, useState } from "react";
 import { toast } from "sonner";
 
 import { Button, Field, Modal, Notice, Segmented, Select, Switch } from "@/components/ui";
 import { ApiError, uploadInChunks } from "@/lib/api";
 import { useT } from "@/lib/i18n";
-import { useCreateLora, useImportLora, usePersonas } from "@/lib/queries";
+import { useCopyLora, useCreateLora, useImportLora, usePersonas } from "@/lib/queries";
 import type { LoraDetail } from "@/lib/types";
 
 const TRIGGER = /^[A-Za-z0-9][A-Za-z0-9_-]{1,39}$/;
@@ -147,6 +147,99 @@ export function CreateLoraModal({ onClose, onCreated }: { onClose: () => void; o
           />
         </Field>
         <Notice>{variant === "raw" ? t("ls.baseRawHint") : t("ls.baseTurboHint")}</Notice>
+        {error ? <div className="error-text">{error}</div> : null}
+      </div>
+    </Modal>
+  );
+}
+
+/** A new LoRA project with another one's photos (and captions), e.g. on RAW instead of Turbo. */
+export function CopyLoraModal({ source, onClose, onCreated }: { source: LoraDetail; onClose: () => void; onCreated: (l: LoraDetail) => void }) {
+  const t = useT();
+  const copy = useCopyLora(source.id);
+  // Name and trigger follow the chosen base model until the user edits them.
+  const suggest = (v: "raw" | "turbo") => {
+    const same = v === source.base_variant;
+    return {
+      name: `${source.name} ${same ? "2" : v === "raw" ? "RAW" : "Turbo"}`.slice(0, 80),
+      trigger: `${source.trigger_word}${same ? "2" : v}`.slice(0, 40),
+    };
+  };
+  const [variant, setVariant] = useState<"raw" | "turbo">("raw");
+  const [name, setName] = useState(() => suggest("raw").name);
+  const [trigger, setTrigger] = useState(() => suggest("raw").trigger);
+  const [classWord, setClassWord] = useState(source.class_word);
+  const [personaId, setPersonaId] = useState(source.persona_id ?? "");
+  const changeVariant = (v: "raw" | "turbo") => {
+    const before = suggest(variant);
+    const after = suggest(v);
+    if (name === before.name) setName(after.name);
+    if (trigger === before.trigger) setTrigger(after.trigger);
+    setVariant(v);
+  };
+  const [captions, setCaptions] = useState(true);
+  const [adult, setAdult] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const n = source.dataset.length;
+
+  const submit = async () => {
+    setError(null);
+    try {
+      const lora = await copy.mutateAsync({
+        name: name.trim(),
+        trigger_word: trigger,
+        class_word: classWord.trim(),
+        base_variant: variant,
+        persona_id: personaId || null,
+        captions,
+        adult_confirmed: adult,
+      });
+      toast.success(t("ls.copiedLora", { name: lora.name, n: lora.dataset.length }));
+      onCreated(lora);
+    } catch (e) {
+      setError(e instanceof ApiError ? e.message : t("errors.generic"));
+    }
+  };
+
+  return (
+    <Modal
+      open
+      wide
+      onClose={onClose}
+      icon={<Copy />}
+      title={t("ls.copyTitle")}
+      description={t("ls.copyBody", { n })}
+      footer={
+        <>
+          <Button variant="ghost" onClick={onClose}>{t("common.cancel")}</Button>
+          <Button variant="primary" onClick={submit} loading={copy.isPending} disabled={!n || !name.trim() || !TRIGGER.test(trigger) || !adult}>
+            {t("ls.copyStart", { n })}
+          </Button>
+        </>
+      }
+    >
+      <div className="col gap-16">
+        <Common {...{ name, setName, trigger, setTrigger, classWord, setClassWord, personaId, setPersonaId, adult, setAdult }} />
+        <Field label={t("ls.baseModel")}>
+          <Segmented
+            label={t("ls.baseModel")}
+            value={variant}
+            block
+            onChange={changeVariant}
+            options={[
+              { value: "raw", label: t("ls.baseRaw") },
+              { value: "turbo", label: t("ls.baseTurbo") },
+            ]}
+          />
+        </Field>
+        <Notice>{variant === "raw" ? t("ls.baseRawHint") : t("ls.baseTurboHint")}</Notice>
+        <label className="row" style={{ gap: 12, alignItems: "flex-start" }}>
+          <Switch checked={captions} onChange={setCaptions} label={t("ls.copyCaptions")} />
+          <div>
+            <div className="small">{t("ls.copyCaptions")}</div>
+            <div className="hint">{t("ls.copyCaptionsHint", { old: source.trigger_word })}</div>
+          </div>
+        </label>
         {error ? <div className="error-text">{error}</div> : null}
       </div>
     </Modal>

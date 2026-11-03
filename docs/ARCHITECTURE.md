@@ -70,7 +70,7 @@ Next.js 16 (127.0.0.1:3000) ── /api/* rewrite ──▶ FastAPI (127.0.0.1:8
 | `user_secrets` | other encrypted credentials (Hugging Face token) |
 | `comfy_connections` | ComfyUI servers: kind, URL, encrypted auth or agent token, inspection result, deployment state |
 | `comfy_workflows` | imported workflows (API format runs, UI format export only), bindings |
-| `loras` / `lora_dataset_items` / `lora_versions` | LoRA projects, dataset (links to reference images + caption, split, crop, dHash), training runs and imported files (config, ai-toolkit config, GPU, progress, artifacts, deployments) |
+| `loras` / `lora_dataset_items` / `lora_versions` | LoRA projects, dataset (links to reference images + caption, split, crop, dHash; a copied project links the same images, whose files go only when nothing links them), training runs and imported files (config, ai-toolkit config, GPU, progress, artifacts, deployments) |
 
 Images are files on disk; the database stores only relative paths. Every query filters by
 `user_id`.

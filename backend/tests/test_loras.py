@@ -210,6 +210,73 @@ async def test_project_rules_and_dataset_tools(user: Api):
     assert "very_low_res" in codes
 
 
+async def test_copy_lora_with_photos_and_captions(user: Api):
+    """A Turbo project copied to a new RAW project: the same photos, marks, crops and
+    captions with the new trigger word; nothing trained is copied; deleting the original
+    keeps the copy's photos."""
+    src = await create(user, name="Taila", trigger_word="tla", base_variant="turbo")
+    empty = await user.post(
+        f"/api/loras/{src['id']}/copy",
+        json={"name": "x", "trigger_word": "tlaraw", "adult_confirmed": True},
+    )
+    assert empty.status_code == 409 and empty.json()["error"]["code"] == "empty_dataset"
+    src = await upload_dataset(user, src["id"], 3)
+    first, second, third = src["dataset"]
+    await user.patch(
+        f"/api/loras/{src['id']}/dataset/{first['id']}",
+        json={
+            "caption": "tla woman, Tla smiling, red coat, park",
+            "crop": {"x": 0.1, "y": 0.1, "w": 0.8, "h": 0.6},
+        },
+    )
+    await user.patch(f"/api/loras/{src['id']}/dataset/{second['id']}", json={"split": "validation"})
+    await user.patch(f"/api/loras/{src['id']}/dataset/{third['id']}", json={"excluded": True})
+    body = {
+        "name": "Taila RAW",
+        "trigger_word": "tlaraw",
+        "class_word": "woman",
+        "base_variant": "raw",
+        "adult_confirmed": True,
+    }
+    url = f"/api/loras/{src['id']}/copy"
+    assert (await user.post(url, json={**body, "adult_confirmed": False})).status_code == 400
+    taken = await user.post(url, json={**body, "trigger_word": "TLA"})
+    assert taken.status_code == 409 and taken.json()["error"]["code"] == "trigger_taken"
+    assert (await user.post(url, json={**body, "class_word": "teen girl"})).status_code == 422
+    other = await make_user("Other")
+    try:
+        assert (await other.post(url, json=body)).status_code == 404
+    finally:
+        await other.client.aclose()
+
+    r = await user.post(url, json=body)
+    assert r.status_code == 201, r.text
+    copy = r.json()
+    assert copy["id"] != src["id"] and copy["name"] == "Taila RAW"
+    assert copy["base_variant"] == "raw" and copy["source"] == "trained"
+    assert copy["trigger_word"] == "tlaraw" and copy["versions"] == []
+    items = copy["dataset"]
+    assert [i["reference_id"] for i in items] == [i["reference_id"] for i in src["dataset"]]
+    assert items[0]["caption"] == "tlaraw woman, tlaraw smiling, red coat, park"
+    assert items[0]["caption_source"] == "manual" and items[0]["crop"]["w"] == 0.8
+    assert items[1]["split"] == "validation" and items[2]["excluded"]
+    # The original is unchanged.
+    again = (await user.get(f"/api/loras/{src['id']}")).json()
+    assert again["base_variant"] == "turbo"
+    assert again["dataset"][0]["caption"] == "tla woman, Tla smiling, red coat, park"
+
+    bare = await user.post(url, json={**body, "trigger_word": "tlab", "captions": False})
+    assert bare.status_code == 201
+    assert {i["caption"] for i in bare.json()["dataset"]} == {""}
+    assert {i["caption_source"] for i in bare.json()["dataset"]} == {"empty"}
+
+    # Deleting the original keeps the photos the copies use.
+    assert (await user.delete(f"/api/loras/{src['id']}")).status_code == 200
+    kept = (await user.get(f"/api/loras/{copy['id']}")).json()
+    assert len(kept["dataset"]) == 3
+    assert (await user.get(kept["dataset"][0]["url"])).status_code == 200
+
+
 async def test_ai_captions(user: Api):
     ai = FakeAI(reply="wearing a red coat in a park, soft daylight")
     set_adapter(

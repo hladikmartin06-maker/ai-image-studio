@@ -1,6 +1,6 @@
 "use client";
 
-import { ArrowLeft, Library, Sparkles, Trash2, Wand } from "lucide-react";
+import { ArrowLeft, Copy, Library, Sparkles, Trash2, Wand } from "lucide-react";
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
 import { useState } from "react";
@@ -8,6 +8,7 @@ import { toast } from "sonner";
 
 import { PageHeader } from "@/components/layout/page-header";
 import { CaptionsTab } from "@/components/lora/captions";
+import { CopyLoraModal } from "@/components/lora/create";
 import { TestPanel } from "@/components/lora/compare";
 import { DatasetTab } from "@/components/lora/dataset";
 import { RunsTab, VersionCard } from "@/components/lora/runs";
@@ -79,6 +80,7 @@ export default function LoraPage() {
   const remove = useDeleteLora();
   const [tab, setTab] = useState<Tab | null>(null);
   const [initial, setInitial] = useState<Partial<TrainingConfig> | null>(null);
+  const [copying, setCopying] = useState(false);
   const back = (
     <Link href="/loras" className="btn btn-ghost btn-sm" style={{ marginBottom: 12, marginLeft: -8 }}>
       <ArrowLeft /> LoRA
@@ -142,6 +144,9 @@ export default function LoraPage() {
         actions={
           <>
             <Button variant="ghost" icon={<Trash2 />} onClick={onDelete}>{t("common.delete")}</Button>
+            {trained && l.dataset.length ? (
+              <Button icon={<Copy />} onClick={() => setCopying(true)}>{t("ls.copyLora")}</Button>
+            ) : null}
             {l.preferred_version_id ? (
               <Link href={`/generate?lora=${l.preferred_version_id}`} className="btn btn-primary">
                 <Sparkles /> {t("pm.useInGenerate")}
@@ -196,6 +201,16 @@ export default function LoraPage() {
       ) : null}
       {current === "test" ? <TestPanel lora={l} /> : null}
       {current === "details" ? <Details lora={l} /> : null}
+      {copying ? (
+        <CopyLoraModal
+          source={l}
+          onClose={() => setCopying(false)}
+          onCreated={(created) => {
+            setCopying(false);
+            router.push(`/loras/${created.id}`);
+          }}
+        />
+      ) : null}
     </div>
   );
 }

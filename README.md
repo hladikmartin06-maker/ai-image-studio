@@ -93,7 +93,10 @@ Integrations and Settings.
   test images only at the end, base-model protection and memory saving can be switched off
   for faster runs; if the GPU runs out of memory, training starts again on the same GPU with
   memory saving on). **Continue training**: add photos and train a finished version further —
-  the training starts from that LoRA instead of from zero and makes a new version. **Add to
+  the training starts from that LoRA instead of from zero and makes a new version. **Copy to
+  a new LoRA** (top of a LoRA's page): a new LoRA with the same photos and captions (the
+  trigger word in them is replaced), e.g. to train a Turbo LoRA again on RAW so it works on
+  both. **Add to
   LoRA** (on every result in Generate, in the image viewer and in the library selection)
   copies your best generated images into a LoRA's photos. **Generate new photos with Krea 2**
   (LoRA › Photos): a list of prompts (or the examples) runs on your Krea 2 GPU with the LoRA,

@@ -998,6 +998,14 @@ export function useCreateLora() {
   });
 }
 
+export function useCopyLora(loraId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: Record<string, unknown>) => api<LoraDetail>(`/api/loras/${loraId}/copy`, { body }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: loraKeys.all }),
+  });
+}
+
 export function useImportLora() {
   const qc = useQueryClient();
   return useMutation({

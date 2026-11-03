@@ -84,7 +84,10 @@ repositories.
   = train again on the same GPU with more memory saving (`runner.memory_fallback`, at most
   twice), never a new GPU. A finished version
   can be continued (`continue_from`: its file → `network.pretrained_lora_path`, same
-  rank/alpha, all current photos, a new version).
+  rank/alpha, all current photos, a new version). "Copy to a new LoRA"
+  (`POST /api/loras/{id}/copy`): a new project with its own trigger word and base model, the
+  same photos (shared files), marks, crops and optionally captions with the trigger replaced;
+  no versions are copied (the base model of a trained project stays fixed).
 - Three separate integration families, never mixed: image providers (`providers/`,
   `integrations`), AI chat providers (`ai/`, `ai_integrations`) and GPU compute
   (`gpu/`, `gpu_integrations`). A new chat or GPU provider = one registry entry + adapter.
