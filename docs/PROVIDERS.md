@@ -641,12 +641,14 @@ finished phrases are kept (up to the last comma or full stop), or the image gets
 - **What the numbers mean** (measured 2026-11-03 with these models on the example photos of
   github.com/ageitgey/face_recognition): two different photos of one real person 0.69–0.74
   (Obama 0.744, Rose Leslie 0.700, Kit Harington 0.692), different people −0.12…0.26, a
-  downscaled copy of the same photo 0.95. So a perfect LoRA does not reach 0.9: the run's
-  likeness is also shown against the photos' own **baseline** (each photo's median similarity
-  to the others, median over the photos): 100 % = as alike as her own photos are.
+  downscaled copy of the same photo 0.95 — so a raw score of 0.9 is not reachable with
+  different photos. Next to the run's scores the studio shows the photos' own **baseline**,
+  measured the same way (each photo's median similarity to the others, median over the
+  photos), as a reference only; the scores are never scaled or converted (the owner's rule,
+  2026-11-03: no derived ratings).
 - Faces narrower than 64 px (e.g. full-body shots; messi5.jpg's 30 px face) are not compared:
   SFace aligns every face to 112 px and such a score is unreliable. "Check faces" also reports
-  each face's width as a share of the photo (close-up ≈ 0.2 or more) and counts close-ups.
+  each face's width as a share of the photo and counts the photos where it is at least 0.2.
 
 # Spending this month
 

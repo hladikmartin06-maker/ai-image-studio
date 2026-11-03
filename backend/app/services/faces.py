@@ -205,9 +205,9 @@ def _feature_of(engine: Any, path: Path) -> Any | None:
 
 
 def _baseline(refs: list[Any]) -> float | None:
-    """How alike the photos' faces are to each other: the median over the photos of each
-    photo's median similarity to the others. Different photos of one real person score
-    about 0.7 with SFace; a LoRA that matches her as well as her own photos do scores this."""
+    """How alike the photos' faces are to each other, measured the same way as the
+    validation images: the median over the photos of each photo's median similarity to the
+    others. Shown next to the run's scores as a measured reference, not converted into one."""
     if len(refs) < 2:
         return None
     per_photo = [
@@ -266,13 +266,6 @@ async def likeness(samples: list[tuple[int, Path]], references: list[Path]) -> d
             for step in sorted(counts)
         ]
         baseline = _baseline(refs)
-        for row in rows:
-            # 100 % = as alike as her own photos are to each other.
-            row["relative"] = (
-                round(min(1.0, row["score"] / baseline), 3)
-                if row["score"] is not None and baseline and baseline > 0
-                else None
-            )
         scored = [r for r in rows if r["score"] is not None]
         best = max(scored, key=lambda r: (r["score"], -r["step"]))["step"] if scored else None
         return {

@@ -364,9 +364,9 @@ async def test_likeness_per_step_and_dataset_faces(user: Api, monkeypatch):
     by_step = {x["step"]: x for x in body["steps"]}
     assert by_step[500]["faces"] == 2 and by_step[500]["score"] > 0.9
     assert by_step[250]["score"] < faces.MATCH_THRESHOLD
-    # Measured against how alike her own photos are to each other (100 % = as alike).
-    assert body["baseline"] > 0.9 and by_step[500]["relative"] > 0.95
-    assert by_step[250]["relative"] < 0.5
+    # How alike her own photos are to each other: a measured reference, shown as it is;
+    # the steps' scores are never scaled by it.
+    assert body["baseline"] > 0.9 and "relative" not in by_step[500]
     # Kept with the version; another user sees nothing.
     version = next(
         x

@@ -79,21 +79,19 @@ function SamplesAndLikeness({
   const data = likeness.data;
   const threshold = data?.threshold ?? 0.363;
   const pct = (v: number) => Math.round(v * 100);
+  // Only measured values: the face similarity per step, and her own photos' similarity to
+  // each other as a reference next to it.
   const scoreOf = new Map((data?.steps ?? []).map((r) => [r.step, r.score]));
-  // Shown against her own photos (100 % = as alike as they are to each other); the raw
-  // similarity only when that mark is unknown.
-  const shownOf = new Map((data?.steps ?? []).map((r) => [r.step, r.relative ?? r.score]));
   const baseline = data?.baseline ?? null;
   const best = data?.best_step ?? null;
   const bestScore = best !== null ? (scoreOf.get(best) ?? null) : null;
-  const bestShown = best !== null ? (shownOf.get(best) ?? null) : null;
   const steps = [...new Set(version.samples.filter((s) => s.step !== null).map((s) => s.step as number))].sort((a, b) => b - a);
   const older = steps.filter((step) => step !== latest.step);
   const finished = !isActive(version.status);
   const hasCheckpoint = best !== null && version.checkpoints.some((c) => c.step === best);
   const label = (step: number) => {
-    const shown = shownOf.get(step);
-    return `${t("ls.likenessStep", { step })}${shown != null ? ` · ${pct(shown)} %` : ""}`;
+    const score = scoreOf.get(step);
+    return `${t("ls.likenessStep", { step })}${score != null ? ` · ${pct(score)} %` : ""}`;
   };
   const strip = (items: LoraVersion["samples"]) => (
     <div className="sample-strip">
@@ -122,7 +120,7 @@ function SamplesAndLikeness({
           <Notice tone="warning">{t("ls.likenessWeak", { pct: pct(threshold) })}</Notice>
         ) : (
           <div className="row wrap small" style={{ gap: 8, alignItems: "center" }}>
-            <span>{t("ls.likenessBest", { step: best!, pct: pct(bestShown ?? bestScore) })}</span>
+            <span>{t("ls.likenessBest", { step: best!, pct: pct(bestScore) })}</span>
             {finished && best !== latest.step ? (
               hasCheckpoint ? (
                 <Button size="sm" icon={<Star />} onClick={() => onSaveStep(best!)}>
@@ -138,7 +136,7 @@ function SamplesAndLikeness({
       {data && data.steps.some((r) => r.score !== null) ? (
         <div className="tiny subtle">
           {baseline !== null
-            ? t("ls.likenessHintRelative", { base: pct(baseline), pct: pct(threshold) })
+            ? t("ls.likenessHintBaseline", { base: pct(baseline), pct: pct(threshold) })
             : t("ls.likenessHint", { pct: pct(threshold) })}
         </div>
       ) : likeness.isFetching ? (

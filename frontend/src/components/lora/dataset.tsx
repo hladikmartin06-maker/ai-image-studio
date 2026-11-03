@@ -250,7 +250,6 @@ export function DatasetTab({ lora }: { lora: LoraDetail }) {
           {sized ? (
             <div className="tiny" style={{ marginTop: 4 }}>
               {t("ds.facesCloseUps", { n: closeUps, total: faces.items.length })}
-              {closeUps < 10 ? ` ${t("ds.facesCloseUpsTip")}` : ""}
             </div>
           ) : null}
           {outliers.length ? (
