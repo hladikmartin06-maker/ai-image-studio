@@ -37,6 +37,8 @@ STATUSES = ("queued", "processing", "completed", "failed", "cancelled")
 class RegenerateBody(BaseModel):
     count: int | None = Field(default=None, ge=1, le=MAX_IMAGES_PER_GENERATION)
     client_request_id: str | None = Field(default=None, max_length=64)
+    # The price the user confirmed for this repeat (spending overview).
+    price_estimate: float | None = Field(default=None, ge=0, le=100_000)
 
 
 def _rejected(exc: GenerationRejected):
@@ -174,6 +176,7 @@ async def _repeat_request(
         reference_image_ids=[uuid.UUID(r) for r in source.reference_image_ids],
         client_request_id=body.client_request_id,
         source_generation_id=source.id,
+        price_estimate=body.price_estimate,
         # Runs from before the switch existed: an explicit prompt on Wan was 18+ already.
         adult=bool(
             (source.settings or {}).get("adult")

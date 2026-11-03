@@ -14,6 +14,7 @@ import {
 import { type DragEvent, useRef, useState } from "react";
 import { toast } from "sonner";
 
+import { SnippetPicker } from "@/components/generate/snippets";
 import { copyText } from "@/components/images/actions";
 import {
   Badge,
@@ -135,11 +136,16 @@ export function PromptEditor({
   onChange,
   max,
   onSubmit,
+  personaId,
+  personaName,
 }: {
   value: string;
   onChange: (v: string) => void;
   max: number;
   onSubmit: () => void;
+  // The chosen AI model: its own snippets are offered too.
+  personaId?: string | null;
+  personaName?: string | null;
 }) {
   const { t, locale } = useI18n();
   const [historyOpen, setHistoryOpen] = useState(false);
@@ -170,6 +176,12 @@ export function PromptEditor({
           {value.length.toLocaleString(locale)} / {max.toLocaleString(locale)}
         </span>
         <span className="spacer" />
+        <SnippetPicker
+          prompt={value}
+          personaId={personaId}
+          personaName={personaName}
+          onInsert={(text) => onChange(value.trim() ? `${value.trim().replace(/[,\s]+$/, "")}, ${text}` : text)}
+        />
         <Popover
           align="end"
           width={360}

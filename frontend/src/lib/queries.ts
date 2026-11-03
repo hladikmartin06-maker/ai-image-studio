@@ -29,6 +29,8 @@ import type {
   GpuWorkload,
   IntegrationList,
   PriceList,
+  PromptSnippet,
+  Spending,
   ComfyCatalog,
   ComfyConnection,
   ComfyWorkflow,
@@ -185,6 +187,15 @@ export function useStats() {
     queryKey: keys.stats,
     queryFn: () => api<Stats>(`/api/stats${query({ tz })}`),
     staleTime: 15_000,
+  });
+}
+
+export function useSpending() {
+  const tz = typeof Intl !== "undefined" ? Intl.DateTimeFormat().resolvedOptions().timeZone : "UTC";
+  return useQuery({
+    queryKey: ["stats", "spending"],
+    queryFn: () => api<Spending>(`/api/stats/spending${query({ tz })}`),
+    staleTime: 60_000,
   });
 }
 
@@ -392,6 +403,8 @@ export interface CreateGenerationBody {
   client_request_id: string;
   // "18+ content" on Wan 2.7 / Wan 2.7 Pro.
   adult?: boolean;
+  // The price the user confirmed (USD), for the spending overview.
+  price_estimate?: number | null;
   persona?: {
     id: string;
     reference_image_ids: string[];
@@ -453,9 +466,9 @@ export function useCreateGeneration() {
 export function useRegenerate() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: ({ id, count }: { id: string; count?: number }) =>
+    mutationFn: ({ id, count, price }: { id: string; count?: number; price?: number | null }) =>
       api<Generation>(`/api/generations/${id}/regenerate`, {
-        body: { count, client_request_id: crypto.randomUUID() },
+        body: { count, client_request_id: crypto.randomUUID(), price_estimate: price ?? null },
       }),
     onSuccess: (gen) => {
       upsertGeneration(qc, gen);
@@ -1186,5 +1199,44 @@ export function useRefreshHfStatus() {
   return useMutation({
     mutationFn: () => api<HfStatus>("/api/secrets/huggingface/status?refresh=true"),
     onSuccess: (data) => qc.setQueryData(["hf-status"], data),
+  });
+}
+
+// --- prompt snippets -----------------------------------------------------------------------
+
+export function useSnippets(enabled = true) {
+  return useQuery({
+    queryKey: ["snippets"],
+    queryFn: () => api<{ items: PromptSnippet[] }>("/api/snippets"),
+    enabled,
+    staleTime: 60_000,
+  });
+}
+
+export function useCreateSnippet() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: { name: string; text: string; persona_id: string | null }) =>
+      api<PromptSnippet>("/api/snippets", { body }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["snippets"] }),
+  });
+}
+
+export function useDeleteSnippet() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => api(`/api/snippets/${id}`, { method: "DELETE" }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["snippets"] }),
+  });
+}
+
+/** LoRA › Photos: the runs of the dataset generator, followed while they run. */
+export function useLoraGenerated(loraId: string, enabled: boolean) {
+  return useQuery({
+    queryKey: ["loras", "generated", loraId],
+    queryFn: () => api<{ items: Generation[] }>(`/api/loras/${loraId}/dataset/generated`),
+    enabled,
+    refetchInterval: (q) =>
+      q.state.data?.items.some((g) => g.status === "queued" || g.status === "processing") ? 4000 : false,
   });
 }

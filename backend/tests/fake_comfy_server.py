@@ -11,6 +11,7 @@ start it as "ComfyUI" in tests:
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -348,8 +349,10 @@ class FakeComfy:
             )
         if method == "GET" and path == "/view":
             name = (query.get("filename") or [""])[0]
-            shade = sum(name.encode()) % 200
-            return 200, "image/png", png(96, 128, (40 + shade // 4, 60, 120 + shade // 4))
+            # A colour of its own for every file name, so two results are never the same file
+            # (the studio stores identical files once).
+            r, g, b = hashlib.sha256(name.encode()).digest()[:3]
+            return 200, "image/png", png(96, 128, (r, g, b))
         if method == "POST" and path == "/interrupt":
             data = json.loads(body or b"{}")
             pid = data.get("prompt_id")

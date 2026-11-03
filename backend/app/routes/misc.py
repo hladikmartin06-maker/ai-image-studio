@@ -65,6 +65,18 @@ def _zone(tz: str | None) -> ZoneInfo:
         return ZoneInfo("UTC")
 
 
+@router.get("/stats/spending")
+async def spending(
+    tz: str | None = Query(default=None, max_length=64),
+    user: User = Depends(current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """This month's costs, only from prices and reports the providers gave (estimates)."""
+    from app.services import spending as spending_service
+
+    return await spending_service.summary(db, user.id, _zone(tz))
+
+
 @router.get("/stats")
 async def stats(
     tz: str | None = Query(default=None, max_length=64),

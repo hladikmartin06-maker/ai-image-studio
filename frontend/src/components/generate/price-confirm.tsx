@@ -57,13 +57,16 @@ function PriceSummary({ estimate }: { estimate: PriceEstimate }) {
 export function usePriceConfirm() {
   const { t } = useI18n();
   const confirm = useConfirm();
+  // false = cancelled; otherwise the confirmed total (null when no price was known).
   const ask = useCallback(
-    async (estimate: PriceEstimate) =>
-      confirm({
+    async (estimate: PriceEstimate): Promise<false | { price: number | null }> => {
+      const ok = await confirm({
         title: t("price.title"),
         description: <PriceSummary estimate={estimate} />,
         confirmLabel: t("price.start"),
-      }),
+      });
+      return ok ? { price: estimate.total } : false;
+    },
     [confirm, t],
   );
   /** A new request (the same body as POST /api/generations). */

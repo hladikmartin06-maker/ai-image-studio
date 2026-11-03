@@ -193,6 +193,46 @@ def is_video(mime_type: str | None) -> bool:
     return bool(mime_type and mime_type.startswith("video/"))
 
 
+# --- export for social media -----------------------------------------------------------------
+
+# Format -> (width, height) of the exported picture; "original" keeps the shape.
+SOCIAL_FORMATS: dict[str, tuple[int, int] | None] = {
+    "story": (1080, 1920),  # 9:16 — Stories, Reels, TikTok
+    "portrait": (1080, 1350),  # 4:5 — feed portrait
+    "square": (1080, 1080),  # 1:1
+    "original": None,
+}
+
+
+def social_export(data: bytes, fmt: str, watermark: str = "") -> bytes:
+    """A JPEG for posting: cropped from the centre to the format and scaled, without any
+    metadata (EXIF, generation data), with an optional text watermark at the bottom right."""
+    from PIL import ImageDraw, ImageFont
+
+    with PILImage.open(io.BytesIO(data)) as source:
+        img = ImageOps.exif_transpose(source).convert("RGB")
+    target = SOCIAL_FORMATS[fmt]
+    if target is not None:
+        img = ImageOps.fit(img, target, method=PILImage.Resampling.LANCZOS)
+    elif max(img.size) > 4096:
+        img.thumbnail((4096, 4096), PILImage.Resampling.LANCZOS)
+    text = watermark.strip()
+    if text:
+        draw = ImageDraw.Draw(img)
+        size = max(14, img.width // 36)
+        font = ImageFont.load_default(size=size)
+        box = draw.textbbox((0, 0), text, font=font)
+        margin = size
+        x = img.width - (box[2] - box[0]) - margin
+        y = img.height - (box[3] - box[1]) - margin * 1.4
+        draw.text((x + 2, y + 2), text, font=font, fill=(0, 0, 0))
+        draw.text((x, y), text, font=font, fill=(255, 255, 255))
+    out = io.BytesIO()
+    # A new file: no EXIF, no XMP, no PNG text chunks of the original.
+    img.save(out, format="JPEG", quality=92, optimize=True)
+    return out.getvalue()
+
+
 def fit_for_reference(data: bytes, max_bytes: int, max_edge: int) -> bytes:
     """Keeps an image as it is when it fits the reference limits; otherwise re-encodes it
     as a high-quality JPEG, scaled down only as far as needed."""

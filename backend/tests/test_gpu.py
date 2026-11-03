@@ -17,7 +17,7 @@ from app.gpu.modal_provider import ModalProvider
 from app.gpu.registry import set_gpu_adapter
 from app.gpu.runpod import RunPodProvider
 from app.models import GPUIntegration, GPUWorkload
-from tests.conftest import Api, make_user
+from tests.conftest import Api, make_user, wait_done
 
 RUNPOD_KEY = "rp_test_key_123456"
 
@@ -234,8 +234,15 @@ class FakeModalSDK:
         # The workspace's rates (`billing.rates()`); None = they cannot be read.
         self.rates_value: dict[str, str] | None = None
         self.rate_reads = 0
+        # Billing report: the workspace's cost this month (test value).
+        self.billed = 3.21
+        self.report_starts: list = []
         # How many creates fail first like Modal does when it has no free GPU of the type.
         self.no_capacity = 0
+
+    async def report(self, client, start):
+        self.report_starts.append(start)
+        return self.billed
 
     async def rates(self, client):
         self.rate_reads += 1
@@ -549,3 +556,40 @@ async def test_runpod_catalog_shows_only_free_gpus(user: Api, runpod: FakeRunPod
     training = (await user.get("/api/gpu/runpod/gpu-types?purpose=training")).json()["items"]
     l4t = next(g for g in training if g["id"] == "NVIDIA L4")
     assert l4t["stock_community"] == "NONE"
+
+
+async def test_spending_this_month(user: Api, modal_sdk: FakeModalSDK, fake):
+    """Hosted runs: the prices confirmed before them; GPUs: hours x the hourly price they
+    started at, and Modal's own billing report."""
+    from tests.fakes import VALID_KEY
+
+    for provider in ("wavespeed", "atlas"):
+        await user.put(f"/api/integrations/{provider}", json={"api_key": VALID_KEY})
+    body = {"model": "wan-2.7", "provider": "wavespeed", "prompt": "a cat"}
+    for extra in ({"price_estimate": 0.08}, {}, {"provider": "atlas"}):
+        r = await user.post("/api/generations", json={**body, **extra})
+        assert (await wait_done(user, r.json()["id"]))["status"] == "completed"
+    modal_sdk.rates_value = MODAL_RATES
+    await user.put(
+        "/api/gpu/providers/modal",
+        json={"token_id": "ak-123456", "token_secret": "as-secret-123456"},
+    )
+    created = await user.post(
+        "/api/gpu/modal/workloads",
+        json={"name": "x", "image": "img", "gpu_type": "L40S", "confirm_billing": True},
+    )
+    assert created.status_code == 201
+    s = (await user.get("/api/stats/spending", params={"tz": "Europe/Bratislava"})).json()
+    ws = next(h for h in s["hosted"] if h["provider"] == "wavespeed")
+    atlas = next(h for h in s["hosted"] if h["provider"] == "atlas")
+    assert (ws["runs"], ws["priced_runs"], ws["estimate"]) == (2, 1, 0.08)
+    assert atlas["runs"] == 1 and atlas["estimate"] is None
+    assert ws["supported"] and not atlas["supported"]
+    modal = next(g for g in s["gpu"] if g["provider"] == "modal")
+    assert modal["connected"] and modal["billed"] == 3.21 and modal["unpriced_hours"] == 0
+    assert modal["gpu_hours"] >= 0
+    # Modal's report starts at the beginning of this month (Bratislava time).
+    assert modal_sdk.report_starts[-1].isoformat() == s["since"]
+    assert s["total"] == round(
+        0.08 + 3.21 + next(g["estimate"] for g in s["gpu"] if g["provider"] == "runpod"), 4
+    )

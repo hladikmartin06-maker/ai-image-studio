@@ -163,6 +163,9 @@ class Generation(Base):
     lora_version_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("lora_versions.id", ondelete="SET NULL"), index=True
     )
+    # Hosted runs: the price the user confirmed before it started (USD, the provider's own
+    # estimate), for the spending overview; None when no price was known.
+    cost_estimate: Mapped[float | None] = mapped_column(Float, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
@@ -670,6 +673,31 @@ class LoraVersion(Base):
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     gpu_started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     gpu_stopped_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow
+    )
+
+
+# --- Prompt snippets ----------------------------------------------------------------------------
+
+
+class PromptSnippet(Base):
+    """A saved piece of prompt text (lighting, outfit, place, …) inserted with one click; for
+    every AI model, or only for one."""
+
+    __tablename__ = "prompt_snippets"
+    __table_args__ = (Index("ix_prompt_snippets_user_name", "user_id", "name"),)
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_id)
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), index=True
+    )
+    persona_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("personas.id", ondelete="CASCADE"), index=True
+    )
+    name: Mapped[str] = mapped_column(String(80))
+    text: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow, onupdate=utcnow
     )

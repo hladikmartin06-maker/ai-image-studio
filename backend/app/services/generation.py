@@ -54,6 +54,9 @@ class GenerationRequest(BaseModel):
     client_request_id: str | None = Field(default=None, max_length=64)
     source_generation_id: uuid.UUID | None = None
     persona: PersonaUse | None = None
+    # The price the user confirmed (USD, the provider's estimate shown before the run), kept
+    # for the spending overview; None when no price was known.
+    price_estimate: float | None = Field(default=None, ge=0, le=100_000)
     # "18+ content" (adults only) on the models that allow it (Wan 2.7, Wan 2.7 Pro): off =
     # explicit prompts are refused there too; on = the images are marked 18+.
     adult: bool = False
@@ -190,6 +193,7 @@ async def create_generation(
         persona_id=persona.id if persona is not None else (replay.persona_id if replay else None),
         persona_meta=persona_meta,
         final_prompt=final_prompt,
+        cost_estimate=req.price_estimate,
         tasks=[ProviderTask(index=i, images_requested=n) for i, n in enumerate(plan)],
     )
     db.add(gen)

@@ -637,3 +637,62 @@ def test_mp4_size_and_expected_size():
     assert storage.mp4_size(b"\0\0\0\x08moov") is None
     assert storage.expected_size({"resolution": "1080p", "aspect_ratio": "9:16"}) == (1080, 1920)
     assert storage.expected_size({"resolution": "480p", "aspect_ratio": "16:9"}) == (854, 480)
+
+
+async def test_animate_uses_a_generated_image_as_first_frame(connected: Api, fake):
+    r = await connected.post(
+        "/api/generations", json={"model": "wan-2.7", "provider": "wavespeed", "prompt": "a cat"}
+    )
+    image = (await wait_done(connected, r.json()["id"]))["images"][0]
+    ref = await connected.post("/api/reference-images/from-image", json={"image_id": image["id"]})
+    assert ref.status_code == 201, ref.text
+    video = await connected.post(
+        "/api/generations",
+        json={
+            "model": "wan-3.0",
+            "provider": "wavespeed",
+            "prompt": "the cat yawns",
+            "reference_image_ids": [ref.json()["id"]],
+        },
+    )
+    assert (await wait_done(connected, video.json()["id"]))["mode"] == "image-to-video"
+    other = await make_user("animate-other")
+    assert (
+        await other.post("/api/reference-images/from-image", json={"image_id": image["id"]})
+    ).status_code == 404
+    await other.client.aclose()
+
+
+async def test_export_for_social_media(connected: Api, fake):
+    """Cropped to the format, re-encoded without metadata, optional watermark; no videos."""
+    import io
+    import zipfile
+
+    from PIL import Image as PILImage
+
+    r = await connected.post(
+        "/api/generations",
+        json={"model": "wan-2.7", "provider": "wavespeed", "prompt": "a cat", "count": 2},
+    )
+    ids = [i["id"] for i in (await wait_done(connected, r.json()["id"]))["images"]]
+    out = await connected.get(
+        "/api/images/export",
+        params={"ids": ",".join(ids), "format": "story", "watermark": "@lena"},
+    )
+    assert out.status_code == 200 and out.headers["content-type"] == "application/zip"
+    with zipfile.ZipFile(io.BytesIO(out.content)) as zf:
+        names = zf.namelist()
+        assert len(names) == 2 and all(n.endswith("-story.jpg") for n in names)
+        with PILImage.open(io.BytesIO(zf.read(names[0]))) as img:
+            assert img.size == (1080, 1920) and img.format == "JPEG"
+            assert not img.getexif() and "exif" not in img.info
+    square = await connected.get("/api/images/export", params={"ids": ids[0], "format": "square"})
+    with zipfile.ZipFile(io.BytesIO(square.content)) as zf:
+        first = zf.read(zf.namelist()[0])
+    with PILImage.open(io.BytesIO(first)) as img:
+        assert img.size == (1080, 1080)
+    bad = await connected.get("/api/images/export", params={"ids": ids[0], "format": "tall"})
+    assert bad.status_code == 422
+    other = await make_user("export-other")
+    assert (await other.get("/api/images/export", params={"ids": ids[0]})).status_code == 404
+    await other.client.aclose()

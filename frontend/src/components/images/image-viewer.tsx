@@ -5,6 +5,7 @@ import {
   ChevronRight,
   Copy,
   Download,
+  Film,
   LibraryBig,
   RefreshCw,
   SlidersHorizontal,
@@ -17,6 +18,8 @@ import { useEffect, useState } from "react";
 import { createPortal } from "react-dom";
 
 import { useImageActions } from "@/components/images/actions";
+import { ExportSocial } from "@/components/images/export-social";
+import { FaceMatch } from "@/components/images/face-match";
 import { AddToLora } from "@/components/lora/add-to-lora";
 import { AddToPersona } from "@/components/personas/shared";
 import { Badge, Button, IconButton, Notice, Segmented } from "@/components/ui";
@@ -179,9 +182,14 @@ export function ImageViewer({
               {t("images.regenerate")}
             </Button>
             {isVideo(image) ? null : (
-              <Button size="sm" icon={<Sparkles />} onClick={() => actions.enhanceImage(image)}>
-                {t("images.enhance")}
-              </Button>
+              <>
+                <Button size="sm" icon={<Film />} onClick={() => void actions.animateImage(image)}>
+                  {t("images.animate")}
+                </Button>
+                <Button size="sm" icon={<Sparkles />} onClick={() => actions.enhanceImage(image)}>
+                  {t("images.enhance")}
+                </Button>
+              </>
             )}
             {!image.in_library ? (
               <Button size="sm" icon={<LibraryBig />} onClick={() => actions.saveToLibrary(image)}>
@@ -190,12 +198,26 @@ export function ImageViewer({
             ) : null}
             {isVideo(image) ? null : (
               <>
+                <ExportSocial imageIds={[image.id]} />
                 <AddToPersona imageIds={[image.id]} />
                 <AddToLora imageIds={[image.id]} />
               </>
             )}
           </div>
         </div>
+        {!isVideo(image) && (image.persona_id || image.comfy?.lora?.lora_id) ? (
+          <div className="viewer-side-section">
+            <div className="eyebrow" style={{ marginBottom: 10 }}>
+              {t("fm.title")}
+            </div>
+            <FaceMatch
+              key={image.id}
+              imageId={image.id}
+              target={image.persona_id ? { persona_id: image.persona_id } : { lora_id: image.comfy?.lora?.lora_id ?? "" }}
+              name={image.persona_id ? (image.persona_name ?? "") : (image.comfy?.lora?.name ?? "LoRA")}
+            />
+          </div>
+        ) : null}
         {input ? (
           <div className="viewer-side-section">
             <div className="eyebrow" style={{ marginBottom: 10 }}>

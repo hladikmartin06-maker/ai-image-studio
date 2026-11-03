@@ -87,6 +87,9 @@ class ComfyGenerateBody(BaseModel):
     test_group: str | None = Field(default=None, max_length=64)
     test_label: str | None = Field(default=None, max_length=80)
     test_lora_id: uuid.UUID | None = None
+    # LoRA dataset generator: groups runs made to collect new photos for this LoRA.
+    dataset_lora_id: uuid.UUID | None = None
+    batch_group: str | None = Field(default=None, max_length=64)
     test_prompt: str | None = Field(default=None, max_length=4000)
     source_generation_id: uuid.UUID | None = None
 
@@ -377,6 +380,8 @@ async def create_comfy_generation(
             "test_group": body.test_group,
             "test_label": body.test_label,
             "test_lora_id": str(body.test_lora_id) if body.test_lora_id else None,
+            "dataset_lora_id": str(body.dataset_lora_id) if body.dataset_lora_id else None,
+            "batch_group": body.batch_group,
             "test_prompt": body.test_prompt,
             # Image to image: the photo, uploaded to ComfyUI before each run (runner).
             **({"input": source} if source else {}),

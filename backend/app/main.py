@@ -15,6 +15,7 @@ from app.routes import (
     ai,
     auth,
     comfy,
+    faces,
     generations,
     gpu,
     images,
@@ -25,6 +26,7 @@ from app.routes import (
     personas,
     references,
     secrets,
+    snippets,
     uploads,
 )
 from app.security import SecretKeyMissing
@@ -103,5 +105,7 @@ for module in (
     comfy,
     loras,
     jobs,
+    snippets,
+    faces,
 ):
     app.include_router(module.router)

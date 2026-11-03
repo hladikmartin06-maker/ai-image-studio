@@ -577,3 +577,28 @@ downscaled to 1024 px JPEG in the provider's own image format (Anthropic image b
 `image_url` data URLs, Gemini `inline_data`) — the same code path as AI captions in LoRA
 training — and only with the message they belong to; later turns replay a short note instead
 of the image. Models without vision answer with the provider's error.
+
+# Face match (on this Mac)
+
+`backend/app/services/faces.py`, verified 2026-11-02:
+- Detector: `face_detection_yunet_2023mar.onnx` (232,589 bytes, SHA-256
+  8f2383e4…2552fa4, MIT) — huggingface.co/opencv/face_detection_yunet at commit 3cc26e7f.
+- Recognizer: `face_recognition_sface_2021dec.onnx` (38,696,353 bytes, SHA-256
+  0ba9fbfa…7c34e79, Apache-2.0) — huggingface.co/opencv/face_recognition_sface at commit
+  3d708243.
+- Second source: media.githubusercontent.com/media/opencv/opencv_zoo/main/models/… (same
+  files; the sandbox downloaded both from there and the hashes matched Hugging Face's LFS ids).
+- OpenCV's `FaceDetectorYN` and `FaceRecognizerSF` (opencv-python-headless; 5.0.0.93 tested)
+  as in the zoo's demo: the largest face, `alignCrop`, `feature`; the score is the cosine
+  similarity, 0.363 or more = the same person (the zoo's `sface.py`). Checked here with real
+  photos: the same face 0.91–0.96, a different person 0.13.
+
+# Spending this month
+
+`backend/app/services/spending.py`: only numbers the providers gave. Hosted runs: the price the
+user confirmed before the run (`Generation.cost_estimate`, WaveSpeed's own estimate; Atlas has
+none, so its runs are only counted). GPUs: hours of the workloads the studio started × the
+hourly price they started at (`GPUWorkload.meta.cost_per_hour`: RunPod's pod `cost`, Modal's
+rates or list price). Modal also shows its real cost from `Workspace.billing.report(start,
+resolution="h")` (SDK 1.6.3; the whole workspace, up to the last full hour) — **not yet run
+against Modal's servers**. Older runs (before this) have no stored price.

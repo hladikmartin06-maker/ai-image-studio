@@ -493,6 +493,37 @@ async def test_training_on_runpod_end_to_end(user: Api, tmp_path: Path, hub: Fak
         )
         assert again.json()["added"] == 0
 
+        # Dataset generator: Krea 2 with this LoRA, one run per prompt; the trigger word is
+        # added where it is missing; not a test (not listed under Test & compare).
+        gen_body = {
+            "connection_id": conn["id"],
+            "version_id": version["id"],
+            "prompts": ["in a sunny park, white sundress", "lnx woman in a cafe, side view", " "],
+            "count": 2,
+            "confirm_count": 4,
+        }
+        wrong = await user.post(
+            f"/api/loras/{lora['id']}/dataset/generate", json={**gen_body, "confirm_count": 6}
+        )
+        assert wrong.status_code == 400
+        made = await user.post(f"/api/loras/{lora['id']}/dataset/generate", json=gen_body)
+        assert made.status_code == 201 and made.json()["runs"] == 2, made.text
+        for _ in range(400):
+            generated = (await user.get(f"/api/loras/{lora['id']}/dataset/generated")).json()
+            if all(g["status"] == "completed" for g in generated["items"]):
+                break
+            await asyncio.sleep(0.05)
+        items = generated["items"]
+        assert len(items) == 2 and all(len(g["images"]) == 2 for g in items)
+        prompts = sorted(g["prompt"] for g in items)
+        assert prompts == [
+            "lnx woman in a cafe, side view",
+            "photo of lnx woman, in a sunny park, white sundress",
+        ]
+        assert all(g["comfy"]["lora"]["version_id"] == version["id"] for g in items)
+        tests_now = (await user.get(f"/api/loras/{lora['id']}/tests")).json()["items"]
+        assert all(len(t["runs"]) != 2 or t["runs"][0]["prompt"] not in prompts for t in tests_now)
+
         jobs = (await user.get("/api/jobs", params={"type": "training"})).json()
         assert jobs["items"][0]["status"] == "completed" and jobs["items"][0]["progress"] == 100
 

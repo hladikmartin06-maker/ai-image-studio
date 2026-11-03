@@ -19,6 +19,7 @@ import { toast } from "sonner";
 
 import { useImageActions } from "@/components/images/actions";
 import { GridSkeleton, ImageGrid } from "@/components/images/image-grid";
+import { ExportSocial } from "@/components/images/export-social";
 import { AddToLora } from "@/components/lora/add-to-lora";
 import { AddToPersona } from "@/components/personas/shared";
 import { ImageViewer } from "@/components/images/image-viewer";
@@ -396,6 +397,7 @@ export function ImageBrowser({
           ) : null}
           {photoIds.length ? (
             <>
+              <ExportSocial imageIds={photoIds} />
               <AddToPersona imageIds={photoIds} />
               <AddToLora imageIds={photoIds} />
             </>

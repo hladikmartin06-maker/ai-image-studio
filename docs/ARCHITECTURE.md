@@ -25,6 +25,8 @@ Next.js 16 (127.0.0.1:3000) ── /api/* rewrite ──▶ FastAPI (127.0.0.1:8
 | `catalog.py` | the four models, one `Variant` per provider endpoint, validation, request bodies |
 | `providers/` | `base.py` contract + error normalization, `wavespeed.py`, `atlas.py` |
 | `services/generation.py` | validates a request against the catalog (`prepare`) and creates the job |
+| `services/faces.py` | face match on the Mac (OpenCV YuNet + SFace, model files downloaded once and checked) |
+| `services/spending.py` | this month's costs from confirmed prices, GPU hours and Modal's bill |
 | `services/pricing.py` | prices before a hosted run: WaveSpeed's price API (list price, estimate per request); Atlas has none |
 | `services/worker.py` | runs jobs: upload references, submit, poll, download, store, publish; ComfyUI runs (Krea 2, Enhance photo) in a queue per connection — one at a time on a GPU, in the order started, waiting runs show their place — outside the hosted models' worker slots |
 | `services/storage.py` | originals byte-for-byte + 640 px WebP thumbnails, path-safe |

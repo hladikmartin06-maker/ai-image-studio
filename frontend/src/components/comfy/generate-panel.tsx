@@ -487,7 +487,14 @@ export function ComfyPanel({
               <div className="section-title">
                 <span className="eyebrow grow">{t("gen.prompt")}</span>
               </div>
-              <PromptEditor value={draft.prompt} onChange={(p) => set({ prompt: p })} max={4000} onSubmit={submit} />
+              <PromptEditor
+                value={draft.prompt}
+                onChange={(p) => set({ prompt: p })}
+                max={4000}
+                onSubmit={submit}
+                personaId={persona?.id ?? null}
+                personaName={persona?.name ?? null}
+              />
               <div className="row" style={{ gap: 10, alignItems: "flex-start", marginTop: 12 }}>
                 <Switch checked={draft.adult} onChange={(v) => set({ adult: v })} label={t("k2.adult")} />
                 <div>

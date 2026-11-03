@@ -1132,6 +1132,85 @@ class TestBody(BaseModel):
     confirm_count: int = Field(ge=1, le=48)
 
 
+class DatasetGenerateBody(BaseModel):
+    connection_id: uuid.UUID
+    version_id: uuid.UUID
+    variant: Literal["turbo", "raw"] = "turbo"
+    # One run per prompt (different backgrounds, outfits, angles, light, …).
+    prompts: list[str] = Field(min_length=1, max_length=30)
+    count: int = Field(default=1, ge=1, le=4)
+    strength: float = Field(default=1.0, ge=0.0, le=2.0)
+    aspect_ratio: str = "3:4"
+    resolution: str = "1K"
+    adult: bool = False
+    confirm_count: int = Field(ge=1, le=120)
+
+
+@router.post("/{lora_id}/dataset/generate", status_code=201)
+async def generate_dataset(
+    lora_id: uuid.UUID,
+    body: DatasetGenerateBody,
+    user: User = Depends(current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """New photos for the dataset: Krea 2 with this LoRA, one run per prompt (they wait in
+    the GPU's queue). The best results are then added with "Add to LoRA"."""
+    lora = await _owned(db, user, lora_id)
+    prompts = [p.strip() for p in body.prompts if p.strip()]
+    if not prompts:
+        raise api_error(400, "invalid_parameter", "Write at least one prompt.")
+    images = len(prompts) * body.count
+    if images != body.confirm_count:
+        raise api_error(400, "confirmation_required", f"This is {images} images.")
+    group = uuid.uuid4().hex
+    subject = f"{lora.trigger_word} {lora.class_word}".strip()
+    created = 0
+    for prompt in prompts:
+        _check_words(prompt)
+        # The trigger word brings the character in; added when the prompt lacks it.
+        has_trigger = re.search(rf"(?<![\w]){re.escape(lora.trigger_word)}(?![\w])", prompt, re.I)
+        text = prompt if has_trigger else f"photo of {subject}, {prompt}"
+        req = ComfyGenerateBody(
+            connection_id=body.connection_id,
+            variant=body.variant,
+            prompt=text,
+            aspect_ratio=body.aspect_ratio,
+            resolution=body.resolution,
+            count=body.count,
+            lora=LoraUse(version_id=body.version_id, strength=body.strength, insert_trigger=False),
+            adult=body.adult,
+            dataset_lora_id=lora.id,
+            batch_group=group,
+        )
+        try:
+            await create_comfy_generation(db, user, req)
+        except GenerationRejected as exc:
+            raise api_error(exc.status_code, exc.code, exc.message) from exc
+        created += 1
+    return {"group": group, "runs": created, "images": images}
+
+
+@router.get("/{lora_id}/dataset/generated")
+async def generated_for_dataset(
+    lora_id: uuid.UUID, user: User = Depends(current_user), db: AsyncSession = Depends(get_db)
+):
+    """The runs of the dataset generator for this LoRA (newest first), with their images."""
+    lora = await _owned(db, user, lora_id)
+    rows = (
+        await db.scalars(
+            select(Generation)
+            .where(
+                Generation.user_id == user.id,
+                Generation.comfy_meta["dataset_lora_id"].astext == str(lora.id),
+            )
+            .options(selectinload(Generation.tasks), selectinload(Generation.images))
+            .order_by(Generation.created_at.desc())
+            .limit(120)
+        )
+    ).all()
+    return {"items": [generation_json(g) for g in rows]}
+
+
 @router.post("/{lora_id}/tests", status_code=201)
 async def run_test(
     lora_id: uuid.UUID,

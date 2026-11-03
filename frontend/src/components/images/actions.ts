@@ -7,7 +7,7 @@ import { toast } from "sonner";
 
 import { usePriceConfirm } from "@/components/generate/price-confirm";
 import { useConfirm } from "@/components/ui";
-import { ApiError, downloadUrl } from "@/lib/api";
+import { api, ApiError, downloadUrl } from "@/lib/api";
 import { hideDeleted, showAgain } from "@/lib/pending-deletes";
 import { useT } from "@/lib/i18n";
 import {
@@ -18,8 +18,8 @@ import {
   useRegenerate,
   useSaveToLibrary,
 } from "@/lib/queries";
-import { enhanceInStudio } from "@/lib/studio-bridge";
-import type { Generation, StudioImage } from "@/lib/types";
+import { applyToStudio, enhanceInStudio } from "@/lib/studio-bridge";
+import type { Generation, ReferenceImage, StudioImage } from "@/lib/types";
 
 export async function copyText(text: string) {
   try {
@@ -152,8 +152,13 @@ export function useImageActions() {
     async (img: StudioImage) => {
       try {
         // Paid models: the price first; it runs only after the user confirms it.
-        if (img.provider !== "comfyui" && !(await priceConfirm.forRepeat(img.generation_id, 1))) return;
-        await regenerate.mutateAsync({ id: img.generation_id, count: 1 });
+        let price: number | null = null;
+        if (img.provider !== "comfyui") {
+          const confirmed = await priceConfirm.forRepeat(img.generation_id, 1);
+          if (!confirmed) return;
+          price = confirmed.price;
+        }
+        await regenerate.mutateAsync({ id: img.generation_id, count: 1, price });
         toast.success(t("images.regenerating"), {
           action: { label: t("common.view"), onClick: () => router.push("/generate") },
         });
@@ -184,6 +189,21 @@ export function useImageActions() {
     [router],
   );
 
+  // "Animate": the image becomes the first frame of a Wan 3.0 video on Generate.
+  const animateImage = useCallback(
+    async (img: StudioImage) => {
+      try {
+        const ref = await api<ReferenceImage>("/api/reference-images/from-image", { body: { image_id: img.id } });
+        applyToStudio({ model: "wan-3.0", refs: [ref], engine: "hosted" });
+        toast.success(t("images.animateReady"));
+        router.push("/generate");
+      } catch (e) {
+        toast.error((e as Error).message);
+      }
+    },
+    [router, t],
+  );
+
   // Generate › Enhance photo with this image (switches there when that page is open).
   const enhanceImage = useCallback(
     (img: StudioImage) => {
@@ -194,6 +214,7 @@ export function useImageActions() {
 
   return {
     download,
+    animateImage,
     enhanceImage,
     copyPrompt,
     deleteImage,

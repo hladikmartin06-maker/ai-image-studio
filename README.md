@@ -33,8 +33,9 @@ and run the update command again.
 The menu is short on purpose: Dashboard, Generate, AI Models, LoRA, Image Library, Assistant,
 Integrations and Settings.
 
-- **Dashboard** — real statistics, recent images, live activity, provider usage and WaveSpeed
-  balance.
+- **Dashboard** — real statistics, recent images, live activity, provider usage, WaveSpeed
+  balance and **Spending this month** (the prices you confirmed before each paid run, GPU hours
+  × their hourly price, and Modal's own bill; estimates, the providers' bills count).
 - **Generate** — three choices at the top (Online models, Krea 2, Enhance photo). Results
   appear on the right; one click on the bin deletes an image or a whole generation, with
   "Undo" for a few seconds.
@@ -50,7 +51,11 @@ Integrations and Settings.
     **Wan 3.0** and **Wan 3.0 Prime** (WaveSpeed) make **videos**: from a prompt, or from a
     photo (photo 1 = first frame, an optional photo 2 = last frame); length 2–30 s, 480p–1080p,
     sound on or off. The price depends on length and resolution and is shown before it starts.
-    Videos play in the results, the viewer and the Image Library.
+    Videos play in the results, the viewer and the Image Library. **Animate** in the image
+    viewer sends a picture to Wan 3.0 as the first frame of a video.
+    **Snippets** (bookmark button in the prompt editor): save pieces of a prompt — lighting,
+    outfits, places — for every AI model or only one, and add them with one click (also on
+    Krea 2).
   - **Krea 2** (open weights, RAW and Turbo) through ComfyUI, in three steps: **1** choose
     where it runs — **Rent a GPU** (pick an NVIDIA GPU with 24 GB or more; the studio starts it
     on your RunPod or Modal account with RunPod's ready-made ComfyUI image, so it is ready in
@@ -90,15 +95,21 @@ Integrations and Settings.
   memory saving on). **Continue training**: add photos and train a finished version further —
   the training starts from that LoRA instead of from zero and makes a new version. **Add to
   LoRA** (on every result in Generate, in the image viewer and in the library selection)
-  copies your best generated images into a LoRA's photos. "Test & compare" has a **Body**
+  copies your best generated images into a LoRA's photos. **Generate new photos with Krea 2**
+  (LoRA › Photos): a list of prompts (or the examples) runs on your Krea 2 GPU with the LoRA,
+  one run per prompt; tick the best results and add them to the LoRA. "Test & compare" has a **Body**
   test: full body from the front, the side and the back with the same seeds (optionally
   18+), to check that a version keeps the same proportions. The LoRA
   is saved to this Mac and the GPU is always removed afterwards. Versions, preferred version,
   download, copy to a ComfyUI, base-vs-LoRA tests with a comparison slider, import of existing
   Krea 2 LoRA files and the training history with time and cost.
-- **Image Library** — generated images and **AI model photos** in one place; search, filters,
-  full-resolution viewer, bulk download (ZIP), add to an AI model and delete; **History** tab
-  with every request, its exact settings and "regenerate".
+- **Image Library** — generated images, videos and **AI model photos** in one place; search,
+  filters, full-resolution viewer, bulk download (ZIP), **export for social media** (9:16, 4:5,
+  1:1 or original as JPEG without metadata, optional watermark), add to an AI model and delete;
+  **History** tab with every request, its exact settings and "regenerate".
+- **Face match** (image viewer, and LoRA › Test & compare): how close the face is to the AI
+  model's photos or the LoRA's photos — runs on this Mac with OpenCV's face models (YuNet +
+  SFace, about 39 MB, downloaded the first time); 36 % or more = the same person.
 - **Assistant** — chat that improves prompts, picks models and settings and explains failed
   generations; you can **attach photos** (button or paste) and ask it to describe them or write
   a prompt for a similar image. Works with Claude, GPT, Grok, Gemini or any OpenAI-compatible

@@ -66,11 +66,14 @@ export function JobCard({
 
   const [pricing, setPricing] = useState(false);
   const again = async () => {
+    let price: number | null = null;
     if (gen.provider !== "comfyui") {
       // Paid models: the price first; it runs only after the user confirms it.
       setPricing(true);
       try {
-        if (!(await priceConfirm.forRepeat(gen.id))) return;
+        const confirmed = await priceConfirm.forRepeat(gen.id);
+        if (!confirmed) return;
+        price = confirmed.price;
       } catch (e) {
         toast.error((e as Error).message);
         return;
@@ -79,7 +82,7 @@ export function JobCard({
       }
     }
     regenerate.mutate(
-      { id: gen.id },
+      { id: gen.id, price },
       {
         onSuccess: () => toast.success(t("gen.started")),
         onError: (e) => toast.error((e as Error).message),

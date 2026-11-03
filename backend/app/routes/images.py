@@ -217,6 +217,67 @@ async def archive(
     )
 
 
+@router.get("/export")
+async def export_social(
+    ids: str = Query(min_length=1, max_length=MAX_ARCHIVE * 40),
+    format: Literal["story", "portrait", "square", "original"] = "portrait",
+    watermark: str = Query(default="", max_length=40),
+    user: User = Depends(current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """A ZIP of the images ready to post: cropped to the format, without metadata, with an
+    optional watermark. Videos are left out."""
+    try:
+        wanted = [uuid.UUID(x) for x in ids.split(",") if x][:MAX_ARCHIVE]
+    except ValueError as exc:
+        raise api_error(400, "bad_ids", "Invalid image ids.") from exc
+    rows = [
+        img
+        for img in (
+            await db.scalars(
+                select(Image)
+                .join(Image.generation)
+                .options(contains_eager(Image.generation))
+                .where(Image.user_id == user.id, Image.id.in_(wanted))
+                .order_by(Image.created_at)
+            )
+        ).all()
+        if not storage.is_video(img.mime_type)
+    ]
+    if not rows:
+        raise api_error(404, "not_found", "No images to export (videos are not exported).")
+    prefs = await preferences.load(db, user.id)
+    names = [
+        os.path.splitext(_download_name(img, prefs.download_name))[0] + f"-{format}.jpg"
+        for img in rows
+    ]
+    paths = [storage.absolute(img.file_path) for img in rows]
+
+    def build() -> str:
+        fd, tmp = tempfile.mkstemp(suffix=".zip")
+        os.close(fd)
+        used: set[str] = set()
+        with zipfile.ZipFile(tmp, "w", compression=zipfile.ZIP_STORED) as zf:
+            for name, path in zip(names, paths, strict=True):
+                unique, n = name, 2
+                while unique in used:
+                    stem, ext = os.path.splitext(name)
+                    unique, n = f"{stem}-{n}{ext}", n + 1
+                used.add(unique)
+                if path.exists():
+                    zf.writestr(unique, storage.social_export(path.read_bytes(), format, watermark))
+        return tmp
+
+    tmp = await asyncio.to_thread(build)
+    stamp = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
+    return FileResponse(
+        tmp,
+        media_type="application/zip",
+        filename=f"ai-image-studio-{format}-{stamp}.zip",
+        background=BackgroundTask(os.unlink, tmp),
+    )
+
+
 @router.post("/bulk")
 async def bulk(
     body: BulkBody, user: User = Depends(current_user), db: AsyncSession = Depends(get_db)

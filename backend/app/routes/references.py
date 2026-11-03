@@ -6,12 +6,13 @@ import uuid
 
 from fastapi import APIRouter, Depends, File, UploadFile
 from fastapi.responses import FileResponse
+from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import get_db
 from app.deps import api_error, current_user
-from app.models import Persona, PersonaImage, ReferenceImage, User
+from app.models import Image, Persona, PersonaImage, ReferenceImage, User
 from app.services import references, storage
 from app.services.serializers import reference_json
 
@@ -36,6 +37,31 @@ async def upload(
     data = await file.read(references.max_bytes() + 1)
     try:
         ref, _ = await references.store(db, user.id, data, file.filename or "")
+    except references.ReferenceRejected as exc:
+        raise api_error(exc.status_code, exc.code, exc.message) from exc
+    await db.commit()
+    return reference_json(ref)
+
+
+class FromImageBody(BaseModel):
+    image_id: uuid.UUID
+
+
+@router.post("/from-image", status_code=201)
+async def from_image(
+    body: FromImageBody, user: User = Depends(current_user), db: AsyncSession = Depends(get_db)
+):
+    """A generated image as a reference (a copy), e.g. the first frame of a video."""
+    image = await db.scalar(
+        select(Image).where(Image.id == body.image_id, Image.user_id == user.id)
+    )
+    if image is None:
+        raise api_error(404, "not_found", "Image not found.")
+    ext = image.file_path.rsplit(".", 1)[-1]
+    try:
+        ref, _ = await references.from_library_file(
+            db, user.id, image.file_path, f"library-{image.id}.{ext}"
+        )
     except references.ReferenceRejected as exc:
         raise api_error(exc.status_code, exc.code, exc.message) from exc
     await db.commit()

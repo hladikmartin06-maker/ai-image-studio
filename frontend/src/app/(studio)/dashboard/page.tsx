@@ -4,6 +4,7 @@ import {
   Activity,
   ArrowRight,
   CalendarDays,
+  Cpu,
   SquareUserRound,
   ImageIcon,
   Images,
@@ -15,6 +16,7 @@ import {
 import Link from "next/link";
 import { useEffect, useState } from "react";
 
+import { formatMoney } from "@/components/studio/common";
 import { MediaThumb } from "@/components/images/media-thumb";
 import { useImageActions } from "@/components/images/actions";
 import { GridSkeleton, ImageGrid } from "@/components/images/image-grid";
@@ -33,6 +35,7 @@ import {
   useIntegrations,
   usePersonas,
   useSettings,
+  useSpending,
   useStats,
 } from "@/lib/queries";
 import type { Stats } from "@/lib/types";
@@ -161,6 +164,73 @@ function UsageOverview({ stats }: { stats: Stats | undefined }) {
           );
         })}
         {stats ? <ActivityBars stats={stats} /> : <Skeleton style={{ height: 64 }} />}
+      </div>
+    </div>
+  );
+}
+
+/** This month's costs: confirmed prices of hosted runs, GPU hours x their hourly price, and
+ * Modal's own billing report. Only numbers the providers gave; always estimates. */
+function SpendingOverview() {
+  const { t, locale } = useI18n();
+  const spending = useSpending();
+  const money = (v: number | null | undefined) => formatMoney(v ?? null, locale);
+  const s = spending.data;
+  return (
+    <div className="card">
+      <div className="card-head">
+        <Wallet size={16} color="var(--text-3)" />
+        <div className="h3 grow">{t("sp.title")}</div>
+        {s ? <span className="small" style={{ fontWeight: 700 }}>≈ {money(s.total)}</span> : null}
+      </div>
+      <div className="card-body col" style={{ gap: 12 }}>
+        {spending.isLoading ? (
+          <Skeleton style={{ height: 120 }} />
+        ) : spending.isError || !s ? (
+          <div className="small subtle">{t("errors.generic")}</div>
+        ) : (
+          <>
+            {s.hosted.map((h) => (
+              <div key={h.provider} className="row" style={{ gap: 10 }}>
+                <ProviderLogo provider={h.provider} small />
+                <div className="grow">
+                  <div className="small" style={{ fontWeight: 600 }}>{h.name}</div>
+                  <div className="tiny subtle">
+                    {h.runs === 0
+                      ? t("sp.noRuns")
+                      : h.estimate === null
+                        ? t(h.supported ? "sp.runsOld" : "sp.runsNoPrice", { n: h.runs })
+                        : h.priced_runs < h.runs
+                          ? t("sp.runsSomePriced", { n: h.runs, p: h.priced_runs })
+                          : t("sp.runs", { n: h.runs })}
+                  </div>
+                </div>
+                <div className="small" style={{ fontWeight: 600 }}>
+                  {h.estimate === null ? t("price.unknown") : `≈ ${money(h.estimate)}`}
+                </div>
+              </div>
+            ))}
+            {s.gpu
+              .filter((g) => g.connected || g.gpu_hours > 0)
+              .map((g) => (
+                <div key={g.provider} className="row" style={{ gap: 10 }}>
+                  <Cpu size={16} color="var(--text-3)" />
+                  <div className="grow">
+                    <div className="small" style={{ fontWeight: 600 }}>{g.name}</div>
+                    <div className="tiny subtle">
+                      {t("sp.gpuHours", { h: g.gpu_hours.toLocaleString(locale) })}
+                      {g.unpriced_hours > 0 ? ` · ${t("sp.unpriced", { h: g.unpriced_hours.toLocaleString(locale) })}` : ""}
+                      {g.billed !== null ? ` · ${t("sp.billed")}` : g.billed_error ? ` · ${g.billed_error}` : ""}
+                    </div>
+                  </div>
+                  <div className="small" style={{ fontWeight: 600 }}>
+                    {g.billed !== null ? money(g.billed) : `≈ ${money(g.estimate)}`}
+                  </div>
+                </div>
+              ))}
+            <div className="hint">{t("sp.hint")}</div>
+          </>
+        )}
       </div>
     </div>
   );
@@ -363,6 +433,7 @@ export default function DashboardPage() {
         </div>
         <div className="col" style={{ gap: 20 }}>
           <UsageOverview stats={s} />
+          <SpendingOverview />
         </div>
       </div>
       <ImageViewer images={images} index={viewer} onClose={() => setViewer(null)} onIndexChange={setViewer} />

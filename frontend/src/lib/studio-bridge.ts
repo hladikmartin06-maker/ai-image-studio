@@ -1,7 +1,7 @@
 // Connects the assistant with the Generate page: the page publishes what the user has set
 // up (for context-aware answers) and receives prompts/settings the user applies from chat.
 
-import type { StudioContextPayload } from "@/lib/types";
+import type { ReferenceImage, StudioContextPayload } from "@/lib/types";
 
 export interface StudioPatch {
   prompt?: string;
@@ -11,6 +11,10 @@ export interface StudioPatch {
   count?: number;
   seed?: number | string;
   thinking_mode?: boolean;
+  // "Animate": these photos become the references (the first one is the video's first frame).
+  refs?: ReferenceImage[];
+  // Switch Generate to the online models.
+  engine?: "hosted";
 }
 
 const PENDING_KEY = "studio:pending-apply";

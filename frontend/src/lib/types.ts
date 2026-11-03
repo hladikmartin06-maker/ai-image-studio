@@ -1101,3 +1101,31 @@ export interface SecretInfo {
 export function isVideo(img: { media?: string; mime_type?: string }) {
   return img.media === "video" || Boolean(img.mime_type?.startsWith("video/"));
 }
+
+/** A saved piece of prompt text, for every AI model (persona_id null) or one. */
+export interface PromptSnippet {
+  id: string;
+  persona_id: string | null;
+  name: string;
+  text: string;
+  created_at: string;
+  updated_at: string;
+}
+
+/** This month's costs (Dashboard), only from prices and reports the providers gave. */
+export interface Spending {
+  since: string;
+  currency: "USD";
+  hosted: { provider: ProviderKey; name: string; supported: boolean; runs: number; priced_runs: number; estimate: number | null }[];
+  gpu: {
+    provider: "runpod" | "modal";
+    name: string;
+    connected: boolean;
+    gpu_hours: number;
+    unpriced_hours: number;
+    estimate: number;
+    billed: number | null;
+    billed_error: string | null;
+  }[];
+  total: number;
+}

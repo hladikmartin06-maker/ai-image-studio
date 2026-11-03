@@ -82,7 +82,9 @@ async def launch(
     row.image = spec.image
     row.status = workload.status
     row.stopped_at = None
-    row.meta = {"ports": spec.ports, "purpose": purpose}
+    # The hourly price at the start (RunPod: the pod's own rate; Modal: its rates or list
+    # price), for the spending overview.
+    row.meta = {"ports": spec.ports, "purpose": purpose, "cost_per_hour": workload.cost_per_hour}
     await db.commit()
     return workload
 

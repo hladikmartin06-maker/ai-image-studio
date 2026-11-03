@@ -1,9 +1,10 @@
 "use client";
 
-import { FlaskConical } from "lucide-react";
+import { FlaskConical, ScanFace } from "lucide-react";
 import { useState } from "react";
 import { toast } from "sonner";
 
+import { compareFaces, FaceBadge, type FaceResult } from "@/components/images/face-match";
 import { StatusPill } from "@/components/studio/common";
 import { Button, EmptyState, Field, Notice, Segmented, Select, Skeleton, Switch, useConfirm } from "@/components/ui";
 import { ApiError } from "@/lib/api";
@@ -197,6 +198,21 @@ export function TestPanel({ lora }: { lora: LoraDetail }) {
 function TestGroup({ lora, runs, when }: { lora: LoraDetail; runs: Generation[]; when: string }) {
   const { t } = useI18n();
   const tt = (k: MessageKey) => t(k);
+  // Face match of every result with the LoRA's photos (OpenCV on this Mac).
+  const [faces, setFaces] = useState<Record<string, FaceResult>>({});
+  const [checking, setChecking] = useState(false);
+  const imageIds = runs.flatMap((r) => (r.images[0] ? [r.images[0].id] : []));
+  const checkFaces = async () => {
+    setChecking(true);
+    try {
+      const res = await compareFaces(imageIds, { lora_id: lora.id });
+      setFaces(Object.fromEntries(res.items.map((i) => [i.image_id, i])));
+    } catch (e) {
+      toast.error(e instanceof ApiError ? e.message : t("errors.generic"));
+    } finally {
+      setChecking(false);
+    }
+  };
   // Rows: prompt + seed; columns: base and versions.
   const rows = new Map<string, Generation[]>();
   for (const r of runs) {
@@ -208,6 +224,11 @@ function TestGroup({ lora, runs, when }: { lora: LoraDetail; runs: Generation[];
       <div className="card-head">
         <span className="h3 grow">{t("cmp.group", { n: runs.length })}</span>
         <span className="tiny subtle">{when}</span>
+        {imageIds.length ? (
+          <Button size="sm" icon={<ScanFace />} loading={checking} onClick={checkFaces} title={t("fm.compareHint")}>
+            {t("fm.compareAll")}
+          </Button>
+        ) : null}
       </div>
       <div className="card-body col gap-16">
         {[...rows.entries()].map(([key, cells]) => {
@@ -221,7 +242,9 @@ function TestGroup({ lora, runs, when }: { lora: LoraDetail; runs: Generation[];
                 {cells.map((c) => (
                   <figure key={c.id} className="compare-cell">
                     {c.images[0] ? <img src={c.images[0].thumb_url} alt="" /> : <div className="compare-wait"><StatusPill status={c.status === "processing" ? "running" : c.status} /></div>}
-                    <figcaption className="tiny">{label(c, lora, tt)}</figcaption>
+                    <figcaption className="tiny">
+                      {label(c, lora, tt)} {c.images[0] ? <FaceBadge result={faces[c.images[0].id]} /> : null}
+                    </figcaption>
                   </figure>
                 ))}
               </div>

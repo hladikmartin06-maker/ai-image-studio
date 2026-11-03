@@ -152,6 +152,14 @@ repositories.
   own click on huggingface.co (no API exists); the studio links there and checks again, and
   training checks it before renting a GPU.
 - Image Library shows generated images and AI model photos. AI models hold up to 200 photos.
+- Extras (the owner's request, 2026-11-02): "Animate" (viewer → Wan 3.0 first frame,
+  `POST /api/reference-images/from-image`); LoRA dataset generator (`/api/loras/{id}/dataset/
+  generate`, Krea 2 runs marked `dataset_lora_id`, results added with Add to LoRA); spending
+  overview (`/api/stats/spending`: confirmed `Generation.cost_estimate`, GPU hours ×
+  `GPUWorkload.meta.cost_per_hour`, Modal's `billing.report`); export for social media
+  (`/api/images/export`, JPEG without metadata); prompt snippets (`/api/snippets`); face match
+  (`services/faces.py`, OpenCV YuNet + SFace on the Mac, files pinned by SHA-256 from
+  huggingface.co/opencv, GitHub's OpenCV Model Zoo as the second source; never sent anywhere).
 - Assistant photos: up to 4 per message, the user's own uploads only, sent downscaled and only
   with that message.
 

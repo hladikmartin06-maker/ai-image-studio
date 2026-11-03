@@ -407,10 +407,12 @@ export default function GeneratePage() {
         if (typeof patch.resolution === "string") next.settings.resolution = patch.resolution;
         if (patch.seed !== undefined && patch.seed !== null) next.settings.seed = String(patch.seed);
         if (typeof patch.thinking_mode === "boolean") next.settings.thinking_mode = patch.thinking_mode;
+        if (patch.refs) next.refs = patch.refs;
         return next;
       });
+      if (patch.engine) setEngine(patch.engine);
     },
-    [catalog.data],
+    [catalog.data, setEngine],
   );
   useEffect(() => registerApplyHandler(applyPatch), [applyPatch]);
   useEffect(() => {
@@ -478,14 +480,15 @@ export default function GeneratePage() {
     try {
       // Paid models: the price first, and the run starts only after the user confirms it.
       setPricing(true);
-      let ok = false;
+      let confirmed: false | { price: number | null } = false;
       try {
-        ok = await priceConfirm.forRequest(body);
+        confirmed = await priceConfirm.forRequest(body);
       } finally {
         setPricing(false);
       }
-      if (!ok) return;
-      await create.mutateAsync(body);
+      if (!confirmed) return;
+      // The confirmed price is kept with the run (Dashboard › Spending).
+      await create.mutateAsync({ ...body, price_estimate: confirmed.price });
       if (prefs?.clear_prompt_after_generate) update({ prompt: "" });
       setTouched(false);
     } catch (e) {
@@ -755,6 +758,8 @@ export default function GeneratePage() {
               onChange={(p) => update({ prompt: p })}
               max={maxPrompt}
               onSubmit={submit}
+              personaId={persona?.id ?? null}
+              personaName={persona?.name ?? null}
             />
             {touched && promptMissing ? <div className="error-text" style={{ marginTop: 6 }}>{t("gen.problemPrompt")}</div> : null}
           </div>

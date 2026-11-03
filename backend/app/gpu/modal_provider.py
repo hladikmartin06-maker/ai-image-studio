@@ -240,6 +240,16 @@ def _error(exc: Exception) -> GPUError:
 class ModalSDK:
     """The few SDK calls used, in one place (tests replace this class with a fake)."""
 
+    async def report(self, client: Any, start: Any) -> float:
+        """The workspace's cost since `start` (UTC) up to the last full hour, from Modal's
+        billing report (`Workspace.billing.report`, SDK 1.6.3; partial intervals are left out
+        by Modal)."""
+        import modal
+
+        workspace = modal.Workspace.from_context(client=client)
+        items = await workspace.billing.report.aio(start=start, resolution="h")
+        return float(sum((item.cost for item in items), Decimal(0)))
+
     async def rates(self, client: Any) -> dict[str, str]:
         """The workspace's current pricing rates (`modal billing rates`)."""
         import modal
@@ -387,6 +397,18 @@ class ModalProvider:
         return round(
             price * max(1, count) + (extra if extra is not None else SANDBOX_EXTRA_PER_HOUR), 4
         )
+
+    async def spent_since(self, creds: dict[str, str], start: Any) -> float:
+        """What the whole Modal workspace cost since `start` (Modal's own billing report)."""
+        client = await self._client(creds)
+        try:
+            return await self.sdk.report(client, start)
+        except GPUError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - SDK raises its own error classes
+            raise _error(exc) from exc
+        finally:
+            await self.sdk.close(client)
 
     async def offer(
         self, creds: dict[str, str], gpu_id: str, cloud: str
