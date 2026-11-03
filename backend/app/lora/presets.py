@@ -65,6 +65,9 @@ ARCHITECTURES: dict[str, dict[str, Any]] = {
         "vram_quantized_gb": 24,
         "vram_full_gb": 48,
         "vram_no_checkpointing_gb": 96,
+        # From this much GPU memory the model trains in full precision (no 8-bit
+        # quantization, no low-VRAM mode): the owner's rule for 80 GB GPUs (2026-11-03).
+        "full_precision_gb": 80,
         "bucketing": "ai-toolkit buckets images by aspect ratio automatically.",
     }
 }
@@ -98,9 +101,10 @@ class TrainingConfig(BaseModel):
     save_every: int = Field(default=250, ge=50, le=5000)
     max_checkpoints: int = Field(default=6, ge=1, le=12)
     sample_every: int = Field(default=250, ge=0, le=5000)
-    # "end": no baseline and no in-between validation images, only the ones after the last
-    # step (ai-toolkit: skip_first_sample, and sample_every 0 never matches a step). The
-    # images do not change the LoRA; they cost time while the GPU is billed.
+    # "end": no in-between validation images, only the ones after the last step
+    # (sample_every 0 never matches a step). No run makes ai-toolkit's "baseline" images of
+    # the untrained model (skip_first_sample). The images do not change the LoRA; they cost
+    # time while the GPU is billed.
     previews: Literal["during", "end"] = "during"
     # Continue an earlier version: training starts from that version's LoRA weights
     # (ai-toolkit network.pretrained_lora_path) instead of from zero, on the current photos.

@@ -1101,6 +1101,7 @@ export interface TrainBody {
   config: TrainingConfig;
   provider: string;
   gpu_type: string;
+  gpu_memory_gb?: number | null;
   gpu_count: number;
   cloud_type: string;
   image?: string | null;

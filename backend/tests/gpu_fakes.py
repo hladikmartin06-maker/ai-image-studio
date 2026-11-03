@@ -76,6 +76,13 @@ for step in range(0, total + 1, max(1, total // 10)):
         except ImportError:
             with open(sample, "wb") as f:
                 f.write(b"\xff\xd8\xff\xe0fake-jpeg")
+        # Like ai-toolkit: a 300 px thumbnail of every sample in samples/.thumbs.
+        thumbs = os.path.join(out, "samples", ".thumbs")
+        os.makedirs(thumbs, exist_ok=True)
+        with open(sample, "rb") as src, open(
+            os.path.join(thumbs, os.path.basename(sample) + ".jpg"), "wb"
+        ) as dst:
+            dst.write(src.read())
     time.sleep(slow)
 save(os.path.join(out, name + ".safetensors"))
 print("\nSaved", flush=True)

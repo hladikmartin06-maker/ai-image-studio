@@ -136,9 +136,9 @@ def test_faster_training_options():
 
     default = build()
     assert default["sample"]["sample_every"] == 250
-    assert (
-        "skip_first_sample" not in default["train"] and "disable_sampling" not in default["train"]
-    )
+    # No baseline images of the untrained model (they came again after every restart).
+    assert default["train"]["skip_first_sample"] is True
+    assert "disable_sampling" not in default["train"]
     assert default["train"]["diff_output_preservation"] is True
     assert default["train"]["gradient_checkpointing"] is True
     fast = build(previews="end", diff_output_preservation=False, gradient_checkpointing=False)
@@ -403,6 +403,8 @@ async def test_training_on_runpod_end_to_end(user: Api, tmp_path: Path, hub: Fak
         assert version["step"] == 100 and version["loss"]
         assert version["checkpoints"][0]["step"] == 50
         assert version["samples"] and version["cost_final"] is not None
+        # Only the validation images themselves, not ai-toolkit's thumbnails.
+        assert all(x["step"] and not x["file"].endswith(".jpg.jpg") for x in version["samples"])
         assert version["gpu_stopped_at"] and fake.pods == {}  # auto-cleanup terminated it
         assert detail["preferred_version_id"] == version["id"]
         logs = (await user.get(f"/api/loras/{lora['id']}/versions/{version['id']}/logs")).json()
@@ -667,20 +669,26 @@ def test_memory_fallback_steps():
             sample_prompts=[],
         )
 
-    # Memory saving off: it goes back on first (with quantization, if that was off too).
-    first, changes = memory_fallback(cfg(gradient_checkpointing=False, quantize=False))
-    assert changes == ["gradient_checkpointing", "quantize"]
+    # One change at a time, the cheapest for quality first: gradient checkpointing, then
+    # batch 1 (same effective batch), then 8-bit quantization, then low-VRAM mode.
+    first, changes = memory_fallback(
+        cfg(gradient_checkpointing=False, quantize=False, batch_size=2, gradient_accumulation=2)
+    )
+    assert changes == ["gradient_checkpointing"]
     process = first["config"]["process"][0]
     assert process["train"]["gradient_checkpointing"] is True
-    assert process["model"]["quantize"] is True and process["model"]["quantize_te"] is True
-    # Then low-VRAM mode, then batch 1 with the same effective batch, then nothing is left.
-    second, changes = memory_fallback(cfg(batch_size=2, gradient_accumulation=2))
-    assert changes == ["low_vram"] and second["config"]["process"][0]["model"]["low_vram"]
-    third, changes = memory_fallback(second)
+    assert process["model"]["quantize"] is False and process["train"]["batch_size"] == 2
+    second, changes = memory_fallback(first)
     assert changes == ["batch_size"]
-    assert third["config"]["process"][0]["train"]["batch_size"] == 1
-    assert third["config"]["process"][0]["train"]["gradient_accumulation"] == 4
-    assert memory_fallback(third) is None
+    assert second["config"]["process"][0]["train"]["batch_size"] == 1
+    assert second["config"]["process"][0]["train"]["gradient_accumulation"] == 4
+    third, changes = memory_fallback(second)
+    assert changes == ["quantize"]
+    model = third["config"]["process"][0]["model"]
+    assert model["quantize"] is True and model["quantize_te"] is True
+    fourth, changes = memory_fallback(third)
+    assert changes == ["low_vram"] and fourth["config"]["process"][0]["model"]["low_vram"]
+    assert memory_fallback(fourth) is None
 
 
 async def test_out_of_memory_trains_again_with_memory_saving(user: Api, tmp_path: Path):
@@ -721,11 +729,14 @@ async def test_out_of_memory_trains_again_with_memory_saving(user: Api, tmp_path
                 await asyncio.sleep(0.05)
             raise AssertionError(v)
 
-        v = await run(body)
+        # An 80 GB GPU trains in full precision; running out of memory turns on gradient
+        # checkpointing only, the model stays in full precision.
+        v = await run({**body, "gpu_memory_gb": 80})
         assert v["status"] == "completed", v.get("error_message")
         retries = v["memory_retries"]
         assert len(retries) == 1 and retries[0]["changes"] == ["gradient_checkpointing"]
         assert v["config"]["gradient_checkpointing"] is True
+        assert v["config"]["quantize"] is False and v["config"]["low_vram"] is False
         pods = [c for c in fake.calls if c[0] == "POST" and c[1] == "/v2/pods"]
         assert len(pods) == 1  # the same GPU, not a second one
         log = (await user.get(f"/api/loras/{lora['id']}/versions/{v['id']}/logs")).json()["text"]

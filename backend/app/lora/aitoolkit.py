@@ -82,8 +82,10 @@ def build(
     at_end = config.previews == "end"
     if not sample_prompts or (config.sample_every == 0 and not at_end):
         train["disable_sampling"] = True
-    elif at_end:
-        # ai-toolkit still samples once after the final step (BaseSDTrainProcess).
+    else:
+        # No "baseline" images of the untrained model before step 1 (ai-toolkit would make
+        # them again after every restart); with "end", ai-toolkit still samples once after
+        # the final step (BaseSDTrainProcess).
         train["skip_first_sample"] = True
     process: dict[str, Any] = {
         "type": "sd_trainer",

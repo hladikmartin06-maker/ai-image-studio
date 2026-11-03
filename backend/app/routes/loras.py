@@ -682,6 +682,8 @@ class TrainBody(BaseModel):
     notes: str = Field(default="", max_length=2000)
     client_request_id: str | None = Field(default=None, max_length=64)
     confirm_billing: bool = False
+    # The chosen GPU's memory as the provider lists it (GPU picker); decides full precision.
+    gpu_memory_gb: int | None = Field(default=None, ge=1, le=4096)
 
 
 def _package(lora: Lora, items: list[LoraDatasetItem], folder_rel: str) -> dict[str, Any]:
@@ -778,6 +780,12 @@ async def start_training(
             f"{dataset.MIN_EDGE_HARD} px.",
         )
     _check_words(*body.config.validation_prompts)
+    full_gb = ARCHITECTURES[lora.architecture].get("full_precision_gb")
+    if full_gb and body.gpu_memory_gb and body.gpu_memory_gb >= full_gb:
+        # A big GPU is used fully: the model in full precision, no memory saving. If it runs
+        # out of memory anyway, runner.memory_fallback turns savings on one at a time.
+        body.config.quantize = False
+        body.config.low_vram = False
     start: LoraVersion | None = None
     if body.config.continue_from:
         # Continue an earlier version of this LoRA: its file is the starting point, and its

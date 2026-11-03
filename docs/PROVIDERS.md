@@ -509,9 +509,18 @@ the image): the same graph in API format, on the same ComfyUI connection as Krea
 - **Faster runs** (Advanced, checked 2026-11-01 in ai-toolkit's `main`:
   `jobs/process/BaseSDTrainProcess.py`, `extensions_built_in/sd_trainer/SDTrainer.py`,
   `toolkit/config_modules.py`):
-  - "Test images only at the end": `train.skip_first_sample: true` (no baseline before
-    step 1) and `sample.sample_every: 0` (no step matches); ai-toolkit still samples once
-    after the final step unless `disable_sampling`. The images do not change the LoRA.
+  - "Test images only at the end": `sample.sample_every: 0` (no step matches); ai-toolkit
+    still samples once after the final step unless `disable_sampling`. The images do not
+    change the LoRA.
+  - Every run sets `train.skip_first_sample: true` (since 2026-11-03): no "baseline" images
+    of the untrained model before step 1 — ai-toolkit made them again after every restart
+    (out-of-memory retry), so one run showed the same step-0 images twice.
+  - Sample files (checked 2026-11-03 in `main`, `toolkit/config_modules.py`
+    GenerateImageConfig): `samples/<ms>__<step:09d>_<index>.jpg`, written in
+    `samples/.tmp` and moved into place, plus a 300 px thumbnail
+    `samples/.thumbs/<file>.jpg` for every image. The studio copies only the images directly
+    in `samples/` that match the name pattern (the thumbnails showed up as extra images) and
+    shows the newest step's set, one image per prompt.
   - "Protect the base model" off: no `diff_output_preservation` — SDTrainer then skips the
     prior prediction and the preservation prediction it runs every step, so steps are
     faster, but prompts with the class word may drift towards the character.
@@ -523,12 +532,22 @@ the image): the same graph in API format, on the same ComfyUI connection as Krea
   - **Out of GPU memory** (torch "out of memory" / `OutOfMemoryError`, ai-toolkit "OOM during
     training step"): the run is not lost. The studio writes a config with more memory saving
     and starts the training again on the same GPU (already running; models and cached
-    latents are there), at most twice: 1) gradient checkpointing and quantization on (where
-    off), 2) `model.low_vram`, 3) batch 1 with the same effective batch (gradient
-    accumulation × old batch). The version's settings show the change and the run shows a
+    latents are there), at most twice, one change at a time, the cheapest for quality
+    first (since 2026-11-03; before, quantization went on together with gradient
+    checkpointing and an 80 GB run dropped to ~40 GB): 1) gradient checkpointing,
+    2) batch 1 with the same effective batch (gradient accumulation × old batch),
+    3) `model.quantize`/`quantize_te`, 4) `model.low_vram`. The version's settings show the
+    change and the run shows a
     note; when nothing is left to save it fails with "The GPU ran out of memory…" (lower
     resolution or a bigger GPU). A checkpoint saved before the stop is where ai-toolkit
     resumes.
+
+- **GPUs with 80 GB or more** (the owner's rule, 2026-11-03; `full_precision_gb` in
+  `lora/presets.py`): the run uses the whole GPU — `model.quantize`, `quantize_te` and
+  `low_vram` off (full precision), whatever the form says; the GPU's memory is the
+  provider's figure from the GPU picker (`gpu_memory_gb`). Gradient checkpointing stays as
+  chosen (on by default: off ran out of memory on 80 GB). How much memory a run then uses
+  is not published (Krea 2 / ai-toolkit); the studio's estimate is ~48 GB plus activations.
 
 - **Continue training** (LoRA › Runs › "Continue training", or Training › "Start from"):
   `network.pretrained_lora_path` (ai-toolkit `toolkit/config_modules.py` NetworkConfig;

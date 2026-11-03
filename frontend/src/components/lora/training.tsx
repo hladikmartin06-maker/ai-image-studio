@@ -43,9 +43,13 @@ export function TrainingTab({ lora, onStarted, initial }: { lora: LoraDetail; on
   // Continue an earlier version: its size (rank/alpha) is kept, so its weights fit.
   const startVersions = lora.versions.filter((v) => v.status === "completed" && v.file_url && v.config.rank && v.config.alpha);
   const startFrom = startVersions.find((v) => v.id === draft.continue_from) ?? null;
-  const cfg: TrainingConfig = startFrom
+  // A GPU with enough memory is used fully: full precision, no memory saving (the server
+  // applies the same rule from the GPU's memory).
+  const fullPrecision = gpu.memory_gb != null && arch?.full_precision_gb != null && gpu.memory_gb >= arch.full_precision_gb;
+  const chosen: TrainingConfig = startFrom
     ? { ...draft, rank: startFrom.config.rank ?? draft.rank, alpha: startFrom.config.alpha ?? draft.alpha }
     : { ...draft, continue_from: null };
+  const cfg: TrainingConfig = fullPrecision ? { ...chosen, quantize: false, low_vram: false } : chosen;
   const set = (patch: Partial<TrainingConfig>) => setConfig({ ...cfg, ...patch });
   const pickStart = (id: string) =>
     setConfig(
@@ -93,6 +97,7 @@ export function TrainingTab({ lora, onStarted, initial }: { lora: LoraDetail; on
         },
         provider: gpu.provider,
         gpu_type: gpu.gpu_type,
+        gpu_memory_gb: gpu.memory_gb ?? null,
         gpu_count: 1,
         cloud_type: gpu.cloud_type,
         image: null,
@@ -179,6 +184,7 @@ export function TrainingTab({ lora, onStarted, initial }: { lora: LoraDetail; on
         <div className="eyebrow">{t("ls.whereToTrain")}</div>
         <GpuPicker value={gpu} onChange={setGpu} minMemoryGb={minVram} purpose="training" />
         <div className="hint">{t("ls.vramHint", { n: minVram ?? 24 })}</div>
+        {fullPrecision ? <Notice tone="accent">{t("ls.fullPrecision", { gb: gpu.memory_gb ?? 0 })}</Notice> : null}
       </section>
 
       <section className="card">
@@ -240,10 +246,14 @@ export function TrainingTab({ lora, onStarted, initial }: { lora: LoraDetail; on
               </Field>
             </div>
             <div className="row" style={{ gap: 10, alignItems: "flex-start" }}>
-              <Switch checked={cfg.quantize} onChange={(v) => set({ quantize: v })} label={t("ls.quantize")} />
+              <Switch checked={cfg.quantize} disabled={fullPrecision} onChange={(v) => set({ quantize: v })} label={t("ls.quantize")} />
               <div>
                 <div className="small">{t("ls.quantize")}</div>
-                <div className="hint">{t("ls.quantizeHint", { a: arch.vram_quantized_gb, b: arch.vram_full_gb })}</div>
+                <div className="hint">
+                  {fullPrecision
+                    ? t("ls.quantizeOffBigGpu", { gb: arch.full_precision_gb })
+                    : t("ls.quantizeHint", { a: arch.vram_quantized_gb, b: arch.vram_full_gb })}
+                </div>
               </div>
             </div>
             <div className="row" style={{ gap: 10, alignItems: "flex-start" }}>

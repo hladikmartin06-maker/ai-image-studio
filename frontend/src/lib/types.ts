@@ -1013,6 +1013,7 @@ export interface LoraArchitecture {
   vram_quantized_gb: number;
   vram_full_gb: number;
   vram_no_checkpointing_gb: number;
+  full_precision_gb: number;
   bucketing: string;
 }
 

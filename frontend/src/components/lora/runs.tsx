@@ -43,6 +43,17 @@ export function trainingSettings<T extends Partial<TrainingConfig>>(
   return settings;
 }
 
+/** The newest validation images: one per prompt from the latest step (older steps and
+ *  images from before a restart are kept on the Mac but not shown). */
+export function latestSamples(samples: LoraVersion["samples"]) {
+  const stepped = samples.filter((s) => s.step !== null);
+  if (!stepped.length) return { step: null, items: samples.slice(-3) };
+  const step = Math.max(...stepped.map((s) => s.step as number));
+  const byIndex = new Map<number, LoraVersion["samples"][number]>();
+  for (const s of stepped) if (s.step === step) byIndex.set(s.index ?? 0, s);
+  return { step, items: [...byIndex.entries()].sort((a, b) => a[0] - b[0]).map(([, s]) => s) };
+}
+
 export function VersionCard({
   lora,
   version,
@@ -56,6 +67,7 @@ export function VersionCard({
   const confirm = useConfirm();
   const action = useVersionAction(lora.id);
   const updateLora = useUpdateLora(lora.id);
+  const latest = latestSamples(version.samples);
   const conns = useComfyConnections();
   const [logs, setLogs] = useState(false);
   const [deployTo, setDeployTo] = useState("");
@@ -155,14 +167,15 @@ export function VersionCard({
           ) : null}
         </div>
         {active ? <GpuMeter gpu={version.gpu} /> : null}
-        {version.samples.length ? (
+        {latest.items.length ? (
           <div>
-            <div className="eyebrow" style={{ marginBottom: 6 }}>{t("ls.samples")}</div>
+            <div className="eyebrow" style={{ marginBottom: 6 }}>
+              {latest.step !== null ? t("ls.samplesAt", { step: latest.step }) : t("ls.samples")}
+            </div>
             <div className="sample-strip">
-              {version.samples.slice(-12).map((s) => (
+              {latest.items.map((s) => (
                 <a key={s.file} href={s.url} target="_blank" rel="noreferrer" className="sample">
                   <img src={s.url} alt="" loading="lazy" />
-                  {s.step !== null ? <span className="tiny">{s.step}</span> : null}
                 </a>
               ))}
             </div>

@@ -91,8 +91,10 @@ Integrations and Settings.
   captions (templates, trigger word, AI captions), choose a training type and a GPU, train on
   your RunPod or Modal account with live progress, test images, logs and cost (Advanced:
   test images only at the end, base-model protection and memory saving can be switched off
-  for faster runs; if the GPU runs out of memory, training starts again on the same GPU with
-  memory saving on). **Continue training**: add photos and train a finished version further —
+  for faster runs; a GPU with 80 GB or more trains in full precision, without memory
+  saving; if the GPU runs out of memory, training starts again on the same GPU with one
+  memory saving turned on, the one that keeps the quality first). Validation images: the
+  newest set, one per test prompt. **Continue training**: add photos and train a finished version further —
   the training starts from that LoRA instead of from zero and makes a new version. **Copy to
   a new LoRA** (top of a LoRA's page): a new LoRA with the same photos and captions (the
   trigger word in them is replaced), e.g. to train a Turbo LoRA again on RAW so it works on

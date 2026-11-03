@@ -140,28 +140,28 @@ def _job_id(v: LoraVersion, run: str) -> str:
 
 
 def memory_fallback(trainer_config: dict[str, Any]) -> tuple[dict[str, Any], list[str]] | None:
-    """The same ai-toolkit config with more memory saving, and what was changed (one step at
-    a time: gradient checkpointing and quantization first, then low-VRAM mode, then batch 1
-    with the same effective batch); None when nothing is left to save."""
+    """The same ai-toolkit config with more memory saving, and what was changed: one thing
+    at a time, the cheapest for quality first — gradient checkpointing (slower, same result),
+    then batch 1 with the same effective batch, then 8-bit quantization, then low-VRAM mode;
+    None when nothing is left to save."""
     config = copy.deepcopy(trainer_config)
     process = config["config"]["process"][0]
     train, model = process["train"], process["model"]
-    changes: list[str] = []
     if not train.get("gradient_checkpointing"):
         train["gradient_checkpointing"] = True
-        changes.append("gradient_checkpointing")
-    if not model.get("quantize"):
-        model["quantize"] = model["quantize_te"] = True
-        changes.append("quantize")
-    if not changes and not model.get("low_vram"):
-        model["low_vram"] = True
-        changes.append("low_vram")
-    if not changes and int(train.get("batch_size") or 1) > 1:
+        return config, ["gradient_checkpointing"]
+    if int(train.get("batch_size") or 1) > 1:
         batch = int(train["batch_size"])
         train["batch_size"] = 1
         train["gradient_accumulation"] = int(train.get("gradient_accumulation") or 1) * batch
-        changes.append("batch_size")
-    return (config, changes) if changes else None
+        return config, ["batch_size"]
+    if not model.get("quantize"):
+        model["quantize"] = model["quantize_te"] = True
+        return config, ["quantize"]
+    if not model.get("low_vram"):
+        model["low_vram"] = True
+        return config, ["low_vram"]
+    return None
 
 
 async def _retry_with_less_memory(db, v: LoraVersion, agent: AgentClient, run: str) -> bool:
@@ -444,12 +444,21 @@ async def _samples(v: LoraVersion, agent: AgentClient, run: str) -> None:
     have = {s["file"] for s in progress.get("samples", [])}
     if len(have) >= MAX_SAMPLES:
         return
+    folder = f"{run_paths(run)['output_rel']}/samples"
     try:
-        listed = await agent.list_files(f"{run_paths(run)['output_rel']}/samples")
+        listed = await agent.list_files(folder)
     except AgentError:
         return
+    # Only the images themselves (<time>__<step>_<index>.jpg directly in samples/), not
+    # ai-toolkit's thumbnails (samples/.thumbs) or files still being written (samples/.tmp).
     new = sorted(
-        (f for f in listed if Path(f["path"]).name not in have),
+        (
+            f
+            for f in listed
+            if Path(f["path"]).parent.as_posix() == folder
+            and _SAMPLE_STEP.search(Path(f["path"]).name)
+            and Path(f["path"]).name not in have
+        ),
         key=lambda f: f.get("mtime") or 0,
     )
     for f in new[: MAX_SAMPLES - len(have)]:

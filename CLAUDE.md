@@ -82,7 +82,9 @@ repositories.
   needs `confirm_billing`; artifacts are copied to the Mac before the GPU is removed; progress
   and loss only from the trainer's output; LoRAs only for fictional adults. Out of GPU memory
   = train again on the same GPU with more memory saving (`runner.memory_fallback`, at most
-  twice), never a new GPU. A finished version
+  twice, one change at a time: checkpointing, batch, quantization, low-VRAM), never a new
+  GPU. GPUs with 80 GB or more always train in full precision (`full_precision_gb`; no
+  quantization or low-VRAM). No baseline validation images; the newest set is shown. A finished version
   can be continued (`continue_from`: its file → `network.pretrained_lora_path`, same
   rank/alpha, all current photos, a new version). "Copy to a new LoRA"
   (`POST /api/loras/{id}/copy`): a new project with its own trigger word and base model, the
