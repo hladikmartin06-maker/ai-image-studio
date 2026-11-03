@@ -1140,7 +1140,9 @@ export function useVersionAction(id: string) {
 /** Measured on the Mac once per new set of validation images (kept with the version). */
 export function useVersionLikeness(loraId: string, version: LoraVersion, enabled: boolean) {
   const stepped = version.samples.filter((s) => s.step !== null).length;
-  const cached = version.likeness && version.likeness.samples === stepped ? version.likeness : undefined;
+  // Measurements from before the baseline existed are measured again.
+  const cached =
+    version.likeness && version.likeness.samples === stepped && "baseline" in version.likeness ? version.likeness : undefined;
   return useQuery({
     queryKey: ["loras", "likeness", version.id, stepped],
     queryFn: () => api<Likeness>(`/api/loras/${loraId}/versions/${version.id}/likeness`),

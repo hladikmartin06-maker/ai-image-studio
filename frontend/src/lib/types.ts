@@ -1135,7 +1135,9 @@ export interface Spending {
 /** Face likeness of a training run's validation images to the LoRA's photos, per step. */
 export interface Likeness {
   reference_faces: number;
-  steps: { step: number; samples: number; faces: number; score: number | null }[];
+  /** How alike her own photos are to each other (the 100 % mark), when 2+ faces. */
+  baseline?: number | null;
+  steps: { step: number; samples: number; faces: number; score: number | null; relative?: number | null }[];
   best_step: number | null;
   samples: number;
   threshold?: number;
@@ -1144,5 +1146,5 @@ export interface Likeness {
 /** Is it the same face on every dataset photo (median similarity to the others). */
 export interface DatasetFaces {
   threshold: number;
-  items: { item_id: string; face: boolean; score: number | null; outlier: boolean }[];
+  items: { item_id: string; face: boolean; score: number | null; outlier: boolean; share?: number | null }[];
 }

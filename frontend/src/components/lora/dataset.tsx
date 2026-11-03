@@ -112,6 +112,9 @@ export function DatasetTab({ lora }: { lora: LoraDetail }) {
   const faceOf = useMemo(() => new Map((faces?.items ?? []).map((f) => [f.item_id, f])), [faces]);
   const outliers = (faces?.items ?? []).filter((f) => f.outlier && lora.dataset.some((i) => i.id === f.item_id));
   const noFace = (faces?.items ?? []).filter((f) => !f.face);
+  // A close-up: the face is at least a fifth of the photo's width.
+  const closeUps = (faces?.items ?? []).filter((f) => (f.share ?? 0) >= 0.2).length;
+  const sized = (faces?.items ?? []).some((f) => f.share != null);
   const runFaceCheck = async () => {
     try {
       setFaces(await checkFaces.mutateAsync());
@@ -244,6 +247,12 @@ export function DatasetTab({ lora }: { lora: LoraDetail }) {
               : t("ds.facesAllSame", { n: faces.items.length - noFace.length })}
           </div>
           {noFace.length ? <div className="tiny" style={{ marginTop: 4 }}>{t("ds.facesNone", { n: noFace.length })}</div> : null}
+          {sized ? (
+            <div className="tiny" style={{ marginTop: 4 }}>
+              {t("ds.facesCloseUps", { n: closeUps, total: faces.items.length })}
+              {closeUps < 10 ? ` ${t("ds.facesCloseUpsTip")}` : ""}
+            </div>
+          ) : null}
           {outliers.length ? (
             <Button size="sm" style={{ marginTop: 8 }} onClick={() => setSelected(new Set(outliers.map((f) => f.item_id)))}>
               {t("ds.facesSelect")}

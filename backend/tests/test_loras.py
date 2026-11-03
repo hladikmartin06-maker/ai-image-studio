@@ -142,6 +142,9 @@ def test_faster_training_options():
     assert "disable_sampling" not in default["train"]
     # The interval the user picks (every 100 … 1000 steps) is ai-toolkit's sample_every.
     assert build(sample_every=100)["sample"]["sample_every"] == 100
+    # LoRA size: the in-between sizes too (16, 24, 32, 48, 64 in the form).
+    assert build(rank=24, alpha=24)["network"]["linear"] == 24
+    assert build(rank=48, alpha=32)["network"] == {"type": "lora", "linear": 48, "linear_alpha": 32}
     # ai-toolkit's own Krea 2 choices: linear timesteps, preservation off unless switched on.
     assert default["train"]["timestep_type"] == "linear"
     assert "diff_output_preservation" not in default["train"]
@@ -361,6 +364,9 @@ async def test_likeness_per_step_and_dataset_faces(user: Api, monkeypatch):
     by_step = {x["step"]: x for x in body["steps"]}
     assert by_step[500]["faces"] == 2 and by_step[500]["score"] > 0.9
     assert by_step[250]["score"] < faces.MATCH_THRESHOLD
+    # Measured against how alike her own photos are to each other (100 % = as alike).
+    assert body["baseline"] > 0.9 and by_step[500]["relative"] > 0.95
+    assert by_step[250]["relative"] < 0.5
     # Kept with the version; another user sees nothing.
     version = next(
         x

@@ -118,7 +118,7 @@ Integrations and Settings.
   SFace, about 39 MB, downloaded the first time); 36 % or more = the same person. In LoRA,
   **Check faces** marks dataset photos whose face differs from the others, and every training
   run shows the likeness of its validation images per step with the best step (which can be
-  saved as its own version).
+  saved as its own version) — 100 % means as alike as your own photos are to each other.
 - **Assistant** — chat that improves prompts, picks models and settings and explains failed
   generations; you can **attach photos** (button or paste) and ask it to describe them or write
   a prompt for a similar image. Works with Claude, GPT, Grok, Gemini or any OpenAI-compatible

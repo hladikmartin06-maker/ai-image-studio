@@ -135,14 +135,24 @@ async def test_models_are_downloaded_once_and_checked(tmp_path, monkeypatch):
 MODELS = os.environ.get("FACE_MODELS_DIR")
 
 
-@pytest.mark.skipif(not MODELS, reason="set FACE_MODELS_DIR to the two ONNX files to run")
+@pytest.mark.skipif(
+    not MODELS, reason="set FACE_MODELS_DIR to the ONNX files and the test photos to run"
+)
 async def test_real_models_tell_people_apart():
     folder = Path(MODELS or "")
     engine = faces._Engine(folder / faces.DETECTOR.filename, folder / faces.RECOGNIZER.filename)
-    lena = (folder / "lena.jpg").read_bytes()
-    messi = (folder / "messi5.jpg").read_bytes()
-    a, b = engine.feature(lena), engine.feature(messi)
-    assert a is not None and b is not None
+    a, share = engine.analyze((folder / "lena.jpg").read_bytes())
+    assert a is not None and 0.2 < share < 0.6  # a portrait: the face is a big part
     assert float((a * a).sum()) == pytest.approx(1.0, abs=1e-5)
-    assert float((a * b).sum()) < faces.MATCH_THRESHOLD
+    # messi5.jpg: a face of about 30 px — too small to compare reliably, so not compared.
+    assert engine.feature((folder / "messi5.jpg").read_bytes()) is None
     assert engine.feature(png_bytes(64, 64)) is None  # no face
+    # Two different photos of one person, and another person (examples of the
+    # face_recognition project; 2026-11-03: 0.744 and 0.095).
+    one, two, other = (
+        engine.feature((folder / name).read_bytes())
+        for name in ("obama.jpg", "obama2.jpg", "biden.jpg")
+    )
+    assert float((one * two).sum()) > 0.6
+    assert float((one * other).sum()) < faces.MATCH_THRESHOLD
+    assert float((a * one).sum()) < faces.MATCH_THRESHOLD

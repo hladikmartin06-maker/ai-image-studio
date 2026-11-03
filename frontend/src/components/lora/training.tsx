@@ -212,7 +212,7 @@ export function TrainingTab({ lora, onStarted, initial }: { lora: LoraDetail; on
                   label={t("ls.size")}
                   value={cfg.rank}
                   onChange={(r) => set({ rank: r, alpha: Math.min(cfg.alpha, r) })}
-                  options={[16, 32, 64].map((r) => ({ value: r, label: String(r), disabled: Boolean(startFrom) && r !== cfg.rank }))}
+                  options={[16, 24, 32, 48, 64].map((r) => ({ value: r, label: String(r), disabled: Boolean(startFrom) && r !== cfg.rank }))}
                 />
               </Field>
               <Field label={t("ls.speed")} hint={t("ls.speedHint")}>

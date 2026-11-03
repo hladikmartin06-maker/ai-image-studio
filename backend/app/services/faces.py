@@ -29,6 +29,9 @@ from app.config import get_settings
 log = logging.getLogger("studio.faces")
 
 MATCH_THRESHOLD = 0.363
+# Smaller faces (e.g. a full-body shot) are not compared: SFace aligns every face to 112 px,
+# and a face of a few dozen pixels gives an unreliable score.
+MIN_FACE_PX = 64
 HF = "https://huggingface.co/opencv"
 ZOO = "https://media.githubusercontent.com/media/opencv/opencv_zoo/main/models"
 
@@ -140,12 +143,14 @@ class _Engine:
         self.recognizer = cv2.FaceRecognizerSF.create(str(recognizer), "")
         self.lock = threading.Lock()
 
-    def feature(self, data: bytes) -> Any | None:
+    def analyze(self, data: bytes) -> tuple[Any | None, float | None]:
+        """The largest face's normalized feature and its width as a share of the image width;
+        (None, None) without a face big enough to compare."""
         import numpy as np
 
         image = self.cv2.imdecode(np.frombuffer(data, np.uint8), self.cv2.IMREAD_COLOR)
         if image is None:
-            return None
+            return None, None
         h, w = image.shape[:2]
         scale = min(1.0, 1600 / max(h, w))
         if scale < 1.0:
@@ -155,11 +160,16 @@ class _Engine:
             self.detector.setInputSize((w, h))
             _, faces = self.detector.detect(image)
             if faces is None or len(faces) == 0:
-                return None
+                return None, None
             face = max(faces, key=lambda f: f[2] * f[3])  # the largest face
+            if float(face[2]) < MIN_FACE_PX:
+                return None, None
             vector = self.recognizer.feature(self.recognizer.alignCrop(image, face)).flatten()
         norm = float(np.linalg.norm(vector))
-        return vector / norm if norm else None
+        return (vector / norm if norm else None), round(float(face[2]) / w, 3)
+
+    def feature(self, data: bytes) -> Any | None:
+        return self.analyze(data)[0]
 
 
 _engine: _Engine | None = None
@@ -175,17 +185,36 @@ async def _get_engine() -> _Engine:
     return _engine
 
 
-def _feature_of(engine: _Engine, path: Path) -> Any | None:
+def _analysis_of(engine: Any, path: Path) -> tuple[Any | None, float | None]:
     st = path.stat()
     key = (str(path), st.st_size, int(st.st_mtime))
     if key in _cache:
         _cache.move_to_end(key)
         return _cache[key]
-    value = engine.feature(path.read_bytes())
+    data = path.read_bytes()
+    analyze = getattr(engine, "analyze", None)
+    value = analyze(data) if analyze else (engine.feature(data), None)
     _cache[key] = value
     if len(_cache) > 2000:
         _cache.popitem(last=False)
     return value
+
+
+def _feature_of(engine: Any, path: Path) -> Any | None:
+    return _analysis_of(engine, path)[0]
+
+
+def _baseline(refs: list[Any]) -> float | None:
+    """How alike the photos' faces are to each other: the median over the photos of each
+    photo's median similarity to the others. Different photos of one real person score
+    about 0.7 with SFace; a LoRA that matches her as well as her own photos do scores this."""
+    if len(refs) < 2:
+        return None
+    per_photo = [
+        statistics.median(float((a * b).sum()) for j, b in enumerate(refs) if j != i)
+        for i, a in enumerate(refs)
+    ]
+    return statistics.median(per_photo)
 
 
 def _score(features: list[Any], refs: list[Any]) -> float:
@@ -236,9 +265,22 @@ async def likeness(samples: list[tuple[int, Path]], references: list[Path]) -> d
             }
             for step in sorted(counts)
         ]
+        baseline = _baseline(refs)
+        for row in rows:
+            # 100 % = as alike as her own photos are to each other.
+            row["relative"] = (
+                round(min(1.0, row["score"] / baseline), 3)
+                if row["score"] is not None and baseline and baseline > 0
+                else None
+            )
         scored = [r for r in rows if r["score"] is not None]
         best = max(scored, key=lambda r: (r["score"], -r["step"]))["step"] if scored else None
-        return {"reference_faces": len(refs), "steps": rows, "best_step": best}
+        return {
+            "reference_faces": len(refs),
+            "baseline": round(baseline, 3) if baseline is not None else None,
+            "steps": rows,
+            "best_step": best,
+        }
 
     return await asyncio.to_thread(run)
 
@@ -250,7 +292,8 @@ async def consistency(paths: list[Path]) -> list[dict[str, Any]]:
     engine = await _get_engine()
 
     def run() -> list[dict[str, Any]]:
-        features = [_feature_of(engine, p) for p in paths]
+        analyses = [_analysis_of(engine, p) for p in paths]
+        features = [a[0] for a in analyses]
         found = [(i, f) for i, f in enumerate(features) if f is not None]
         out: list[dict[str, Any]] = []
         for index, feature in enumerate(features):
@@ -265,6 +308,8 @@ async def consistency(paths: list[Path]) -> list[dict[str, Any]]:
                     "face": feature is not None,
                     "score": score,
                     "outlier": score is not None and score < MATCH_THRESHOLD,
+                    # The face's width as a share of the photo's width (close-up ≈ 0.3+).
+                    "share": analyses[index][1] if feature is not None else None,
                 }
             )
         return out

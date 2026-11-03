@@ -1080,14 +1080,19 @@ async def version_likeness(
     samples = [s for s in progress.get("samples", []) if s.get("step") is not None]
     if not samples:
         return {"reference_faces": 0, "steps": [], "best_step": None, "samples": 0}
-    cached = progress.get("likeness")
-    if cached and cached.get("samples") == len(samples):
-        return cached
     refs = [
         storage.absolute(i.reference.file_path)
         for i in await _items(db, lora)
         if not i.excluded and i.split == "train"
     ][:FACE_REFERENCES]
+    cached = progress.get("likeness")
+    if (
+        cached
+        and cached.get("samples") == len(samples)
+        and cached.get("refs") == len(refs)
+        and "baseline" in cached
+    ):
+        return cached
     if not refs:
         raise api_error(409, "no_photos", "This LoRA has no photos to compare with.")
     folder = storage.absolute(runner.version_dir(v)) / "samples"
@@ -1096,6 +1101,7 @@ async def version_likeness(
     except faces.FaceError as exc:
         raise api_error(502, "face_model", exc.message) from exc
     result["samples"] = len(samples)
+    result["refs"] = len(refs)
     result["threshold"] = faces.MATCH_THRESHOLD
     fresh = await db.get(LoraVersion, v.id, populate_existing=True)
     if fresh is not None:
