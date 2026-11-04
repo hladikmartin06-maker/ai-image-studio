@@ -14,6 +14,7 @@ import {
   SettingsControls,
 } from "@/components/generate/controls";
 import { openAssistant } from "@/components/assistant/drawer";
+import { AdvancedPanel } from "@/components/advanced/advanced-panel";
 import { EnhancePanel, type EnhancePhoto } from "@/components/comfy/enhance-panel";
 import { ComfyPanel } from "@/components/comfy/generate-panel";
 import {
@@ -59,7 +60,7 @@ import type {
   Variant,
 } from "@/lib/types";
 
-type Engine = "hosted" | "comfy" | "enhance";
+type Engine = "hosted" | "comfy" | "enhance" | "advanced";
 
 /** Enhance photo runs are ComfyUI runs of the PGUpscaler workflow. */
 const isEnhance = (gen: Generation) => gen.provider === "comfyui" && gen.comfy?.family === "pgupscaler";
@@ -200,9 +201,10 @@ export default function GeneratePage() {
     const params = new URLSearchParams(window.location.search);
     if (params.get("lora") || params.get("engine") === "comfy") return "comfy";
     if (params.get("engine") === "enhance") return "enhance";
+    if (params.get("engine") === "advanced") return "advanced";
     try {
       const saved = localStorage.getItem("studio:engine");
-      return saved === "comfy" || saved === "enhance" ? saved : "hosted";
+      return saved === "comfy" || saved === "enhance" || saved === "advanced" ? saved : "hosted";
     } catch {
       return "hosted";
     }
@@ -618,6 +620,7 @@ export default function GeneratePage() {
         { value: "hosted", label: t("k2.engineHosted") },
         { value: "comfy", label: t("k2.engineComfy") },
         { value: "enhance", label: t("k2.engineEnhance") },
+        { value: "advanced", label: t("k2.engineAdvanced") },
       ]}
     />
   );
@@ -638,6 +641,14 @@ export default function GeneratePage() {
       {engineSwitch}
     </div>
   );
+
+  if (engine === "advanced") {
+    return (
+      <div className="studio">
+        <AdvancedPanel header={comfyHeader} />
+      </div>
+    );
+  }
 
   if (engine === "enhance") {
     return (

@@ -10,8 +10,10 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
+from app.advanced import engine as advanced_engine
 from app.deps import csrf_guard
 from app.routes import (
+    advanced,
     ai,
     auth,
     comfy,
@@ -44,6 +46,7 @@ logging.getLogger("httpx2").setLevel(logging.WARNING)  # used by the anthropic S
 async def lifespan(_: FastAPI):
     await worker.start()
     await gpu_runner.start()
+    await advanced_engine.recover()
     try:
         yield
     finally:
@@ -107,5 +110,6 @@ for module in (
     jobs,
     snippets,
     faces,
+    advanced,
 ):
     app.include_router(module.router)

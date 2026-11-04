@@ -37,9 +37,9 @@ repositories.
   models Wan 3.0 and Wan 3.0 Prime (SFW; WaveSpeed only; video from text, or from a photo as
   the first frame with an optional second photo as the last frame; 2–30 s, sound). Plus
   Krea 2 (RAW, Turbo) on the user's own ComfyUI (`backend/app/comfy/krea2.py` holds the
-  verified facts) and "Enhance photo" (below). No other models or modes. Videos are stored as
-  delivered (MP4), shown with a player, and never used where a photo is needed (references,
-  AI models, LoRA photos, Krea 2, Enhance photo).
+  verified facts), "Enhance photo" and Advanced generation (below). No other models or
+  modes. Videos are stored as delivered (MP4), shown with a player, and never used where a
+  photo is needed (references, AI models, LoRA photos, Krea 2, Enhance photo, Advanced).
 - Providers: WaveSpeed and Atlas Cloud only, through `backend/app/providers/` (one adapter
   each, shared contract in `base.py`). The model catalog is `backend/app/catalog.py`: one
   `Variant` per provider endpoint. A UI control exists only when the provider documents that
@@ -159,6 +159,21 @@ repositories.
   pgupscaler` through the agent (one click). The photo is the user's upload, an AI model photo
   or a generated image; it is uploaded to that ComfyUI only for the run. Image viewers have an
   "Enhance photo" action and show its results before/after (slider or side by side).
+- Advanced generation (the owner's request, 2026-11-04; Generate › "Pokročilé",
+  `backend/app/advanced/`, table `advanced_jobs`, `/api/advanced`): one request (prompt,
+  optionally a photo and a LoRA) runs everything together — plan (the user's AI assistant
+  writes a preserve/modify spec, shown and editable before the run; with analysis off, rules
+  and the regions the user picks), Krea 2 RAW/Turbo text to image or masked edits (SAM 3.1
+  finds the region, only it is redrawn and composited back; every other pixel stays the
+  photo's), checks per requirement (AI vision, SFace identity against the original or the
+  LoRA's photos, changed area — estimates, never guarantees), at most 3 corrections of only
+  what failed, the best attempt by those checks, optional Enhance photo. Only models already
+  in the studio; every GPU step is an ordinary ComfyUI generation of the engine's own graph
+  through the existing queue. It reads and never changes the Krea 2 workflow, Enhance photo,
+  LoRA training, the worker/runner or existing tables (`test_advanced` pins the built-in
+  graphs by hash); its data only in the additive migration 0007. A failed step fails the job
+  with its message — never another model. No face swap. Attempts not chosen stay out of the
+  library.
 - Hugging Face: token in Integrations › Hugging Face, checked with `whoami-v2` and the Krea 2
   repositories' `auth-check` (`services/huggingface.py`). Accepting the license is the user's
   own click on huggingface.co (no API exists); the studio links there and checks again, and

@@ -36,7 +36,7 @@ Integrations and Settings.
 - **Dashboard** — real statistics, recent images, live activity, provider usage, WaveSpeed
   balance and **Spending this month** (the prices you confirmed before each paid run, GPU hours
   × their hourly price, and Modal's own bill; estimates, the providers' bills count).
-- **Generate** — three choices at the top (Online models, Krea 2, Enhance photo). Results
+- **Generate** — four choices at the top (Online models, Krea 2, Enhance photo, Advanced). Results
   appear on the right; one click on the bin deletes an image or a whole generation, with
   "Undo" for a few seconds.
   - **Online models** (Nano Banana Pro, Seedream, Wan 2.7, Wan 2.7 Pro through WaveSpeed or
@@ -81,6 +81,19 @@ Integrations and Settings.
     what the photo shows. With "Face only" you can name what to fix (e.g. "face, neck, hand").
     The image viewer compares before and after (slider or side by side); every image viewer
     has an "Enhance photo" button.
+  - **Advanced** — one request, everything together, on the same GPU or Mac as Krea 2: write
+    what you want, optionally add a photo and a LoRA, and press Run. **From text** it makes a
+    new image with Krea 2 RAW or Turbo; **edit a photo** changes only what you asked (e.g.
+    "blonde hair, mouth closed") and keeps the rest of the photo as it is — SAM 3.1 finds the
+    hair, mouth, eyes, face, clothing or background and only that part is redrawn (install its
+    file once with one click). Your AI assistant (Integrations) first writes a plan — what to
+    keep, what to change, the prompt — which you can see and edit before the run; then every
+    requirement is checked on the result (the assistant looks at the image, the face is
+    compared with the original or the LoRA's photos, and the changed area is measured; these
+    are estimates, not guarantees). What failed is corrected again (0–3 times, only that part),
+    the best attempt is kept, and "Enhance photo" can finish it. Without the assistant, switch
+    the analysis off and pick the parts to change yourself. Steps, checks and before/after are
+    shown in the panel; attempts not chosen stay out of the library.
 - **AI Models** — your own fictional adult characters with up to 200 photos (shown across the
   whole page, primary photo first). The profile (description, age, hair, face, body, style, …)
   is optional and opens in a window. Select one on Generate: its description is added to the

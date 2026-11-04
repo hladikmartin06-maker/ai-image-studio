@@ -13,6 +13,9 @@ import { useCallback } from "react";
 import { api, query } from "@/lib/api";
 import { hiddenCount, hideDeleted, isHidden, showAgain, useHiddenVersion } from "@/lib/pending-deletes";
 import type {
+  AdvancedCapabilities,
+  AdvancedJob,
+  AdvancedSpec,
   AIProviderList,
   AIUsage,
   AuthState,
@@ -1277,5 +1280,55 @@ export function useLoraGenerated(loraId: string, enabled: boolean) {
     enabled,
     refetchInterval: (q) =>
       q.state.data?.items.some((g) => g.status === "queued" || g.status === "processing") ? 4000 : false,
+  });
+}
+
+// --- Generate › Advanced -----------------------------------------------------------------
+
+export const advancedKeys = {
+  jobs: ["advanced", "jobs"] as const,
+  caps: (connectionId: string) => ["advanced", "caps", connectionId] as const,
+};
+
+export function useAdvancedCapabilities(connectionId: string | null) {
+  return useQuery({
+    queryKey: advancedKeys.caps(connectionId ?? ""),
+    queryFn: () => api<AdvancedCapabilities>(`/api/advanced/capabilities${query({ connection_id: connectionId ?? undefined })}`),
+    enabled: Boolean(connectionId),
+  });
+}
+
+/** The latest requests, followed while one runs. */
+export function useAdvancedJobs() {
+  return useQuery({
+    queryKey: advancedKeys.jobs,
+    queryFn: () => api<{ items: AdvancedJob[] }>("/api/advanced/jobs?limit=30"),
+    refetchInterval: (q) =>
+      q.state.data?.items.some((j) => j.status === "queued" || j.status === "running") ? 2000 : false,
+  });
+}
+
+export function useStartAdvanced() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: Record<string, unknown>) => api<AdvancedJob>("/api/advanced/jobs", { body }),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: advancedKeys.jobs });
+      void qc.invalidateQueries({ queryKey: ["generations"] });
+    },
+  });
+}
+
+export function usePlanAdvanced() {
+  return useMutation({
+    mutationFn: (body: Record<string, unknown>) => api<AdvancedSpec>("/api/advanced/plan", { body }),
+  });
+}
+
+export function useCancelAdvanced() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => api<AdvancedJob>(`/api/advanced/jobs/${id}/cancel`, { body: {} }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: advancedKeys.jobs }),
   });
 }

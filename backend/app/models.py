@@ -705,3 +705,55 @@ class PromptSnippet(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow, onupdate=utcnow
     )
+
+
+class AdvancedJob(Base):
+    """Advanced generation (Generate › Advanced): one request that runs several stages —
+    plan, Krea 2 generation or masked edits, quality checks, corrections, enhance. Every GPU
+    stage is an ordinary ComfyUI generation of the engine's own graphs (`advanced/graphs.py`),
+    linked back here through `Generation.comfy_meta["advanced"]`."""
+
+    __tablename__ = "advanced_jobs"
+    __table_args__ = (
+        Index("ix_advanced_jobs_user_created", "user_id", "created_at"),
+        UniqueConstraint("user_id", "client_request_id", name="uq_advanced_job_request"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_id)
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), index=True
+    )
+    client_request_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    connection_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("comfy_connections.id", ondelete="SET NULL")
+    )
+    # text-to-image | edit
+    mode: Mapped[str] = mapped_column(String(16))
+    # turbo | raw
+    variant: Mapped[str] = mapped_column(String(16))
+    prompt: Mapped[str] = mapped_column(Text)
+    # The photo to edit: {kind, id, file_path, mime_type, width, height, thumb_url, nsfw}.
+    source: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+    lora_version_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("lora_versions.id", ondelete="SET NULL")
+    )
+    lora_strength: Mapped[float] = mapped_column(Float, default=1.0)
+    # What the user switched on: analysis, quality, corrections, enhance, adult, …
+    options: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
+    # The plan: what to keep, what to change, Krea prompts, regions, checks (compiler.Spec).
+    spec: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
+    # [{key, label, status, started_at, finished_at, detail, generation_id}]
+    stages: Mapped[list[dict[str, Any]]] = mapped_column(JSONB, default=list)
+    # Quality reports, one per attempt: [{attempt, generation_id, image_id, checks, …}]
+    reports: Mapped[list[dict[str, Any]]] = mapped_column(JSONB, default=list)
+    # queued | running | completed | failed | cancelled | interrupted
+    status: Mapped[str] = mapped_column(String(16), default="queued", index=True)
+    error_code: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    cancel_requested: Mapped[bool] = mapped_column(Boolean, default=False)
+    result_image_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("images.id", ondelete="SET NULL")
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

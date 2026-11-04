@@ -487,6 +487,48 @@ the image): the same graph in API format, on the same ComfyUI connection as Krea
   sandbox, so the files were not downloaded): verified with the fake ComfyUI, which checks
   the nodes, the file names per loader and the uploaded photo, and with the real agent.
 
+# Advanced generation (Krea 2 + SAM 3.1 + checks)
+
+Generate › "Pokročilé" (`backend/app/advanced/`, since 2026-11-04, the owner's request). It
+adds **no new model**: Krea 2 RAW / Turbo (the files, loaders and sampler settings of
+`krea2.VARIANTS`, read only), SAM 3.1 (`checkpoints/sam3.1_multiplex_fp16.safetensors`, the
+Enhance photo file from `huggingface.co/AIPRIVATEGROUP/pgupscaler`, installable alone with
+one click), optionally Enhance photo, SFace on this Mac and the user's own AI assistant.
+
+- **Nodes** (built in, checked in ComfyUI v0.35.0's `nodes.py` and `comfy_extras`, the
+  pinned rented image): text to image = UNETLoader, CLIPLoader (`krea2`),
+  LoraLoaderModelOnly, CLIPTextEncode, ConditioningZeroOut (Turbo) or a negative (RAW),
+  EmptyLatentImage, KSampler, VAEDecode, SaveImage. Edit = LoadImage → ImageScale (the
+  photo's aspect ratio, `crop: disabled`) → VAEEncode; per region: CheckpointLoaderSimple
+  (SAM 3.1) + CLIPTextEncode with its own text model (the region's words, e.g. "hair",
+  "mouth and lips") → `SAM3_Detect` (threshold 0.4, 2 refine iterations, masks merged) →
+  `GrowMask` 16 px → `SetLatentNoiseMask` (only the mask is redrawn) → KSampler at the
+  region's strength → VAEDecode → `MaskToImage` / `ImageBlur` 9 / `ImageToMask` (soft edge)
+  → `ImageCompositeMasked` onto the scaled photo, so every pixel outside the region is the
+  photo's own. Without a region: the same image to image on the whole photo.
+- **Strengths** (denoise; the studio's own values, Krea publishes none): hair 0.85, mouth
+  0.7, eyes 0.6, face 0.55, expression 0.6, clothing 0.85, background 0.9, whole photo 0.5;
+  each correction adds 0.1 and a new seed (0.2–0.95). The user can set one strength instead.
+- **Plan**: the assistant (its Balanced model as chosen in Integrations) answers JSON — what to
+  keep, what to change, the prompt (no contradictions: closed lips removes "open mouth",
+  teeth, tongue), up to 4 edits and 10 checks. It is checked like every prompt
+  (`services/safety.py`; 18+ only with the switch, minors always refused), shown and editable
+  before the run. Tokens are recorded (purpose "advanced"); no prices are shown.
+- **Checks** (estimates, never guarantees): the assistant answers per requirement on the
+  result (and the original for an edit), passed or not with a note, and lists artifacts;
+  SFace identity = the median similarity to the original photo (edit) or the LoRA's photos
+  (text to image), shown against SFace's match threshold, faces under 64 px not compared;
+  changed area = share of pixels that differ by more than 24 levels. The best attempt has the
+  fewest failed checks, then the most passed, then the higher identity.
+- **Failures**: a failed step, a refused or unreadable answer of the assistant, or a missing
+  file / node fails the job with that message — nothing else is tried instead. LoRA
+  compatibility is `krea2.lora_compatibility` (strict, as in Krea 2).
+- **Not run on a real GPU**, with a real SAM 3.1 or against a real assistant: verified with
+  the fake ComfyUI (nodes, files, the uploaded photo, the graphs sent) and the fake AI
+  answers. How well SAM 3.1 finds a region and how well Krea 2 redraws a masked latent
+  (hair colour, closed mouth, expression) is untested; the owner's manual tests on a GPU
+  decide the default strengths.
+
 # LoRA training (ai-toolkit)
 
 - **Trainer**: ostris/ai-toolkit, arch `krea2` (`extensions_built_in/diffusion_models/krea2`):

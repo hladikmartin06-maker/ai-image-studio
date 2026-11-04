@@ -57,6 +57,8 @@ NODES = [
     "ImageBlur",
     "ImageToMask",
     "ImageCompositeMasked",
+    # Advanced generation: Krea 2 redraws only a masked region (built-in, ComfyUI >= 0.30).
+    "SetLatentNoiseMask",
     "ImageScaleBy",
     "SeedVR2Preprocess",
     "VAEEncodeTiled",

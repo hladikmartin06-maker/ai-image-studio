@@ -833,6 +833,8 @@ export interface GenerationComfy {
   test_label: string | null;
   test_prompt?: string | null;
   cancel_requested: boolean;
+  // Set on the steps of a Generate › Advanced request.
+  advanced?: { job_id: string; stage: string } | null;
 }
 
 // --- LoRA studio -----------------------------------------------------------------------------
@@ -1147,4 +1149,90 @@ export interface Likeness {
 export interface DatasetFaces {
   threshold: number;
   items: { item_id: string; face: boolean; score: number | null; outlier: boolean; share?: number | null }[];
+}
+
+/** Generate › Advanced: what the chosen ComfyUI can do for it. */
+export interface AdvancedCapabilities {
+  ready: boolean;
+  variants: { turbo: boolean; raw: boolean };
+  missing_nodes_text: string[];
+  missing_nodes_edit: string[];
+  sam3: boolean;
+  sam3_file: { url: string; folder: string; filename: string; size: number };
+  enhance: boolean;
+  ai: boolean;
+  file_capability: string;
+}
+
+export type AdvancedTarget = "hair" | "mouth" | "eyes" | "face" | "expression" | "clothing" | "background" | "whole";
+
+export interface AdvancedEdit {
+  target: AdvancedTarget;
+  region: string;
+  prompt: string;
+  denoise?: number | null;
+}
+
+export interface AdvancedCheck {
+  id: string;
+  question: string;
+  kind: "modify" | "preserve";
+  target: AdvancedTarget | null;
+}
+
+/** The plan: what is kept, what changes, Krea 2 prompts, regions and yes/no checks. */
+export interface AdvancedSpec {
+  mode: "text-to-image" | "edit";
+  summary: string;
+  preserve: string[];
+  modify: string[];
+  prompt: string;
+  negative: string;
+  edits: AdvancedEdit[];
+  checks: AdvancedCheck[];
+  source: "ai" | "rules" | "user";
+  ai?: { provider: string; model: string; input_tokens: number; output_tokens: number } | null;
+}
+
+export interface AdvancedReport {
+  attempt: number;
+  image_id: string;
+  checks: (AdvancedCheck & { passed: boolean | null; note: string })[];
+  artifacts: string;
+  identity: number | null;
+  identity_reference: "original" | "lora" | null;
+  threshold: number;
+  changed_area: number | null;
+  ai: { provider: string; model: string; input_tokens: number; output_tokens: number } | null;
+  error: string | null;
+}
+
+export interface AdvancedStage {
+  key: string;
+  label: string;
+  status: "running" | "completed" | "failed" | "cancelled" | "skipped";
+  started_at: string;
+  finished_at?: string;
+  detail?: string | null;
+  generation_id?: string;
+  image_id?: string;
+}
+
+export interface AdvancedJob {
+  id: string;
+  mode: "text-to-image" | "edit";
+  variant: "turbo" | "raw";
+  prompt: string;
+  source: { kind: string; id: string; thumb_url: string; url: string; width: number | null; height: number | null } | null;
+  lora: { name: string; version: number; trigger_word: string; strength: number } | null;
+  options: Record<string, unknown>;
+  spec: AdvancedSpec | null;
+  stages: AdvancedStage[];
+  reports: AdvancedReport[];
+  status: "queued" | "running" | "completed" | "failed" | "cancelled" | "interrupted";
+  error_code: string | null;
+  error_message: string | null;
+  result: { image_id: string; url: string; thumb_url: string; width: number | null; height: number | null; generation_id: string } | null;
+  seconds: number | null;
+  created_at: string | null;
 }

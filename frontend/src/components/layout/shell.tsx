@@ -292,6 +292,8 @@ export function StudioShell({ children }: { children: ReactNode }) {
 
   const onFinished = useCallback(
     (gen: Generation) => {
+      // Steps of an Advanced request report in its own panel, not one toast per step.
+      if (gen.comfy?.advanced) return;
       if (gen.status === "completed") {
         toast.success(t(gen.images.some(isVideo) ? "toast.videoDone" : "toast.generationDone", { n: gen.images.length }), {
           description: gen.prompt.slice(0, 90),
