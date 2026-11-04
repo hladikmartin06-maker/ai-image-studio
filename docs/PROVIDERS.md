@@ -637,7 +637,10 @@ finished phrases are kept (up to the last comma or full stop), or the image gets
   (`GET /api/loras/{id}/versions/{v}/likeness`): each image's median similarity to the
   training photos (median, so one odd photo cannot decide it), the mean per step, and the
   best step; it is kept in the version's progress until new images arrive. The validation
-  prompts are generic, so the numbers compare steps of one run, not runs with other prompts.
+  prompts (when the user gives none) are three portraits from the front with a neutral
+  expression in different places (since 2026-11-04; before: a window portrait, a full-body
+  street shot and a smile, which the face model compares less reliably), so runs with the
+  default prompts can be compared with each other; other prompts give other numbers.
 - **What the numbers mean** (measured 2026-11-03 with these models on the example photos of
   github.com/ageitgey/face_recognition): two different photos of one real person 0.69–0.74
   (Obama 0.744, Rose Leslie 0.700, Kit Harington 0.692), different people −0.12…0.26, a
@@ -649,6 +652,18 @@ finished phrases are kept (up to the last comma or full stop), or the image gets
 - Faces narrower than 64 px (e.g. full-body shots; messi5.jpg's 30 px face) are not compared:
   SFace aligns every face to 112 px and such a score is unreliable. "Check faces" also reports
   each face's width as a share of the photo and counts the photos where it is at least 0.2.
+
+# A LoRA dataset from an AI model (hosted)
+
+LoRA › Photos › "Create a dataset from an AI model" (`routes/loras.py`, since 2026-11-04):
+the same hosted request as Generate with an AI model — its photos as references on the
+model's editing endpoint (Nano Banana Pro, Seedream, Wan 2.7 Pro; only parameters the
+catalog documents: 3:4 and the endpoint's 2K size where offered), its description per the
+usual rule — once per shot of the studio's own list (`DATASET_SHOTS`: 24 shots, repeated for
+36; with 18+ on Wan 2.7 Pro, three full-body shots without clothes). The price shown first is
+the provider's estimate for one photo × the number of photos (Atlas: unknown, linked);
+nothing starts without that confirmation (`confirmed`), and every request is checked before
+the first one is sent. Not run against the real WaveSpeed / Atlas APIs (fake providers only).
 
 # Spending this month
 

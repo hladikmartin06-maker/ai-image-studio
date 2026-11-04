@@ -300,7 +300,7 @@ export function TrainingTab({ lora, onStarted, initial }: { lora: LoraDetail; on
                 rows={3}
                 value={prompts}
                 onChange={(e) => setPrompts(e.target.value)}
-                placeholder={`portrait photo of ${lora.trigger_word} ${lora.class_word}, soft light`}
+                placeholder={`${lora.trigger_word} ${lora.class_word}, close-up portrait facing the camera, neutral expression, lips closed, plain gray studio background`}
               />
             </Field>
           </div>

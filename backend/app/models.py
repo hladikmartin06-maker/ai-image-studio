@@ -163,6 +163,10 @@ class Generation(Base):
     lora_version_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("lora_versions.id", ondelete="SET NULL"), index=True
     )
+    # Hosted runs made as photos for a LoRA's dataset (LoRA › Dataset › "Create a dataset").
+    dataset_lora_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("loras.id", ondelete="SET NULL"), index=True
+    )
     # Hosted runs: the price the user confirmed before it started (USD, the provider's own
     # estimate), for the spending overview; None when no price was known.
     cost_estimate: Mapped[float | None] = mapped_column(Float, nullable=True)

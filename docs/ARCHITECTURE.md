@@ -60,7 +60,7 @@ Next.js 16 (127.0.0.1:3000) ── /api/* rewrite ──▶ FastAPI (127.0.0.1:8
 | `integrations` | provider, encrypted key, last 4 characters, status, last error |
 | `reference_images` | uploaded files (SHA-256, one row per distinct file), per-provider upload URLs and their upload time |
 | `personas` / `persona_images` | AI models (saved fictional adult characters): name, description, private notes, appearance JSON, primary image; their reference images (links to `reference_images`, so a duplicate shares files) |
-| `generations` | the history entry: model, provider, endpoint, prompt (and `final_prompt` as sent with an AI model's description), settings, request body, AI model used (`persona_id`, `persona_meta`), status, error, timestamps, idempotency key |
+| `generations` | the history entry: model, provider, endpoint, prompt (and `final_prompt` as sent with an AI model's description), settings, request body, AI model used (`persona_id`, `persona_meta`), status, error, timestamps, idempotency key, `dataset_lora_id` (made as photos for a LoRA's dataset) |
 | `provider_tasks` | one provider request each: status, provider id, outputs, error |
 | `images` | file paths, size, dimensions, favorite (kept in the data, no longer shown), in-library flag, NSFW flag |
 | `ai_integrations` | chat provider, encrypted key, base URL (compatible APIs), cached model list, tier choices |

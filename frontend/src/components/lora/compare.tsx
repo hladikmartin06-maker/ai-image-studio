@@ -53,11 +53,11 @@ export function TestPanel({ lora }: { lora: LoraDetail }) {
   const [connection, setConnection] = useState("");
   const [variant, setVariant] = useState<"turbo" | "raw">(lora.base_variant === "turbo" ? "turbo" : "turbo");
   const subject = `${lora.trigger_word} ${lora.class_word}`.trim();
-  // Face: one portrait. Body: full body from the front, the side and the back, on a plain
+  // Face: one portrait from the front, neutral (what the face match measures reliably). Body: full body from the front, the side and the back, on a plain
   // background, to see whether a version keeps the same proportions (the studio's prompts).
   const presetPrompts = (kind: "face" | "body", adult: boolean) =>
     kind === "face"
-      ? `portrait photo of ${subject}, soft window light`
+      ? `${subject}, close-up portrait facing the camera, neutral expression, lips closed, plain gray studio background, soft even light`
       : ["front view", "side view, profile", "back view"]
           .map(
             (view) =>

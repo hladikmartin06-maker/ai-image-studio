@@ -116,6 +116,15 @@ def test_presets_are_architecture_aware():
         TrainingConfig.model_validate({**hq, "resolutions": [2048]})
 
 
+def test_default_test_prompts_show_the_face_from_the_front():
+    """The face model compares frontal, neutral faces reliably: the default test images are
+    such portraits (no smile, no side view, no small full-body face), in different places."""
+    prompts = aitoolkit.default_sample_prompts("lmx", "woman")
+    assert len(prompts) == 3 and all(p.startswith("lmx woman, ") for p in prompts)
+    assert all("facing the camera" in p and "neutral expression" in p for p in prompts)
+    assert not any(w in " ".join(prompts) for w in ("smiling", "full body", "profile"))
+
+
 def test_faster_training_options():
     """Validation images only at the end, output preservation off and gradient checkpointing
     off reach ai-toolkit's config as its own fields."""
@@ -378,6 +387,68 @@ async def test_likeness_per_step_and_dataset_faces(user: Api, monkeypatch):
     try:
         assert (await other.get(url)).status_code == 404
         assert (await other.post(f"/api/loras/{lora['id']}/dataset/faces")).status_code == 404
+    finally:
+        await other.client.aclose()
+
+
+async def test_dataset_from_an_ai_model_in_one_click(connected: Api, fake):
+    """One click: the AI model's photos as references, one hosted run per shot (close-ups,
+    half and full body); the price of the whole set is confirmed first; the photos are listed
+    for the LoRA and the chosen ones go into its dataset."""
+    from tests.fakes import png_bytes
+    from tests.test_personas import LENA
+
+    persona = (await connected.post("/api/personas", json=LENA)).json()
+    up = await connected.post(
+        f"/api/personas/{persona['id']}/images",
+        files={"file": ("a.png", png_bytes(200, 260, (200, 40, 40)), "image/png")},
+    )
+    assert up.status_code in (200, 201), up.text
+    lora = await create(connected, trigger_word="dsx", persona_id=persona["id"])
+    body = {"persona_id": persona["id"], "model": "nano-banana-pro", "count": 4}
+    base = f"/api/loras/{lora['id']}/dataset/hosted"
+
+    est = (await connected.post(f"{base}/estimate", json=body)).json()
+    assert est["images"] == 4 and est["per_image"] == fake.unit_price
+    assert est["total"] == round(fake.unit_price * 4, 4) and fake.submits == []
+    # Nothing starts without the confirmed price; SFW models refuse 18+.
+    assert (await connected.post(base, json=body)).status_code == 400
+    adult = await connected.post(f"{base}/estimate", json={**body, "adult": True})
+    assert adult.status_code == 400 and fake.submits == []
+
+    r = await connected.post(base, json={**body, "confirmed": True, "price_each": est["per_image"]})
+    assert r.status_code == 201, r.text
+    assert r.json()["created"] == 4
+    listed = (await connected.get(f"/api/loras/{lora['id']}/dataset/generated")).json()["items"]
+    assert len(listed) == 4
+    for g in listed:
+        done = await wait_done(connected, g["id"])
+        assert done["status"] == "completed" and len(done["images"]) == 1
+    prompts = [g["prompt"] for g in listed]
+    assert all(p.startswith("Photo of the same woman as in the reference images,") for p in prompts)
+    assert len(set(prompts)) == 4  # four different shots
+    # Sent with the AI model's photo as the reference, on the editing endpoint, 3:4 at 2K.
+    sent = fake.submits[-1]
+    assert sent["model"] == "google/nano-banana-pro/edit"
+    assert sent["body"]["aspect_ratio"] == "3:4" and sent["body"]["resolution"] == "2k"
+    assert len(sent["body"]["images"]) == 1
+    spending = (await connected.get("/api/stats/spending")).json()
+    ws = next(h for h in spending["hosted"] if h["provider"] == "wavespeed")
+    assert ws["priced_runs"] == 4
+
+    # The best photos go into the LoRA.
+    listed = (await connected.get(f"/api/loras/{lora['id']}/dataset/generated")).json()["items"]
+    image_ids = [g["images"][0]["id"] for g in listed[:2]]
+    added = await connected.post(
+        f"/api/loras/{lora['id']}/dataset/add", json={"library_image_ids": image_ids}
+    )
+    assert added.status_code == 200, added.text
+    # (The fake provider returns the same picture for every run, stored once.)
+    assert len((await connected.get(f"/api/loras/{lora['id']}")).json()["dataset"]) >= 1
+
+    other = await make_user("dataset-other")
+    try:
+        assert (await other.post(f"{base}/estimate", json=body)).status_code == 404
     finally:
         await other.client.aclose()
 

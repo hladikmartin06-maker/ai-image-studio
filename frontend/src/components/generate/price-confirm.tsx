@@ -81,5 +81,11 @@ export function usePriceConfirm() {
       ask(await api<PriceEstimate>(`/api/generations/${generationId}/estimate`, { body: { count } })),
     [ask],
   );
-  return useMemo(() => ({ forRequest, forRepeat }), [forRequest, forRepeat]);
+  /** A LoRA dataset made with a hosted model: the price of the whole set. */
+  const forDataset = useCallback(
+    async (loraId: string, body: Record<string, unknown>) =>
+      ask(await api<PriceEstimate>(`/api/loras/${loraId}/dataset/hosted/estimate`, { body })),
+    [ask],
+  );
+  return useMemo(() => ({ forRequest, forRepeat, forDataset }), [forRequest, forRepeat, forDataset]);
 }

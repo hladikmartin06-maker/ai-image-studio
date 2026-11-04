@@ -13,10 +13,11 @@ from typing import Any, Literal
 from fastapi import APIRouter, Depends, File, Query, UploadFile
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from app.catalog import CatalogError, resolve_variant
 from app.comfy import krea2
 from app.comfy.client import ComfyError
 from app.comfy.generation import ComfyGenerateBody, LoraUse, create_comfy_generation
@@ -48,8 +49,23 @@ from app.models import (
     UserSecret,
 )
 from app.routes.secrets import hf_token
-from app.services import faces, huggingface, personas, references, storage, uploads
-from app.services.generation import GenerationRejected
+from app.services import (
+    faces,
+    huggingface,
+    personas,
+    preferences,
+    pricing,
+    references,
+    storage,
+    uploads,
+)
+from app.services.generation import (
+    GenerationRejected,
+    GenerationRequest,
+    PersonaUse,
+    create_generation,
+    prepare,
+)
 from app.services.safety import mentions_minors
 from app.services.serializers import generation_json
 
@@ -1337,6 +1353,188 @@ async def generate_dataset(
     return {"group": group, "runs": created, "images": images}
 
 
+# --- a dataset from an AI model, with a hosted model ------------------------------------------
+
+# One shot per photo: close-ups, half-body and full-body, from several angles, in several
+# places and lights (the studio's own list). Most are frontal with a neutral expression and
+# closed lips; a few smile or turn.
+DATASET_SHOTS: tuple[str, ...] = (
+    "close-up portrait facing the camera, neutral expression, lips closed, plain gray studio "
+    "background, soft even light",
+    "close-up portrait, head turned slightly to the left, neutral expression, lips closed, "
+    "soft window light, white wall",
+    "close-up portrait, three-quarter view to the right, soft closed-mouth smile, warm golden "
+    "hour light outdoors",
+    "close-up portrait facing the camera, neutral expression, lips closed, natural daylight, "
+    "blurred green park background",
+    "close-up side profile facing left, neutral expression, plain beige background, soft "
+    "studio light",
+    "close-up portrait looking slightly up, neutral expression, lips closed, overcast "
+    "daylight, city street background",
+    "close-up portrait facing the camera, gentle smile, bright kitchen in the background, "
+    "morning light",
+    "close-up portrait facing the camera, serious expression, lips closed, dark studio "
+    "background, dramatic side light",
+    "waist-up photo facing the camera, neutral expression, white t-shirt, plain light gray "
+    "background",
+    "waist-up photo sitting in a cafe, looking at the camera, soft smile, casual sweater, warm "
+    "indoor light",
+    "waist-up photo outdoors in a park, three-quarter view, neutral expression, denim jacket, "
+    "daylight",
+    "chest-up photo facing the camera, neutral expression, black tank top, bedroom background, "
+    "soft lamp light",
+    "waist-up photo standing by a window, looking at the camera, neutral expression, beige "
+    "blouse, natural light",
+    "waist-up photo on a city street at night, looking at the camera, neutral expression, "
+    "leather jacket, neon lights",
+    "chest-up photo facing the camera, slight smile, summer dress, beach in the background, "
+    "bright sunlight",
+    "waist-up photo in an office, looking at the camera, neutral expression, white shirt, even "
+    "daylight",
+    "full body photo standing facing the camera, neutral expression, fitted jeans and white "
+    "top, plain studio background",
+    "full body photo walking on a city sidewalk, looking at the camera, casual outfit, daylight",
+    "full body photo standing in side view, fitted black dress, plain light gray background, "
+    "soft studio light",
+    "full body photo sitting on a chair, looking at the camera, casual outfit, living room, "
+    "warm light",
+    "full body photo standing on a beach, looking at the camera, bikini, bright sunlight",
+    "full body photo standing seen from behind, looking back over the shoulder, sportswear, "
+    "plain studio background",
+    "full body photo standing in a park, facing the camera, summer dress, natural daylight",
+    "full body photo leaning against a wall, looking at the camera, black jeans and hoodie, "
+    "overcast daylight",
+)
+# With "18+ content" on (Wan 2.7 / Wan 2.7 Pro only): these full-body shots without clothes.
+DATASET_NUDE_SHOTS: dict[int, str] = {
+    16: "full body photo standing facing the camera, fully nude, neutral expression, plain "
+    "studio background, soft even light",
+    18: "full body photo standing in side view, fully nude, plain light gray background, soft "
+    "studio light",
+    21: "full body photo standing seen from behind, fully nude, looking back over the "
+    "shoulder, plain studio background",
+}
+DATASET_MODELS = ("nano-banana-pro", "seedream", "wan-2.7", "wan-2.7-pro")
+
+
+class HostedDatasetBody(BaseModel):
+    persona_id: uuid.UUID
+    model: Literal["nano-banana-pro", "seedream", "wan-2.7", "wan-2.7-pro"] = "nano-banana-pro"
+    provider: Literal["wavespeed", "atlas"] | None = None
+    count: int = Field(default=24, ge=4, le=48)
+    adult: bool = False
+    # The price per photo the user confirmed (None when the provider gives none).
+    price_each: float | None = Field(default=None, ge=0, le=1000)
+    confirmed: bool = False
+
+
+def _dataset_settings(model_key: str, provider: str) -> dict[str, Any]:
+    """3:4 photos at the endpoint's 2K size when it offers them (training uses 1024 px)."""
+    variant = resolve_variant(model_key, provider, True)
+    out: dict[str, Any] = {}
+    if "3:4" in variant.aspect_ratios:
+        out["aspect_ratio"] = "3:4"
+    for wanted in ("2k", "2K"):
+        if wanted in variant.resolutions:
+            out["resolution"] = wanted
+    return out
+
+
+async def _dataset_requests(
+    db: AsyncSession, user: User, lora: Lora, body: HostedDatasetBody, group: str
+) -> list[GenerationRequest]:
+    prefs = await preferences.load(db, user.id)
+    provider = body.provider or prefs.active_provider
+    if provider is None:
+        raise api_error(409, "not_connected", "Connect WaveSpeed or Atlas Cloud first.")
+    try:
+        settings = _dataset_settings(body.model, provider)
+    except CatalogError as exc:
+        raise api_error(400, exc.code, exc.message) from exc
+    subject = lora.class_word.strip() or "person"
+    out = []
+    for i in range(body.count):
+        index = i % len(DATASET_SHOTS)
+        shot = DATASET_SHOTS[index]
+        if body.adult and index in DATASET_NUDE_SHOTS:
+            shot = DATASET_NUDE_SHOTS[index]
+        out.append(
+            GenerationRequest(
+                model=body.model,
+                provider=provider,
+                prompt=(
+                    f"Photo of the same {subject} as in the reference images, {shot}. Same "
+                    "face and identity, photorealistic, natural skin texture."
+                ),
+                count=1,
+                settings=settings,
+                persona=PersonaUse(id=body.persona_id, use_references=True, use_description=True),
+                price_estimate=body.price_each,
+                adult=body.adult,
+                client_request_id=f"ds-{group}-{i}",
+            )
+        )
+    return out
+
+
+@router.post("/{lora_id}/dataset/hosted/estimate")
+async def estimate_hosted_dataset(
+    lora_id: uuid.UUID,
+    body: HostedDatasetBody,
+    user: User = Depends(current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """The price of the whole set before anything is sent: one photo's estimate from the
+    provider × the number of photos (all use the same model and size)."""
+    lora = await _owned(db, user, lora_id)
+    first = (await _dataset_requests(db, user, lora, body, "estimate"))[0]
+    try:
+        prepared = await prepare(db, user, first)
+    except GenerationRejected as exc:
+        raise api_error(exc.status_code, exc.code, exc.message) from exc
+    one = await pricing.estimate(user, prepared, 1)
+    total = one["total"]
+    return {
+        **one,
+        "images": body.count,
+        "requests": body.count,
+        "per_image": total,
+        "total": round(total * body.count, 4) if total is not None else None,
+    }
+
+
+@router.post("/{lora_id}/dataset/hosted", status_code=201)
+async def create_hosted_dataset(
+    lora_id: uuid.UUID,
+    body: HostedDatasetBody,
+    user: User = Depends(current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """One click: the AI model's photos as references, one hosted run per shot of the list.
+    The photos appear under "Generated photos"; the chosen ones go into the LoRA."""
+    lora = await _owned(db, user, lora_id)
+    if not body.confirmed:
+        raise api_error(400, "confirmation_required", "Confirm the price first.")
+    group = uuid.uuid4().hex[:12]
+    requests = await _dataset_requests(db, user, lora, body, group)
+    # Every request is checked before the first one is sent, so a refusal stops all of them.
+    try:
+        for req in requests:
+            await prepare(db, user, req)
+    except GenerationRejected as exc:
+        raise api_error(exc.status_code, exc.code, exc.message) from exc
+    created = 0
+    for req in requests:
+        try:
+            gen = await create_generation(db, user, req)
+        except GenerationRejected as exc:
+            raise api_error(exc.status_code, exc.code, exc.message) from exc
+        gen.dataset_lora_id = lora.id
+        await db.commit()
+        created += 1
+    return {"group": group, "created": created}
+
+
 @router.get("/{lora_id}/dataset/generated")
 async def generated_for_dataset(
     lora_id: uuid.UUID, user: User = Depends(current_user), db: AsyncSession = Depends(get_db)
@@ -1348,7 +1546,10 @@ async def generated_for_dataset(
             select(Generation)
             .where(
                 Generation.user_id == user.id,
-                Generation.comfy_meta["dataset_lora_id"].astext == str(lora.id),
+                or_(
+                    Generation.dataset_lora_id == lora.id,
+                    Generation.comfy_meta["dataset_lora_id"].astext == str(lora.id),
+                ),
             )
             .options(selectinload(Generation.tasks), selectinload(Generation.images))
             .order_by(Generation.created_at.desc())

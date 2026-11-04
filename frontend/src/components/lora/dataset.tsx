@@ -15,7 +15,7 @@ import {
 import { type DragEvent, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 
-import { DatasetGenerator } from "@/components/lora/dataset-generator";
+import { DatasetGenerator, GeneratedPhotos, HostedDatasetCard } from "@/components/lora/dataset-generator";
 import { Badge, Button, EmptyState, Field, Modal, Notice, Segmented, Select, Skeleton, useConfirm } from "@/components/ui";
 import { ApiError } from "@/lib/api";
 import { formatBytes } from "@/lib/format";
@@ -212,7 +212,9 @@ export function DatasetTab({ lora }: { lora: LoraDetail }) {
         }}
       />
       <DatasetStats lora={lora} />
+      <HostedDatasetCard lora={lora} />
       <DatasetGenerator lora={lora} />
+      <GeneratedPhotos lora={lora} />
       <div className="toolbar" style={{ marginBottom: 0 }}>
         <Button icon={<Upload />} onClick={() => input.current?.click()} loading={pending > 0}>
           {pending ? t("ds.uploading", { n: pending }) : t("ds.upload")}

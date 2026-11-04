@@ -147,9 +147,15 @@ def build(
 
 
 def default_sample_prompts(trigger_word: str, class_word: str) -> list[str]:
+    """Faces from the front with a neutral expression, as on most training photos: the face
+    model measures those reliably (a smile, a side view or a small full-body face lower its
+    score even when it is her). Light and place differ so the LoRA is seen outside its photos."""
     subject = f"{trigger_word} {class_word}".strip()
     return [
-        f"portrait photo of {subject}, soft window light, 85mm",
-        f"{subject} walking in a city street at golden hour, full body",
-        f"close-up of {subject} smiling, studio lighting, neutral background",
+        f"{subject}, close-up portrait facing the camera, neutral expression, lips closed, "
+        "plain gray studio background, soft even light",
+        f"{subject}, head and shoulders portrait facing the camera, neutral expression, "
+        "outdoors in a park, natural daylight",
+        f"{subject}, waist-up photo facing the camera, neutral expression, sitting in a cafe, "
+        "warm indoor light",
     ]
