@@ -90,11 +90,6 @@ DENOISE = {
 # at 0.6 the same, and only the gentle passes kept a tilted selfie's tongue-out expression —
 # at 0.85 it was lost, at 0.75 hair was drawn over the face.
 DENOISE_IDENTITY_FACE = 0.65
-# Last, the whole photo once more, lightly, with the LoRA: the face and the body get one skin
-# tone and light, seams go, and a stretched small photo gets detail again. The owner's bed
-# photo (2026-11-05): 0.3 kept the pose and the room and raised the face's likeness from
-# 56 to 58 %; at 0.4 a hand started to move.
-DENOISE_FINISH = 0.3
 # SAM 3.1's text prompt per target when the plan gives none.
 REGIONS = {
     "hair": "hair",

@@ -554,16 +554,16 @@ one click), optionally Enhance photo, SFace on this Mac and the user's own AI as
   night, lying on a bed, a tilted tongue-out selfie — and LoRA Taila 2, whose photos are 64 %
   alike in SFace): (1) the face first, on the photo itself, in its enlarged crop with the
   LoRA at 0.65 and only the request's sentences about the face (`compiler.region_prompt`);
-  (2) the other edits (hair …), each with its own sentences; (3) the whole photo lightly
-  with the LoRA at 0.3 (`graphs.DENOISE_FINISH`). Measured: the face first reached 59–65 %
+  (2) the other edits (hair …), each with its own sentences. Measured: the face first reached 59–65 %
   on the car and the bed (41 % when it came after a masked redraw of the whole person); one
   pass at 0.75–0.85 and two at 0.6 gave the same, but only gentle passes kept the selfie's
   tongue-out expression (0.85 lost it; at 0.75 with the whole text, hair was drawn over the
   face). The person is no longer redrawn: at 0.7 it lost an expression, drew a foot into a
   pillow and once a new close-up; at 0.6 an arm on the bed became a hand propping the head;
-  at 0.45 it changed nothing visible. The finish at 0.3 gave face and body one skin tone and
-  light, sharpened a stretched small photo and kept the pose and the room (0.4 moved a
-  hand); the face's likeness stayed or rose (bed 56 → 58 %, car 65 %). A body edit and its
+  at 0.45 it changed nothing visible. A light pass over the whole photo afterwards (0.3,
+  tried and removed the same night) looked like one skin tone and light at small size, but
+  up close Krea 2 Turbo — distilled for 8 steps from noise — drew hatching into the hair,
+  cracks into the forehead and white dashes; the hair step before it was clean. A body edit and its
   face exclusion (SAM 3.1 "face" grown 8 px → `MaskComposite` "subtract", clamped 0–1; an
   empty mask when SAM 3.1 finds nothing, `comfy_extras/nodes_sam3.py` v0.35.0) remain for
   requests without a LoRA. The face is measured with SFace against the LoRA's training
@@ -575,8 +575,7 @@ one click), optionally Enhance photo, SFace on this Mac and the user's own AI as
   "keep/preserve" sentences: "preserve … the exact mouth shape, lip position" opened the
   car photo's closed mouth and a correction added a tongue; without them the mouth stayed
   closed on two seeds and the selfie kept its tongue on two seeds — the photo keeps the
-  expression, the words only drew mouths. The finish uses the face's sentences: with the
-  whole text (strands, roots, lengths) it drew hair lines over the skin and the bangs. YuNet misplaces
+  expression, the words only drew mouths. YuNet misplaces
   the face of an extreme expression (the selfie: the box beside the mouth), so its score is
   low whatever the face looks like; the gentle tries then still keep the expression.
 - **Small photos** (since 2026-11-05): when the edit would enlarge the photo more than 1.3×,

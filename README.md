@@ -94,9 +94,8 @@ Integrations and Settings.
     the best attempt is kept, and "Enhance photo" can finish it. Without the assistant, switch
     the analysis off and pick the parts to change yourself (hair, face or body that your text
     asks to change are added by themselves). **A photo with a LoRA** turns the person into the
-    LoRA's character: the face is redrawn with the LoRA first, then the other changes, then
-    the whole photo lightly so face and body share one skin tone, while the pose, the
-    expression and the background stay; the face is always compared with the LoRA's photos
+    LoRA's character: the face is redrawn with the LoRA first, then the other changes, while
+    the pose, the expression and the background stay; the face is always compared with the LoRA's photos
     and redrawn gently up to twice more until it is about as alike as those photos (switch "Turn the person into the LoRA
     character" off when the photo already shows the character). **Small photos** are first
     enlarged and sharpened with Enhance photo. For a **new hair colour** the hair is first

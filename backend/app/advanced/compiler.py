@@ -336,20 +336,15 @@ def _with_identity(spec: Spec, text: str) -> None:
     """The face redrawn with the character LoRA first, on the photo itself (measured on the
     owner's photos, 2026-11-05: 62 % alike to the LoRA's photos this way, 41 % after a masked
     redraw of the whole person, which also changed poses, so the person is not redrawn), then
-    the other changes, and last the whole photo lightly (`graphs.DENOISE_FINISH`) so face and
-    body share one skin tone and light. The plan's own face edit is kept (the user may have
-    edited it)."""
+    the other changes. No light pass over the whole photo afterwards: at 0.3 Krea 2 Turbo
+    drew hatching into the hair and cracks into the skin. The plan's own face edit is kept
+    (the user may have edited it)."""
     edits = [e for e in spec.edits if e.target not in ("whole", "body")]
     face = next((e for e in edits if e.target == "face"), None) or Edit(
         target="face", prompt=region_prompt(_changes(text), "face")
     )
     rest = _ordered([e for e in edits if e.target != "face"])
-    # The finish with the face's sentences, not the whole text: at 0.3 words about strands
-    # drew hair lines over the skin (the owner's car and selfie, 2026-11-05).
-    finish = Edit(
-        target="whole", prompt=region_prompt(_changes(text), "face"), denoise=graphs.DENOISE_FINISH
-    )
-    spec.edits = [face, *rest][: MAX_EDITS - 1] + [finish]
+    spec.edits = [face, *rest][:MAX_EDITS]
 
 
 def validate(spec: Spec, *, user_prompt: str, adult: bool, identity: bool = False) -> Spec:

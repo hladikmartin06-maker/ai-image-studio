@@ -659,7 +659,7 @@ async def test_identity_redraws_the_face_and_corrects_it_gently(
     }
     # The plan before anything runs shows the same steps.
     shown = (await user.post("/api/advanced/plan", json={**body, "targets": []})).json()
-    assert [e["target"] for e in shown["edits"]] == ["face", "hair", "whole"]
+    assert [e["target"] for e in shown["edits"]] == ["face", "hair"]
     # No region chosen: with a LoRA the person becomes its character anyway.
     job = await run(user, body)
     assert job["status"] == "completed", job
@@ -670,14 +670,13 @@ async def test_identity_redraws_the_face_and_corrects_it_gently(
         "prepare",
         "edit1",
         "edit2",
-        "edit3",
         "check",
         "fix1-face",
         "check2",
         "fix2-face",
         "check3",
     ]
-    face, hair, finish, fix, fix2 = sent_graphs(comfy)[-5:]
+    face, hair, fix, fix2 = sent_graphs(comfy)[-4:]
     # The face first, in its enlarged crop, gently, with the LoRA and its own sentences; the
     # person is not redrawn (no SAM 3.1 "person"); the hair last with its colour.
     assert all(
@@ -692,10 +691,6 @@ async def test_identity_redraws_the_face_and_corrects_it_gently(
     assert hair["31"]["inputs"]["text"] == "hair" and hair["41"]["inputs"]["blend_mode"] == (
         "multiply"
     )
-    # Last the whole photo lightly with the LoRA (one skin tone and light), no mask.
-    assert "31" not in finish and finish["7"]["inputs"]["denoise"] == 0.3
-    assert any(n["class_type"] == "LoraLoaderModelOnly" for n in finish.values())
-    assert "hair" not in finish["4"]["inputs"]["text"]  # strands drew lines over the skin
     # Every face try starts from the same image (the one before the checks), not the last try.
     async with SessionLocal() as db:
         inputs = {
@@ -706,7 +701,7 @@ async def test_identity_redraws_the_face_and_corrects_it_gently(
                 )
             )
         }
-        finished = next(s for s in job["stages"] if s["key"] == "edit3")["image_id"]
+        finished = next(s for s in job["stages"] if s["key"] == "edit2")["image_id"]
     assert inputs["fix1-face"] == inputs["fix2-face"] == finished
     # The face did not match the LoRA (measured, even with the checks off): only the face
     # again, as gently, from the last result, until it reaches the goal (at most twice when
@@ -1094,12 +1089,11 @@ def test_identity_plan_redraws_the_face_first():
         identity=True,
     )
     # "whole" and the person are not redrawn: the face first, then the hair with its colour.
-    assert [e.target for e in spec.edits] == ["face", "hair", "whole"]
-    assert [e.region for e in spec.edits] == ["face", "hair", ""]
-    assert spec.edits[2].denoise == 0.3  # the light finish over the whole photo
+    assert [e.target for e in spec.edits] == ["face", "hair"]
+    assert [e.region for e in spec.edits] == ["face", "hair"]
     assert spec.edits[1].color == "#281B14"
     # Each region with the request's own sentences about it (not the hair over the face).
-    face, hair, _ = spec.edits
+    face, hair = spec.edits
     assert face.prompt.startswith("lmxx2 woman, fully transform the woman's facial identity")
     assert "hair" not in face.prompt and "buttock" not in face.prompt
     assert hair.prompt.startswith("very dark brown, almost black hair, one even natural colour")
@@ -1118,7 +1112,6 @@ def test_identity_plan_redraws_the_face_first():
     assert [(e.target, e.prompt.split(",")[0]) for e in spec.edits] == [
         ("face", "my face prompt"),
         ("hair", "red hair"),
-        ("whole", "x"),
     ]
     # Without identity the plan's own order stays.
     plain = Spec(

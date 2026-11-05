@@ -185,10 +185,10 @@ repositories.
   mask with DifferentialDiffusion. An edit with a LoRA turns the person into its character
   (owner's request 2026-11-05; `options.identity`, switch on by default): the face first,
   on the photo itself, with the LoRA (0.65, `graphs.DENOISE_IDENTITY_FACE`), then the other
-  edits, then the whole photo lightly (0.3, `DENOISE_FINISH`: one skin tone and light); the
-  person is not redrawn (it changed poses). Without analysis each region gets the request's
+  edits; the person is not redrawn (it changed poses) and there is no light pass over the
+  whole photo afterwards (Krea 2 Turbo at 0.3 drew hatching into hair and cracks into skin). Without analysis each region gets the request's
   own sentences about it, without its "keep/preserve" sentences (`compiler.region_prompt`,
-  `_changes`: "preserve the mouth shape" opened a closed mouth); the finish gets the face's.
+  `_changes`: "preserve the mouth shape" opened a closed mouth).
   The face is always measured against the LoRA's photos ("face_match", goal 0.85 × their
   own likeness, `quality.IDENTITY_SHARE`) and redrawn up to twice more as gently, each try
   from the same image with a new seed, the most alike kept (`engine.IDENTITY_TRIES`), even
