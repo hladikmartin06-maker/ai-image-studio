@@ -460,7 +460,7 @@ async def test_edit_hair_and_mouth_corrects_only_what_failed(
     assert hair["41"]["inputs"] == {
         "image1": ["11", 0],
         "image2": ["40", 0],
-        "blend_factor": 0.85,
+        "blend_factor": 1.0,
         "blend_mode": "multiply",
     }
     assert "43" not in hair
@@ -482,7 +482,9 @@ async def test_edit_hair_and_mouth_corrects_only_what_failed(
         assert graph["60"]["class_type"] == "DifferentialDiffusion"
         assert graph["7"]["inputs"]["model"] == ["60", 0]
         assert graph["34"]["inputs"]["mask"] == ["37", 0] == graph["38"]["inputs"]["mask"]
-    assert hair["4"]["inputs"]["text"].startswith("dark brown hair, ")
+    assert hair["4"]["inputs"]["text"].startswith(
+        "very dark brown, almost black hair, one even natural colour from roots to ends"
+    )
     assert hair["7"]["inputs"]["denoise"] == 0.85 and mouth["7"]["inputs"]["denoise"] == 0.7
     assert "50" not in hair  # hair is not a face region: no crop
     # The mouth is redrawn in a square around the face, enlarged to 1024 px, and pasted back
@@ -617,7 +619,7 @@ async def imported_lora(api: Api, trigger: str = "lmx") -> dict:
     return r.json()
 
 
-async def test_identity_redraws_person_and_face_and_corrects_the_face(
+async def test_identity_redraws_the_face_and_corrects_it_gently(
     user: Api, comfy, tmp_path, face_engine, monkeypatch
 ):
     from app.advanced import quality
@@ -657,7 +659,7 @@ async def test_identity_redraws_person_and_face_and_corrects_the_face(
     }
     # The plan before anything runs shows the same steps.
     shown = (await user.post("/api/advanced/plan", json={**body, "targets": []})).json()
-    assert [e["target"] for e in shown["edits"]] == ["body", "face", "hair"]
+    assert [e["target"] for e in shown["edits"]] == ["face", "hair", "whole"]
     # No region chosen: with a LoRA the person becomes its character anyway.
     job = await run(user, body)
     assert job["status"] == "completed", job
@@ -675,32 +677,27 @@ async def test_identity_redraws_person_and_face_and_corrects_the_face(
         "fix2-face",
         "check3",
     ]
-    person, face, hair, fix, fix2 = sent_graphs(comfy)[-5:]
-    # The person (SAM 3.1 "person") redrawn with the LoRA, strong enough for its figure;
-    # every pixel outside stays the photo's. The face is taken out (SAM 3.1 "face"), so
-    # its expression is left for the face edit.
-    assert person["31"]["inputs"]["text"] == "person" and "50" not in person
-    assert person["45"]["inputs"]["text"] == "face"
-    assert person["47"]["inputs"] == {
-        "destination": ["33", 0],
-        "source": ["48", 0],
-        "x": 0,
-        "y": 0,
-        "operation": "subtract",
-    }
-    assert person["35"]["inputs"]["mask"] == ["47", 0] and "49" not in person
-    assert person["7"]["inputs"]["denoise"] == 0.45
-    lora_node = next(n for n in person.values() if n["class_type"] == "LoraLoaderModelOnly")
-    assert lora_node["inputs"]["strength_model"] == 1.0
-    assert person["4"]["inputs"]["text"].startswith("lmx, lmxx2 woman")
-    # The face in its enlarged crop, as a new identity; the hair last with its colour.
+    face, hair, finish, fix, fix2 = sent_graphs(comfy)[-5:]
+    # The face first, in its enlarged crop, gently, with the LoRA and its own sentences; the
+    # person is not redrawn (no SAM 3.1 "person"); the hair last with its colour.
+    assert all(
+        g.get("31", {}).get("inputs", {}).get("text") != "person" for g in sent_graphs(comfy)
+    )
     assert face["31"]["inputs"]["text"] == "face" and face["50"]["class_type"] == "ImageCrop"
-    assert face["7"]["inputs"]["denoise"] == 0.75
+    assert face["7"]["inputs"]["denoise"] == 0.65
+    lora_node = next(n for n in face.values() if n["class_type"] == "LoraLoaderModelOnly")
+    assert lora_node["inputs"]["strength_model"] == 1.0
+    assert face["4"]["inputs"]["text"].startswith("lmx, lmxx2 woman, fully transform")
+    assert "buttock" not in face["4"]["inputs"]["text"]
     assert hair["31"]["inputs"]["text"] == "hair" and hair["41"]["inputs"]["blend_mode"] == (
         "multiply"
     )
+    # Last the whole photo lightly with the LoRA (one skin tone and light), no mask.
+    assert "31" not in finish and finish["7"]["inputs"]["denoise"] == 0.3
+    assert any(n["class_type"] == "LoraLoaderModelOnly" for n in finish.values())
     # The face did not match the LoRA (measured, even with the checks off): only the face
-    # again, stronger, until it reaches the goal (at most twice when the user set fewer).
+    # again, as gently, from the last result, until it reaches the goal (at most twice when
+    # the user set fewer).
     first, second, third = job["reports"]
     match = next(c for c in first["checks"] if c["id"] == "face_match")
     assert match["passed"] is False and match["kind"] == "modify"
@@ -709,8 +706,7 @@ async def test_identity_redraws_person_and_face_and_corrects_the_face(
     assert first["identity_reference"] == "lora" and first["changed_area"] is not None
     assert all(len(refs) == 2 for refs in measured)  # the LoRA's photos, not the original
     assert fix["31"]["inputs"]["text"] == fix2["31"]["inputs"]["text"] == "face"
-    assert fix["7"]["inputs"]["denoise"] == pytest.approx(0.85)
-    assert fix2["7"]["inputs"]["denoise"] == pytest.approx(0.85)  # capped: the head stays
+    assert fix["7"]["inputs"]["denoise"] == fix2["7"]["inputs"]["denoise"] == 0.65
     assert next(c for c in third["checks"] if c["id"] == "face_match")["passed"] is True
     assert first["ai"] is None  # no AI checks with the checks off
     assert job["result"]["image_id"] == third["image_id"]
@@ -908,12 +904,13 @@ async def test_cancel_and_restart(user: Api, comfy, tmp_path, monkeypatch):
 def test_hair_colour_from_the_request():
     from app.advanced.compiler import hair_colour
 
-    assert hair_colour("dark brown hair, lips closed") == ("dark brown", "#281B14")
-    # The new colour, not the old one.
-    assert hair_colour("change her hair from blonde to dark brown")[0] == "dark brown"
-    assert hair_colour("Zmeň jej farbu vlasov na tmavohnedú a zatvor jej ústa.")[0] == (
-        "dark brown"
+    assert hair_colour("dark brown hair, lips closed") == (
+        "very dark brown, almost black",
+        "#281B14",
     )
+    # The new colour, not the old one.
+    assert hair_colour("change her hair from blonde to dark brown")[1] == "#281B14"
+    assert hair_colour("Zmeň jej farbu vlasov na tmavohnedú a zatvor jej ústa.")[1] == "#281B14"
     assert hair_colour("zmeň jej vlasy z blond na čierne")[0] == "black"
     # Only a colour next to the hair counts.
     assert hair_colour("a blue dress and long wavy blonde hair")[0] == "blonde"
@@ -922,7 +919,7 @@ def test_hair_colour_from_the_request():
     assert hair_colour(
         "Completely change her platinum blonde hair color to deep natural dark brown, "
         "with no remaining blonde sections."
-    ) == ("dark brown", "#281B14")
+    ) == ("very dark brown, almost black", "#281B14")
     assert hair_colour("Change her platinum blonde hair colour to jet black")[0] == "jet black"
     assert hair_colour("prefarbi jej vlasy do čierna")[0] == "black"
     assert hair_colour("Walk to the red car. Her hair is blonde.")[0] == "blonde"
@@ -941,7 +938,10 @@ def test_colour_in_the_plan():
         adult=False,
     )
     assert spec.edits[0].color == "#281B14"
-    assert spec.edits[0].prompt == "dark brown hair, a woman in a park"
+    assert spec.edits[0].prompt == (
+        "very dark brown, almost black hair, one even natural colour from roots to ends "
+        "without highlights, a woman in a park"
+    )
     # The user removed the colour in the plan: it stays removed.
     spec = validate(
         plan(target="hair", prompt="dark brown hair", color=""), user_prompt="x", adult=False
@@ -1002,8 +1002,8 @@ def test_hair_tint_keeps_the_strands_and_grows_with_each_correction():
     again = graphs.edit(**args, attempt=1)
     # Darker colours multiply (blonde → dark brown keeps every strand), lighter ones screen.
     assert first["41"]["inputs"]["blend_mode"] == "multiply"
-    assert first["41"]["inputs"]["blend_factor"] == 0.85
-    assert again["41"]["inputs"]["blend_factor"] == 0.95
+    assert first["41"]["inputs"]["blend_factor"] == 1.0  # darker: multiplied fully
+    assert again["41"]["inputs"]["blend_factor"] == 1.0
     assert graphs.tint("#3A281D", 5) == ("multiply", 1.0)
     assert graphs.tint("#E5DCC8") == ("screen", 0.55)  # platinum blonde
     assert graphs.tint("#1B1716")[0] == "multiply" and graphs.tint("#CDAE74")[0] == "screen"
@@ -1049,7 +1049,7 @@ def test_regions_from_the_text():
     ]
 
 
-def test_identity_plan_redraws_the_person_then_the_face():
+def test_identity_plan_redraws_the_face_first():
     from app.advanced.compiler import Edit, Spec, by_rules, validate
 
     spec = validate(
@@ -1058,12 +1058,19 @@ def test_identity_plan_redraws_the_person_then_the_face():
         adult=False,
         identity=True,
     )
-    # "whole" is not needed: the person, the face, then the hair with its colour first.
-    assert [e.target for e in spec.edits] == ["body", "face", "hair"]
-    assert [e.region for e in spec.edits] == ["person", "face", "hair"]
-    assert spec.edits[2].color == "#281B14"
-    assert spec.edits[2].prompt.startswith("dark brown hair, ")
-    # A plan the user edited keeps its own body and face prompts.
+    # "whole" and the person are not redrawn: the face first, then the hair with its colour.
+    assert [e.target for e in spec.edits] == ["face", "hair", "whole"]
+    assert [e.region for e in spec.edits] == ["face", "hair", ""]
+    assert spec.edits[2].denoise == 0.3  # the light finish over the whole photo
+    assert spec.edits[1].color == "#281B14"
+    # Each region with the request's own sentences about it (not the hair over the face).
+    face, hair, _ = spec.edits
+    assert face.prompt.startswith("lmxx2 woman, fully transform the woman's facial identity")
+    assert "hair" not in face.prompt and "buttock" not in face.prompt
+    assert hair.prompt.startswith("very dark brown, almost black hair, one even natural colour")
+    assert "lmxx2 woman, Change her hair to long" in hair.prompt
+    assert "facial identity" not in hair.prompt
+    # A plan the user edited keeps its own face prompt; a body edit is not used then.
     edited = Spec(
         mode="edit",
         edits=[
@@ -1074,9 +1081,9 @@ def test_identity_plan_redraws_the_person_then_the_face():
     )
     spec = validate(edited, user_prompt="x", adult=False, identity=True)
     assert [(e.target, e.prompt.split(",")[0]) for e in spec.edits] == [
-        ("body", "my body prompt"),
         ("face", "my face prompt"),
         ("hair", "red hair"),
+        ("whole", "x"),
     ]
     # Without identity the plan's own order stays.
     plain = Spec(

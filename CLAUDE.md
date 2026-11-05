@@ -183,12 +183,14 @@ repositories.
   expression) are redrawn in an enlarged crop around the face found on the Mac
   (`advanced/crop.py`, YuNet) and pasted back inside the mask only; masked edits use a soft
   mask with DifferentialDiffusion. An edit with a LoRA turns the person into its character
-  (owner's request 2026-11-05; `options.identity`, switch on by default): the person (SAM
-  "person" minus SAM "face", target body, 0.45 — more changed the owner's poses) and then
-  the face are redrawn with the LoRA before other edits; the face is always measured against
-  the LoRA's photos ("face_match", goal 0.85 × their own likeness, `quality.IDENTITY_SHARE`)
-  and redrawn up to twice more (`engine.IDENTITY_TRIES`, at most 0.85), even with the
-  checks off.
+  (owner's request 2026-11-05; `options.identity`, switch on by default): the face first,
+  on the photo itself, with the LoRA (0.65, `graphs.DENOISE_IDENTITY_FACE`), then the other
+  edits, then the whole photo lightly (0.3, `DENOISE_FINISH`: one skin tone and light); the
+  person is not redrawn (it changed poses). Without analysis each region gets the request's
+  own sentences about it (`compiler.region_prompt`). The face is always measured against the
+  LoRA's photos ("face_match", goal 0.85 × their own likeness, `quality.IDENTITY_SHARE`) and
+  redrawn up to twice more as gently from the last result (`engine.IDENTITY_TRIES`), even
+  with the checks off. Tuned on the owner's three photos on his A40 (2026-11-05).
   A photo the edit would enlarge more than 1.3× is first enlarged with Enhance photo
   (`options.prepare`, SeedVR2 by the smallest factor that reaches the edit's size;
   skipped and shown when its models are missing). Without analysis, the

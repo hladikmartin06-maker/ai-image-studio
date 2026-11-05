@@ -334,9 +334,10 @@ async def _edit(
     elif edit.target == "face" and options.get("identity"):
         default = graphs.DENOISE_IDENTITY_FACE
     base = edit.denoise or options.get("denoise") or default
-    denoise = min(graphs.DENOISE_MAX, float(base) + 0.1 * attempt)
-    if edit.target == "face" and options.get("identity"):
-        denoise = min(denoise, max(float(base), graphs.DENOISE_IDENTITY_FACE_MAX))
+    # A correction redraws stronger; the LoRA character's face again as gently (its pose and
+    # expression stay; the passes add up).
+    gentle = edit.target == "face" and options.get("identity")
+    denoise = float(base) if gentle else min(graphs.DENOISE_MAX, float(base) + 0.1 * attempt)
     # Face regions are redrawn in an enlarged square around the face.
     square = None
     if region and edit.target in crop.FACE_TARGETS and source.get("file_path"):

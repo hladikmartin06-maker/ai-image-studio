@@ -121,10 +121,11 @@ hair or clothing, the new colour as a typical hex value of how it looks in a pho
 check for the head pose ("Is the head turned and tilted the same way as in the original?").
 Use target "whole" only when the change concerns the entire image.
 
-IDENTITY (the request says so): the studio itself redraws the person (body) and the face
-with the character LoRA and measures the face against the LoRA's photos. Add edits only for
-the other requested changes (hair, clothing, background, mouth …); no preserve check about
-the original person's identity or face, no check about the character's likeness."""
+IDENTITY (the request says so): the studio itself redraws the face with the character LoRA
+and measures it against the LoRA's photos; the person's body is not redrawn (it keeps the
+pose). Add edits only for the other requested changes (hair, clothing, background, mouth …);
+no body edit, no preserve check about the original person's identity or face, no check about
+the character's likeness."""
 
 
 def _clean_mouth(text: str, closed: bool) -> str:
@@ -161,7 +162,11 @@ HAIR_COLOURS: tuple[tuple[str, str, str], ...] = (
     (r"(?:dark|deep) blonde?|tmavo ?blond\w*", "dark blonde", "#A88654"),
     (r"(?:light|pale) blonde?|svetlo ?blond\w*", "light blonde", "#DCC594"),
     (r"blonde?|blond\w*", "blonde", "#CDAE74"),
-    (r"(?:dark|deep) brown|dark chocolate|tmavo ?hned[éeýyáaoíuú]\w*", "dark brown", "#281B14"),
+    (
+        r"(?:dark|deep) brown|dark chocolate|tmavo ?hned[éeýyáaoíuú]\w*",
+        "very dark brown, almost black",
+        "#281B14",
+    ),
     (r"(?:light|pale) brown|svetlo ?hned[éeýyáaoíuú]\w*", "light brown", "#8A6646"),
     (r"chestnut(?: brown)?|gaštan\w*|gastan\w*", "chestnut brown", "#5C3622"),
     (r"chocolate(?: brown)?|čokolád\w*|cokolad\w*", "chocolate brown", "#4A2E20"),
@@ -227,10 +232,15 @@ def hair_colour(text: str) -> tuple[str, str] | None:
     return (best[2], best[3]) if best else None
 
 
+# Said after the colour: without it Krea 2 drew the old blonde strands as lighter highlights
+# (the owner's car photo, 2026-11-05).
+EVEN = "one even natural colour from roots to ends without highlights"
+
+
 def _colour_first(edit: Edit, name: str) -> None:
     """The new colour stated first in the edit's prompt, so Krea 2 weighs it most."""
     if not edit.prompt.lower().startswith(f"{name} hair"):
-        edit.prompt = f"{name} hair, {edit.prompt}"
+        edit.prompt = f"{name} hair, {EVEN}, {edit.prompt}"
 
 
 # Without AI analysis the regions a request clearly asks to change are found in its text, one
@@ -257,6 +267,44 @@ _REGION_WORDS = {
 }
 
 
+# Without analysis each region is redrawn with the sentences of the request about it, so a
+# long text about the hair does not paint hair over the face (the owner's selfie test,
+# 2026-11-05: with the whole text the face became bangs; with its own sentences a face).
+_FACE_WORDS = (
+    r"face|facial|expression|eyes?|eyelids?|eyebrows?|gaze|mouth|lips|tongue|teeth|smile|"
+    r"head|tvár\w*|tvar\w*|oči|oci|ústa|usta|pery|jazyk\w*|výraz\w*|vyraz\w*"
+)
+_SENTENCE_WORDS = {
+    "face": (_FACE_WORDS, _REGION_WORDS["hair"]),
+    "expression": (_FACE_WORDS, _REGION_WORDS["hair"]),
+    "eyes": (_FACE_WORDS, _REGION_WORDS["hair"]),
+    "mouth": (_FACE_WORDS, _REGION_WORDS["hair"]),
+    "hair": (_REGION_WORDS["hair"], r"facial|identity|lora|body|figure|proportions?|buttocks?"),
+    "body": (_REGION_WORDS["body"], _REGION_WORDS["hair"]),
+}
+
+
+def region_prompt(text: str, target: str) -> str:
+    """The request's sentences about this region (its first words — the trigger and "woman" —
+    kept in front); the whole request when none speaks of it."""
+    words = _SENTENCE_WORDS.get(target)
+    if not words:
+        return text
+    about, other = words
+    sentences = [s.strip() for s in re.split(r"[.;!?\n]+", text) if s.strip()]
+    said = [
+        s
+        for s in sentences
+        if re.search(rf"\b({about})\b", s, re.IGNORECASE)
+        and not re.search(rf"\b({other})\b", s, re.IGNORECASE)
+    ]
+    if not said:
+        return text
+    lead = sentences[0].split(",")[0].strip() if sentences else ""
+    body = ". ".join(said)
+    return body if not lead or body.startswith(lead) else f"{lead}, {body}"
+
+
 def detected_targets(text: str) -> list[str]:
     """The regions (body, face, hair) the text asks to change."""
     found: list[str] = []
@@ -277,14 +325,19 @@ def _ordered(edits: list[Edit]) -> list[Edit]:
 
 
 def _with_identity(spec: Spec, text: str) -> None:
-    """The person and the face redrawn with the character LoRA, before the other changes:
-    the body takes the LoRA's figure, the face its identity. The plan's own body or face edit
-    is kept (the user may have edited it); "whole" is not needed then."""
-    edits = [e for e in spec.edits if e.target != "whole"]
-    body = next((e for e in edits if e.target == "body"), None) or Edit(target="body", prompt=text)
-    face = next((e for e in edits if e.target == "face"), None) or Edit(target="face", prompt=text)
-    rest = _ordered([e for e in edits if e.target not in ("body", "face")])
-    spec.edits = [body, face, *rest][:MAX_EDITS]
+    """The face redrawn with the character LoRA first, on the photo itself (measured on the
+    owner's photos, 2026-11-05: 62 % alike to the LoRA's photos this way, 41 % after a masked
+    redraw of the whole person, which also changed poses, so the person is not redrawn), then
+    the other changes, and last the whole photo lightly (`graphs.DENOISE_FINISH`) so face and
+    body share one skin tone and light. The plan's own face edit is kept (the user may have
+    edited it)."""
+    edits = [e for e in spec.edits if e.target not in ("whole", "body")]
+    face = next((e for e in edits if e.target == "face"), None) or Edit(
+        target="face", prompt=region_prompt(text, "face")
+    )
+    rest = _ordered([e for e in edits if e.target != "face"])
+    finish = Edit(target="whole", prompt=text, denoise=graphs.DENOISE_FINISH)
+    spec.edits = [face, *rest][: MAX_EDITS - 1] + [finish]
 
 
 def validate(spec: Spec, *, user_prompt: str, adult: bool, identity: bool = False) -> Spec:
@@ -341,7 +394,7 @@ def by_rules(*, mode: str, prompt: str, targets: list[str], negative: str = "") 
     chosen = [t for t in targets if t in TARGETS]
     chosen += [t for t in detected_targets(text) if t not in chosen]
     edits = [
-        Edit(target=t, region=graphs.REGIONS.get(t, ""), prompt=text)  # type: ignore[arg-type]
+        Edit(target=t, region=graphs.REGIONS.get(t, ""), prompt=region_prompt(text, t))  # type: ignore[arg-type]
         for t in chosen or ["whole"]
     ]
     return Spec(mode="edit", modify=[text], edits=_ordered(edits)[:MAX_EDITS], source="rules")

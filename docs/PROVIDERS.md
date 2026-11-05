@@ -514,7 +514,7 @@ one click), optionally Enhance photo, SFace on this Mac and the user's own AI as
   0.7, eyes 0.6, face 0.55 (0.75 when the person becomes the LoRA's character), expression
   0.6, clothing 0.85, background 0.9, body (the person) 0.45, whole photo 0.5; with a new
   colour hair 0.85 (0.75 left the old colour's strands as light streaks, three times on
-  2026-11-05) and clothing 0.75; each correction adds 0.1 and a new seed (0.2–0.95). The
+  2026-11-05; 0.95 drew a hood over a hand and moved a hand to the face) and clothing 0.75; each correction adds 0.1 and a new seed (0.2–0.95). The
   user can set one strength instead.
 - **The owner's tests on a GPU (2026-11-05, Krea 2 Turbo, 10 requests)**: every one was an
   edit with a character LoRA, "Whole photo" and analysis off — one image to image at 0.5.
@@ -527,8 +527,10 @@ one click), optionally Enhance photo, SFace on this Mac and the user's own AI as
   redraw tends to keep it. The region is therefore tinted first: `EmptyImage` (`color` =
   0xRRGGBB, checked in v0.35.0 `nodes.py`) → `ImageBlend` (`comfy_extras/
   nodes_post_processing.py`, modes normal, multiply, screen, overlay, soft_light,
-  difference): since 2026-11-05 "multiply" at 0.85 for a darker colour (luma < 0.5) and
-  "screen" at 0.55 for a lighter one, +0.1 per correction up to 1.0 — tried on the owner's
+  difference): "multiply" for a darker colour (luma < 0.5) — at 0.85 since 2026-11-05, at
+  1.0 since the owner's car photo the same night (0.85 left the blonde strands as lighter
+  streaks, hair 42/28/23 with highlights at 54; 1.0 gave 32/21/17 and 43) — and "screen" at
+  0.55 for a lighter one, +0.1 per correction up to 1.0 — tried on the owner's
   blonde photo: "normal" 0.55 washed the strands to a flat grey, multiply kept every strand
   and its light. A second blend "normal" at 0.5 towards the flat colour (tried 2026-11-05
   against blonde streaks) turned platinum hair into a flat brown patch that Krea 2 at 0.75
@@ -539,30 +541,38 @@ one click), optionally Enhance photo, SFace on this Mac and the user's own AI as
   `compiler.HAIR_COLOURS`; in a sentence about the hair a colour up to six words after
   "to"/"into"/"na"/"do" wins — "her platinum blonde hair color to deep dark brown" had
   tinted the hair platinum before 2026-11-05), shown and editable in the plan (or removed). The colour is also
-  put first in the edit's prompt ("dark brown hair, …"), and the hair mask grows 32 px
+  put first in the edit's prompt with "one even natural colour from roots to ends without
+  highlights" ("very dark brown, almost black hair, …" — the palette's dark brown, #281B14,
+  is the LoRA characters' near-black brown the owner asked for), and the hair mask grows 32 px
   instead of 16, so no rim of the old colour stays. The eyes and brows are taken out of the
   hair (SAM 3.1 "eyes and eyebrows", grown 8 px, subtracted from the grown mask and from the
   tinted area): a strand over the face had pulled an eye into the whole-photo redraw and
   deformed it (owner's test, 2026-11-05). "Dark brown" is #281B14 since the same day — at
   #3A281D the hair came out at its tone (measured 54/37/27) and the owner wanted it darker.
 - **A person becomes the LoRA's character** (an edit with a LoRA, switch on by default,
-  since 2026-11-05): before the other edits the person (SAM 3.1 "person", target body) is
-  redrawn with the LoRA at 0.45 — mostly the skin tone and surface, its figure only a
-  little; the pose and every pixel outside the person stay; the face is taken out of that mask (a second SAM 3.1 "face",
-  grown 8 px → `MaskComposite` "subtract" from the grown mask, `comfy_extras/nodes_mask.py`,
-  result clamped to 0–1), so the expression is left for the face edit. When SAM 3.1 finds
-  nothing it returns an empty mask, not an error (`comfy_extras/nodes_sam3.py`, v0.35.0,
-  read 2026-11-05), so a person seen from behind keeps the whole region. At 0.7 the owner's
-  second tests (2026-11-05) lost a tongue-out expression in this step, got a foot drawn into
-  a pillow and once a whole new close-up with holes of the old background in the face; at
-  0.6 an arm lying on the bed became a hand propping up the head. Then the face in its enlarged crop at 0.75; "Whole photo" is
-  dropped then. The face is measured with SFace against the LoRA's training photos and is a
-  check of its own ("face_match"), always — also with the checks off. It passes at 0.85 ×
-  how alike the LoRA's photos are to each other (their SFace baseline), never below SFace's
-  threshold 0.363: at the threshold alone a face 41 % alike passed while the photos are
-  64 % alike (Taila 2), and the owner saw a different woman. A face short of it is redrawn
-  again in its crop (+0.1, new seed, at most 0.85 so the head keeps its angle; at least two
-  tries when the user set fewer corrections) and the most alike face is kept.
+  since 2026-11-05; tuned the same night on the owner's A40 with his three photos — a car at
+  night, lying on a bed, a tilted tongue-out selfie — and LoRA Taila 2, whose photos are 64 %
+  alike in SFace): (1) the face first, on the photo itself, in its enlarged crop with the
+  LoRA at 0.65 and only the request's sentences about the face (`compiler.region_prompt`);
+  (2) the other edits (hair …), each with its own sentences; (3) the whole photo lightly
+  with the LoRA at 0.3 (`graphs.DENOISE_FINISH`). Measured: the face first reached 59–65 %
+  on the car and the bed (41 % when it came after a masked redraw of the whole person); one
+  pass at 0.75–0.85 and two at 0.6 gave the same, but only gentle passes kept the selfie's
+  tongue-out expression (0.85 lost it; at 0.75 with the whole text, hair was drawn over the
+  face). The person is no longer redrawn: at 0.7 it lost an expression, drew a foot into a
+  pillow and once a new close-up; at 0.6 an arm on the bed became a hand propping the head;
+  at 0.45 it changed nothing visible. The finish at 0.3 gave face and body one skin tone and
+  light, sharpened a stretched small photo and kept the pose and the room (0.4 moved a
+  hand); the face's likeness stayed or rose (bed 56 → 58 %, car 65 %). A body edit and its
+  face exclusion (SAM 3.1 "face" grown 8 px → `MaskComposite` "subtract", clamped 0–1; an
+  empty mask when SAM 3.1 finds nothing, `comfy_extras/nodes_sam3.py` v0.35.0) remain for
+  requests without a LoRA. The face is measured with SFace against the LoRA's training
+  photos and is a check of its own ("face_match"), always — also with the checks off. It
+  passes at 0.85 × how alike the LoRA's photos are to each other, never below SFace's
+  threshold 0.363. A face short of it is redrawn again from the last result at the same
+  0.65 with a new seed (at least two tries) and the most alike face is kept. YuNet misplaces
+  the face of an extreme expression (the selfie: the box beside the mouth), so its score is
+  low whatever the face looks like; the gentle tries then still keep the expression.
 - **Small photos** (since 2026-11-05): when the edit would enlarge the photo more than 1.3×,
   it is first run through Enhance photo with its gentlest skin fix (0.15) and SeedVR2 by the
   smallest of 1.5×, 2×, 3× that reaches the edit's size (3× when none does; 1.5× before the

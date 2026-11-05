@@ -83,10 +83,18 @@ DENOISE = {
     "body": 0.45,
     "whole": 0.5,
 }
-# The face when the person becomes the LoRA's character: a new identity, not a touch-up; its
-# corrections go up to this, so the head keeps its angle.
-DENOISE_IDENTITY_FACE = 0.75
-DENOISE_IDENTITY_FACE_MAX = 0.85
+# The face when the person becomes the LoRA's character: redrawn gently, and when it is not
+# yet alike enough, again at the same strength from the last result (a new seed each time).
+# The owner's tests (2026-11-05, his three photos, SFace against the LoRA's photos, which are
+# 64 % alike): one pass at 0.75 or 0.85 reached 59–65 % on a car and a bed photo, two passes
+# at 0.6 the same, and only the gentle passes kept a tilted selfie's tongue-out expression —
+# at 0.85 it was lost, at 0.75 hair was drawn over the face.
+DENOISE_IDENTITY_FACE = 0.65
+# Last, the whole photo once more, lightly, with the LoRA: the face and the body get one skin
+# tone and light, seams go, and a stretched small photo gets detail again. The owner's bed
+# photo (2026-11-05): 0.3 kept the pose and the room and raised the face's likeness from
+# 56 to 58 %; at 0.4 a hand started to move.
+DENOISE_FINISH = 0.3
 # SAM 3.1's text prompt per target when the plan gives none.
 REGIONS = {
     "hair": "hair",
@@ -114,7 +122,10 @@ COLOUR_TARGETS = ("hair", "clothing")
 # Hair at 0.85 since 2026-11-05: at 0.75 Krea 2 kept the old colour's light strands as
 # streaks (blonde → dark brown came out with caramel highlights, three times).
 DENOISE_COLOUR = {"hair": 0.85, "clothing": 0.75}
-TINT = {"multiply": 0.85, "screen": 0.55}  # how far the region goes towards the colour
+# How far the region goes towards the colour. Multiply at full strength since the owner's car
+# photo (2026-11-05): at 0.85 the old blonde strands stayed as lighter streaks (hair
+# measured 42/28/23, highlights 54), at 1.0 darker and more even (32/21/17, 43).
+TINT = {"multiply": 1.0, "screen": 0.55}
 TINT_STEP = 0.1  # more on every correction
 TINT_MAX = 1.0
 DARK = 0.5  # a colour's luma (0–1) below this is "darker": multiply

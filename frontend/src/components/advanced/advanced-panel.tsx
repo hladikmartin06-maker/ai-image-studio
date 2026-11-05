@@ -376,15 +376,19 @@ export function AdvancedPanel({ header }: { header: React.ReactNode }) {
     setResolution(o.resolution ?? "1K");
     const seedUsed = o.seed ?? o.first_seed;
     setSeed(seedUsed !== undefined && seedUsed !== null ? String(seedUsed) : "");
-    setTargets(o.targets ?? []);
-    setIdentity(Boolean(o.identity));
+    // A request from before "turn the person into the LoRA's character" (no `identity` in its
+    // options) is loaded with today's defaults: the switch on, no "whole photo" and no old
+    // plan — its plan would skip the face and hair steps.
+    const older = o.identity === undefined;
+    setTargets(older ? (o.targets ?? []).filter((x) => x !== "whole") : (o.targets ?? []));
+    setIdentity(older ? true : Boolean(o.identity));
     setDenoise(o.denoise ?? null);
     setAnalysis(o.analysis ?? true);
     setQuality(o.quality ?? true);
     setCorrections(o.corrections ?? 1);
     setEnhance(Boolean(o.enhance));
     setAdult(Boolean(o.adult));
-    setDraft(j.spec && (j.spec.prompt || j.spec.edits.length) ? { ...j.spec } : null);
+    setDraft(!older && j.spec && (j.spec.prompt || j.spec.edits.length) ? { ...j.spec } : null);
     setMore(true);
     if (loraId && !loraExists) toast.warning(t("adv.loraGone"));
     else toast.success(t("adv.loaded"));
