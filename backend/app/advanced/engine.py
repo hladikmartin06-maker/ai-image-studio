@@ -24,7 +24,7 @@ from sqlalchemy.orm import selectinload
 from app.advanced import crop, graphs
 from app.advanced.compiler import Edit, Spec, by_ai, by_rules, validate
 from app.advanced.intelligence import IntelligenceError
-from app.advanced.quality import evaluate, failed, rank
+from app.advanced.quality import FACE_MATCH, evaluate, failed, rank
 from app.comfy import enhance, krea2
 from app.db import SessionLocal
 from app.models import (
@@ -599,7 +599,12 @@ async def _run(job_id: uuid.UUID) -> None:
                 bad = [c for c in failed(report) if c.get("kind") == "modify"]
                 if not bad:
                     break
-                image = await _correct(job, spec, image, bad, attempt)
+                # The LoRA character's face alone: every try starts again from the same image
+                # with a new seed and the most alike is kept (tries that build on each other
+                # added up artifacts on the owner's selfie, 2026-11-05).
+                again = identity and all(c.get("id") == FACE_MATCH for c in bad)
+                start = attempts[0]["image"] if again else image
+                image = await _correct(job, spec, start, bad, attempt)
                 produced.append(image)
                 report = await _check(job, user, spec, image, f"check{attempt + 1}")
                 report["attempt"] = attempt

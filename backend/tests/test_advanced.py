@@ -695,6 +695,19 @@ async def test_identity_redraws_the_face_and_corrects_it_gently(
     # Last the whole photo lightly with the LoRA (one skin tone and light), no mask.
     assert "31" not in finish and finish["7"]["inputs"]["denoise"] == 0.3
     assert any(n["class_type"] == "LoraLoaderModelOnly" for n in finish.values())
+    assert "hair" not in finish["4"]["inputs"]["text"]  # strands drew lines over the skin
+    # Every face try starts from the same image (the one before the checks), not the last try.
+    async with SessionLocal() as db:
+        inputs = {
+            g.comfy_meta["advanced"]["stage"]: (g.comfy_meta.get("input") or {}).get("id")
+            for g in await db.scalars(
+                select(Generation).where(
+                    Generation.comfy_meta["advanced"]["job_id"].astext == job["id"]
+                )
+            )
+        }
+        finished = next(s for s in job["stages"] if s["key"] == "edit3")["image_id"]
+    assert inputs["fix1-face"] == inputs["fix2-face"] == finished
     # The face did not match the LoRA (measured, even with the checks off): only the face
     # again, as gently, from the last result, until it reaches the goal (at most twice when
     # the user set fewer).
@@ -713,6 +726,28 @@ async def test_identity_redraws_the_face_and_corrects_it_gently(
     # Identity off: the LoRA only helps, and a region has to be chosen again.
     r = await user.post("/api/advanced/jobs", json={**body, "identity": False})
     assert r.status_code == 400
+
+
+def test_region_prompts_leave_out_what_to_keep():
+    from app.advanced.compiler import _changes, region_prompt
+
+    selfie = (
+        "lmxx2 woman, transform the woman's facial identity to match the trained LoRA identity. "
+        "Completely change her platinum blonde hair color to deep natural dark brown. "
+        "Preserve the exact original facial expression, eyes looking upward, open mouth and "
+        "tongue sticking out. Keep the original grey top and background."
+    )
+    face = region_prompt(_changes(selfie), "face")
+    # "Preserve … open mouth and tongue" made Krea 2 open a closed mouth and draw a tongue
+    # (the owner's car, 2026-11-05); the expression is kept by the photo itself.
+    assert face == (
+        "lmxx2 woman, transform the woman's facial identity to match the trained LoRA identity"
+    )
+    hair = region_prompt(_changes(selfie), "hair")
+    assert hair.startswith("lmxx2 woman, Completely change her platinum blonde hair color")
+    assert "tongue" not in hair and "background" not in hair
+    # Nothing but "keep" sentences: the request as written.
+    assert _changes("Keep her pose.") == "Keep her pose."
 
 
 def test_small_photo_is_enlarged_to_the_edit_size():

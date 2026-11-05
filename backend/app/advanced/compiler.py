@@ -284,6 +284,14 @@ _SENTENCE_WORDS = {
 }
 
 
+def _changes(text: str) -> str:
+    """The request without its "keep/preserve" sentences: a diffusion model does not read
+    "preserve the exact mouth shape, lip position" as an instruction but draws mouth and lips
+    (an open mouth, then a tongue, on the owner's car photo, 2026-11-05)."""
+    kept = [s.strip() for s in re.split(r"[.;!?\n]+", text) if s.strip() and not _KEEP.search(s)]
+    return ". ".join(kept) or text
+
+
 def region_prompt(text: str, target: str) -> str:
     """The request's sentences about this region (its first words — the trigger and "woman" —
     kept in front); the whole request when none speaks of it."""
@@ -333,10 +341,14 @@ def _with_identity(spec: Spec, text: str) -> None:
     edited it)."""
     edits = [e for e in spec.edits if e.target not in ("whole", "body")]
     face = next((e for e in edits if e.target == "face"), None) or Edit(
-        target="face", prompt=region_prompt(text, "face")
+        target="face", prompt=region_prompt(_changes(text), "face")
     )
     rest = _ordered([e for e in edits if e.target != "face"])
-    finish = Edit(target="whole", prompt=text, denoise=graphs.DENOISE_FINISH)
+    # The finish with the face's sentences, not the whole text: at 0.3 words about strands
+    # drew hair lines over the skin (the owner's car and selfie, 2026-11-05).
+    finish = Edit(
+        target="whole", prompt=region_prompt(_changes(text), "face"), denoise=graphs.DENOISE_FINISH
+    )
     spec.edits = [face, *rest][: MAX_EDITS - 1] + [finish]
 
 
@@ -394,7 +406,11 @@ def by_rules(*, mode: str, prompt: str, targets: list[str], negative: str = "") 
     chosen = [t for t in targets if t in TARGETS]
     chosen += [t for t in detected_targets(text) if t not in chosen]
     edits = [
-        Edit(target=t, region=graphs.REGIONS.get(t, ""), prompt=region_prompt(text, t))  # type: ignore[arg-type]
+        Edit(
+            target=t,  # type: ignore[arg-type]
+            region=graphs.REGIONS.get(t, ""),
+            prompt=region_prompt(_changes(text), t) if t in _SENTENCE_WORDS else text,
+        )
         for t in chosen or ["whole"]
     ]
     return Spec(mode="edit", modify=[text], edits=_ordered(edits)[:MAX_EDITS], source="rules")
