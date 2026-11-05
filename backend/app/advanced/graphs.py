@@ -95,9 +95,12 @@ REGIONS = {
     "background": "background",
     "body": "person",
 }
-# What a region's redraw leaves alone (SAM 3.1 finds it too and it is taken out of the
-# mask): the person's figure without the face, so the expression stays for the face edit.
-EXCLUDE = {"body": "face"}
+# What a region's redraw leaves alone (SAM 3.1 finds it too, grown a little, and it is taken
+# out of the grown mask; nothing found = nothing taken out): the person's figure without the
+# face, so the expression stays for the face edit; the hair without the eyes and brows,
+# which a whole-photo redraw would deform (owner's test 2026-11-05: an eye after the hair).
+EXCLUDE = {"body": "face", "hair": "eyes and eyebrows"}
+EXCLUDE_GROW = 8
 DENOISE_MIN = 0.2
 DENOISE_MAX = 0.95
 
@@ -109,9 +112,6 @@ DENOISE_COLOUR = {"hair": 0.75, "clothing": 0.75}
 TINT = {"multiply": 0.85, "screen": 0.55}  # how far the region goes towards the colour
 TINT_STEP = 0.1  # more on every correction
 TINT_MAX = 1.0
-# After the tint the region is also blended this far towards the flat colour, so the old
-# colour's highlights (blonde streaks under dark brown) do not come back in the redraw.
-FLATTEN = 0.5
 DARK = 0.5  # a colour's luma (0–1) below this is "darker": multiply
 
 # How far the mask grows past what SAM 3.1 found (px at the edit size) — hair gets more, so
@@ -292,34 +292,8 @@ def edit(
     pixels: list[Any] = base
     latent: list[Any] = ["12", 0]
     if region:
-        found: list[Any] = ["32", 0]
-        if exclude:
-            wf["45"] = {
-                "class_type": "CLIPTextEncode",
-                "inputs": {"clip": ["30", 1], "text": exclude},
-            }
-            wf["46"] = {
-                "class_type": "SAM3_Detect",
-                "inputs": {
-                    "model": ["30", 0],
-                    "image": base,
-                    "conditioning": ["45", 0],
-                    "threshold": 0.4,
-                    "refine_iterations": 2,
-                    "individual_masks": False,
-                },
-            }
-            wf["47"] = {
-                "class_type": "MaskComposite",
-                "inputs": {
-                    "destination": ["32", 0],
-                    "source": ["46", 0],
-                    "x": 0,
-                    "y": 0,
-                    "operation": "subtract",
-                },
-            }
-            found = ["47", 0]
+        redrawn: list[Any] = ["33", 0]  # the grown mask, before its soft edge
+        tinted: list[Any] = ["32", 0]  # what SAM 3.1 found: the colour goes only there
         wf.update(
             {
                 "30": {"class_type": "CheckpointLoaderSimple", "inputs": {"ckpt_name": SAM3_FILE}},
@@ -340,14 +314,43 @@ def edit(
                 },
                 "33": {
                     "class_type": "GrowMask",
-                    "inputs": {"mask": found, "expand": grow, "tapered_corners": True},
+                    "inputs": {"mask": ["32", 0], "expand": grow, "tapered_corners": True},
                 },
+            }
+        )
+        if exclude:
+            wf["45"] = {
+                "class_type": "CLIPTextEncode",
+                "inputs": {"clip": ["30", 1], "text": exclude},
+            }
+            wf["46"] = {
+                "class_type": "SAM3_Detect",
+                "inputs": {
+                    "model": ["30", 0],
+                    "image": base,
+                    "conditioning": ["45", 0],
+                    "threshold": 0.4,
+                    "refine_iterations": 2,
+                    "individual_masks": False,
+                },
+            }
+            wf["48"] = {
+                "class_type": "GrowMask",
+                "inputs": {"mask": ["46", 0], "expand": EXCLUDE_GROW, "tapered_corners": True},
+            }
+            wf["47"] = _subtract(["33", 0], ["48", 0])
+            redrawn = ["47", 0]
+            if colour:
+                wf["49"] = _subtract(["32", 0], ["48", 0])
+                tinted = ["49", 0]
+        wf.update(
+            {
                 # The soft mask decides what is redrawn and what is pasted back.
                 "34": {
                     "class_type": "SetLatentNoiseMask",
                     "inputs": {"samples": ["12", 0], "mask": ["37", 0]},
                 },
-                "35": {"class_type": "MaskToImage", "inputs": {"mask": ["33", 0]}},
+                "35": {"class_type": "MaskToImage", "inputs": {"mask": redrawn}},
                 "36": {
                     "class_type": "ImageBlur",
                     "inputs": {"image": ["35", 0], "blur_radius": feather, "sigma": feather / 2},
@@ -380,23 +383,14 @@ def edit(
                     "blend_mode": mode,
                 },
             }
-            wf["43"] = {
-                "class_type": "ImageBlend",
-                "inputs": {
-                    "image1": ["41", 0],
-                    "image2": ["40", 0],
-                    "blend_factor": FLATTEN,
-                    "blend_mode": "normal",
-                },
-            }
             # Only what SAM 3.1 found is tinted (not the grown rim), so no coloured halo
             # stays on the skin or the background around it.
             wf["42"] = {
                 "class_type": "ImageCompositeMasked",
                 "inputs": {
                     "destination": base,
-                    "source": ["43", 0],
-                    "mask": found,
+                    "source": ["41", 0],
+                    "mask": tinted,
                     "x": 0,
                     "y": 0,
                     "resize_source": False,
@@ -438,6 +432,14 @@ def edit(
         out = ["38", 0]
     wf["9"] = {"class_type": "SaveImage", "inputs": {"images": out, "filename_prefix": prefix}}
     return wf
+
+
+def _subtract(mask: list[Any], taken: list[Any]) -> dict[str, Any]:
+    """`mask` without `taken` (MaskComposite clamps the result to 0–1)."""
+    return {
+        "class_type": "MaskComposite",
+        "inputs": {"destination": mask, "source": taken, "x": 0, "y": 0, "operation": "subtract"},
+    }
 
 
 def colour_int(hex_colour: str) -> int:

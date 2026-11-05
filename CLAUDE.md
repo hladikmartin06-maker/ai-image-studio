@@ -177,8 +177,8 @@ repositories.
   LoRA, Enhance photo); "Load settings" restores a request with its plan and first seed
   (`options.first_seed`); deleting a request removes its images and steps, never the photo
   it started from. Colour changes (hair, clothing) tint the region with the plan's colour
-  before the redraw (`graphs.tint`: multiply for darker, screen for lighter colours, then
-  half-way to the flat colour (`FLATTEN`) so old highlights go, only inside SAM's own mask;
+  before the redraw (`graphs.tint`: multiply for darker, screen for lighter colours, only
+  inside SAM's own mask, without the eyes and brows (`graphs.EXCLUDE`);
   palette `compiler.HAIR_COLOURS`, the colour after "to"/"na" wins); face regions (mouth, eyes, face,
   expression) are redrawn in an enlarged crop around the face found on the Mac
   (`advanced/crop.py`, YuNet) and pasted back inside the mask only; masked edits use a soft

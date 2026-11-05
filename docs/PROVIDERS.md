@@ -529,9 +529,9 @@ one click), optionally Enhance photo, SFace on this Mac and the user's own AI as
   difference): since 2026-11-05 "multiply" at 0.85 for a darker colour (luma < 0.5) and
   "screen" at 0.55 for a lighter one, +0.1 per correction up to 1.0 — tried on the owner's
   blonde photo: "normal" 0.55 washed the strands to a flat grey, multiply kept every strand
-  and its light — then (since the owner's second tests, 2026-11-05: blonde → dark brown came
-  out mid brown with blonde streaks) a second `ImageBlend` "normal" at 0.5 towards the flat
-  colour (`graphs.FLATTEN`), so the old highlights do not return → `ImageCompositeMasked` inside what SAM 3.1 found (not the grown rim, so no
+  and its light. A second blend "normal" at 0.5 towards the flat colour (tried 2026-11-05
+  against blonde streaks) turned platinum hair into a flat brown patch that Krea 2 at 0.75
+  did not redraw into strands, and was removed the same day → `ImageCompositeMasked` inside what SAM 3.1 found (not the grown rim, so no
   coloured halo on the skin) → VAEEncode. The
   colour is the plan's `color` (the assistant gives a hex value; without one the studio's
   own palette of hair tones, English and Slovak words next to "hair"/"vlasy",
@@ -539,13 +539,19 @@ one click), optionally Enhance photo, SFace on this Mac and the user's own AI as
   "to"/"into"/"na"/"do" wins — "her platinum blonde hair color to deep dark brown" had
   tinted the hair platinum before 2026-11-05), shown and editable in the plan (or removed). The colour is also
   put first in the edit's prompt ("dark brown hair, …"), and the hair mask grows 32 px
-  instead of 16, so no rim of the old colour stays.
+  instead of 16, so no rim of the old colour stays. The eyes and brows are taken out of the
+  hair (SAM 3.1 "eyes and eyebrows", grown 8 px, subtracted from the grown mask and from the
+  tinted area): a strand over the face had pulled an eye into the whole-photo redraw and
+  deformed it (owner's test, 2026-11-05). "Dark brown" is #281B14 since the same day — at
+  #3A281D the hair came out at its tone (measured 54/37/27) and the owner wanted it darker.
 - **A person becomes the LoRA's character** (an edit with a LoRA, switch on by default,
   since 2026-11-05): before the other edits the person (SAM 3.1 "person", target body) is
   redrawn with the LoRA at 0.6 — its figure and proportions, the pose and every pixel
-  outside the person stay; the face is taken out of that mask (a second SAM 3.1 "face" →
-  `MaskComposite` "subtract", `comfy_extras/nodes_mask.py`), so the expression is left for
-  the face edit. At 0.7 the owner's second tests (2026-11-05) lost a tongue-out expression
+  outside the person stay; the face is taken out of that mask (a second SAM 3.1 "face",
+  grown 8 px → `MaskComposite` "subtract" from the grown mask, `comfy_extras/nodes_mask.py`,
+  result clamped to 0–1), so the expression is left for the face edit. When SAM 3.1 finds
+  nothing it returns an empty mask, not an error (`comfy_extras/nodes_sam3.py`, v0.35.0,
+  read 2026-11-05), so a person seen from behind keeps the whole region. At 0.7 the owner's second tests (2026-11-05) lost a tongue-out expression
   in this step, got a foot drawn into a pillow and once a whole new close-up with holes of
   the old background in the face. Then the face in its enlarged crop at 0.75; "Whole photo" is
   dropped then. The face is measured with SFace against the LoRA's training photos and is a

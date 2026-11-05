@@ -117,7 +117,7 @@ as it should look after that change (the subject, head pose, clothing, place, li
 seen), with the change stated first and clearly (e.g. "dark brown hair, a woman with dark
 brown hair, …"; "closed mouth, lips gently together, …"). "color": for a colour change of
 hair or clothing, the new colour as a typical hex value of how it looks in a photo
-(e.g. dark brown hair "#3A281D", platinum blonde "#E5DCC8"); otherwise null. Add a preserve
+(e.g. dark brown hair "#281B14", platinum blonde "#E5DCC8"); otherwise null. Add a preserve
 check for the head pose ("Is the head turned and tilted the same way as in the original?").
 Use target "whole" only when the change concerns the entire image.
 
@@ -161,7 +161,7 @@ HAIR_COLOURS: tuple[tuple[str, str, str], ...] = (
     (r"(?:dark|deep) blonde?|tmavo ?blond\w*", "dark blonde", "#A88654"),
     (r"(?:light|pale) blonde?|svetlo ?blond\w*", "light blonde", "#DCC594"),
     (r"blonde?|blond\w*", "blonde", "#CDAE74"),
-    (r"(?:dark|deep) brown|dark chocolate|tmavo ?hned[éeýyáaoíuú]\w*", "dark brown", "#3A281D"),
+    (r"(?:dark|deep) brown|dark chocolate|tmavo ?hned[éeýyáaoíuú]\w*", "dark brown", "#281B14"),
     (r"(?:light|pale) brown|svetlo ?hned[éeýyáaoíuú]\w*", "light brown", "#8A6646"),
     (r"chestnut(?: brown)?|gaštan\w*|gastan\w*", "chestnut brown", "#5C3622"),
     (r"chocolate(?: brown)?|čokolád\w*|cokolad\w*", "chocolate brown", "#4A2E20"),

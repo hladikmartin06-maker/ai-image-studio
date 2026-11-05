@@ -451,27 +451,32 @@ async def test_edit_hair_and_mouth_corrects_only_what_failed(
         assert {"SAM3_Detect", "SetLatentNoiseMask", "ImageCompositeMasked", "LoadImage"} <= kinds
         assert graph["31"]["inputs"]["text"] == region
     # Hair colour: the plan named "dark brown", so the hair is tinted with it first (only
-    # what SAM 3.1 found, multiplied so the strands keep their light, then half-way to the
-    # flat colour so the old highlights go) and redrawn less; the colour leads the prompt;
-    # a wider mask with a soft edge redrawn gradually.
+    # what SAM 3.1 found, multiplied so the strands keep their light) and redrawn less; the
+    # colour leads the prompt; a wider mask with a soft edge redrawn gradually. No extra
+    # blend towards the flat colour: on platinum hair it left a flat patch without strands
+    # (owner's test, 2026-11-05).
     assert hair["40"]["class_type"] == "EmptyImage"
-    assert hair["40"]["inputs"]["color"] == 0x3A281D
+    assert hair["40"]["inputs"]["color"] == 0x281B14
     assert hair["41"]["inputs"] == {
         "image1": ["11", 0],
         "image2": ["40", 0],
         "blend_factor": 0.85,
         "blend_mode": "multiply",
     }
-    assert hair["43"]["inputs"] == {
-        "image1": ["41", 0],
-        "image2": ["40", 0],
-        "blend_factor": 0.5,
-        "blend_mode": "normal",
-    }
-    assert hair["42"]["inputs"]["source"] == ["43", 0]
-    assert hair["42"]["inputs"]["mask"] == ["32", 0]
+    assert "43" not in hair
+    assert hair["42"]["inputs"]["source"] == ["41", 0]
     assert hair["12"]["inputs"]["pixels"] == ["42", 0]
-    assert "46" not in hair and "46" not in mouth  # nothing taken out of these regions
+    # The eyes and brows (SAM 3.1, grown 8 px) are taken out of the hair: out of the grown
+    # mask that is redrawn and out of what is tinted, so the hair redraw leaves them alone.
+    assert hair["45"]["inputs"]["text"] == "eyes and eyebrows"
+    assert hair["48"]["inputs"] == {"mask": ["46", 0], "expand": 8, "tapered_corners": True}
+    assert hair["47"]["inputs"]["destination"] == ["33", 0]
+    assert hair["47"]["inputs"]["source"] == ["48", 0]
+    assert hair["47"]["inputs"]["operation"] == "subtract"
+    assert hair["35"]["inputs"]["mask"] == ["47", 0]
+    assert hair["49"]["inputs"]["destination"] == ["32", 0]
+    assert hair["42"]["inputs"]["mask"] == ["49", 0]
+    assert "46" not in mouth and mouth["35"]["inputs"]["mask"] == ["33", 0]
     assert hair["33"]["inputs"]["expand"] == 32 and mouth["33"]["inputs"]["expand"] == 16
     for graph in (hair, mouth, fix):
         assert graph["60"]["class_type"] == "DifferentialDiffusion"
@@ -665,13 +670,13 @@ async def test_identity_redraws_person_and_face_and_corrects_the_face(
     assert person["31"]["inputs"]["text"] == "person" and "50" not in person
     assert person["45"]["inputs"]["text"] == "face"
     assert person["47"]["inputs"] == {
-        "destination": ["32", 0],
-        "source": ["46", 0],
+        "destination": ["33", 0],
+        "source": ["48", 0],
         "x": 0,
         "y": 0,
         "operation": "subtract",
     }
-    assert person["33"]["inputs"]["mask"] == ["47", 0]
+    assert person["35"]["inputs"]["mask"] == ["47", 0] and "49" not in person
     assert person["7"]["inputs"]["denoise"] == 0.6
     lora_node = next(n for n in person.values() if n["class_type"] == "LoraLoaderModelOnly")
     assert lora_node["inputs"]["strength_model"] == 1.0
@@ -886,7 +891,7 @@ async def test_cancel_and_restart(user: Api, comfy, tmp_path, monkeypatch):
 def test_hair_colour_from_the_request():
     from app.advanced.compiler import hair_colour
 
-    assert hair_colour("dark brown hair, lips closed") == ("dark brown", "#3A281D")
+    assert hair_colour("dark brown hair, lips closed") == ("dark brown", "#281B14")
     # The new colour, not the old one.
     assert hair_colour("change her hair from blonde to dark brown")[0] == "dark brown"
     assert hair_colour("Zmeň jej farbu vlasov na tmavohnedú a zatvor jej ústa.")[0] == (
@@ -900,7 +905,7 @@ def test_hair_colour_from_the_request():
     assert hair_colour(
         "Completely change her platinum blonde hair color to deep natural dark brown, "
         "with no remaining blonde sections."
-    ) == ("dark brown", "#3A281D")
+    ) == ("dark brown", "#281B14")
     assert hair_colour("Change her platinum blonde hair colour to jet black")[0] == "jet black"
     assert hair_colour("prefarbi jej vlasy do čierna")[0] == "black"
     assert hair_colour("Walk to the red car. Her hair is blonde.")[0] == "blonde"
@@ -918,7 +923,7 @@ def test_colour_in_the_plan():
         user_prompt="dark brown hair please",
         adult=False,
     )
-    assert spec.edits[0].color == "#3A281D"
+    assert spec.edits[0].color == "#281B14"
     assert spec.edits[0].prompt == "dark brown hair, a woman in a park"
     # The user removed the colour in the plan: it stays removed.
     spec = validate(
@@ -1039,7 +1044,7 @@ def test_identity_plan_redraws_the_person_then_the_face():
     # "whole" is not needed: the person, the face, then the hair with its colour first.
     assert [e.target for e in spec.edits] == ["body", "face", "hair"]
     assert [e.region for e in spec.edits] == ["person", "face", "hair"]
-    assert spec.edits[2].color == "#3A281D"
+    assert spec.edits[2].color == "#281B14"
     assert spec.edits[2].prompt.startswith("dark brown hair, ")
     # A plan the user edited keeps its own body and face prompts.
     edited = Spec(
