@@ -356,6 +356,7 @@ async def _edit(
         denoise=denoise,
         region=region,
         exclude=exclude,
+        soften=graphs.MOUTH_KEEP if gentle and region else None,
         grow=graphs.GROW.get(edit.target, graphs.GROW_DEFAULT),
         colour=colour,
         attempt=attempt,

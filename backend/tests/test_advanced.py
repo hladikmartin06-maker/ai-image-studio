@@ -688,6 +688,15 @@ async def test_identity_redraws_the_face_and_corrects_it_gently(
     assert lora_node["inputs"]["strength_model"] == 1.0
     assert face["4"]["inputs"]["text"].startswith("lmx, lmxx2 woman, fully transform")
     assert "buttock" not in face["4"]["inputs"]["text"]
+    # Its mouth (SAM 3.1 "mouth and lips") is redrawn at half the strength, so the photo's
+    # mouth keeps its shape (closed stays closed, a tongue stays) — also in every try.
+    for graph in (face, fix, fix2):
+        assert graph["70"]["inputs"]["text"] == "mouth and lips"
+        assert graph["73"]["inputs"]["value"] == 0.5
+        assert graph["74"]["inputs"]["operation"] == "multiply"
+        assert graph["75"]["inputs"]["destination"] == ["33", 0]
+        assert graph["35"]["inputs"]["mask"] == ["75", 0]
+    assert "70" not in hair
     assert hair["31"]["inputs"]["text"] == "hair" and hair["41"]["inputs"]["blend_mode"] == (
         "multiply"
     )
