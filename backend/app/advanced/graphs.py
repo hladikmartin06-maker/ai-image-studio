@@ -68,9 +68,10 @@ NODES_EDIT = (
 
 # Region edits: how much of the region is redrawn by default (the studio's values; Krea
 # publishes none). A colour change needs more than closing the lips; the person ("body")
-# needs enough for a character LoRA to give it its figure while the pose stays — at 0.7 the
-# owner's tests (2026-11-05) got a foot drawn into a pillow and once a whole new close-up
-# with holes of the old background in the face.
+# is redrawn gently: the pose comes first (the owner's tests, 2026-11-05: at 0.7 a foot in a
+# pillow and once a whole new close-up with holes of the old background in the face; at 0.6
+# an arm lying on the bed became a hand propping up the head), so mostly the skin tone and
+# surface follow the LoRA, its figure only a little.
 DENOISE = {
     "hair": 0.85,
     "mouth": 0.7,
@@ -79,11 +80,13 @@ DENOISE = {
     "expression": 0.6,
     "clothing": 0.85,
     "background": 0.9,
-    "body": 0.6,
+    "body": 0.45,
     "whole": 0.5,
 }
-# The face when the person becomes the LoRA's character: a new identity, not a touch-up.
+# The face when the person becomes the LoRA's character: a new identity, not a touch-up; its
+# corrections go up to this, so the head keeps its angle.
 DENOISE_IDENTITY_FACE = 0.75
+DENOISE_IDENTITY_FACE_MAX = 0.85
 # SAM 3.1's text prompt per target when the plan gives none.
 REGIONS = {
     "hair": "hair",
@@ -108,7 +111,9 @@ DENOISE_MAX = 0.95
 # less has to be redrawn — the hairstyle and its light stay closer to the photo. Darker
 # colours multiply (blonde → dark brown keeps every strand), lighter ones screen.
 COLOUR_TARGETS = ("hair", "clothing")
-DENOISE_COLOUR = {"hair": 0.75, "clothing": 0.75}
+# Hair at 0.85 since 2026-11-05: at 0.75 Krea 2 kept the old colour's light strands as
+# streaks (blonde → dark brown came out with caramel highlights, three times).
+DENOISE_COLOUR = {"hair": 0.85, "clothing": 0.75}
 TINT = {"multiply": 0.85, "screen": 0.55}  # how far the region goes towards the colour
 TINT_STEP = 0.1  # more on every correction
 TINT_MAX = 1.0

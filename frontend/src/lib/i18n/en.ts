@@ -1044,7 +1044,7 @@ export const en = {
   "adv.regions": "What to change",
   "adv.regionsHint": "Without analysis: these regions are redrawn with your text as the prompt, plus hair, face or body when your text asks to change them.",
   "adv.identity": "Turn the person into the LoRA character",
-  "adv.identityHint": "The person (figure, proportions) and then the face are redrawn with the LoRA; pose and background stay. Turn it off when the photo already shows the character.",
+  "adv.identityHint": "The person is redrawn gently with the LoRA (skin, figure), then the face; pose and background stay. The face is compared with the LoRA's photos and redrawn up to twice more until it matches. Turn it off when the photo already shows the character.",
   "adv.quality": "Quality check",
   "adv.qualityHint": "Each requirement checked (AI), face similarity and the changed area measured.",
   "adv.qualityMeasuredHint": "Without analysis only measured: face similarity and the changed area.",

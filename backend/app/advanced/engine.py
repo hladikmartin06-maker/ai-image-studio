@@ -335,6 +335,8 @@ async def _edit(
         default = graphs.DENOISE_IDENTITY_FACE
     base = edit.denoise or options.get("denoise") or default
     denoise = min(graphs.DENOISE_MAX, float(base) + 0.1 * attempt)
+    if edit.target == "face" and options.get("identity"):
+        denoise = min(denoise, max(float(base), graphs.DENOISE_IDENTITY_FACE_MAX))
     # Face regions are redrawn in an enlarged square around the face.
     square = None
     if region and edit.target in crop.FACE_TARGETS and source.get("file_path"):
@@ -418,6 +420,10 @@ async def _enhance(
     )
 
 
+# Face corrections of a person turned into the LoRA's character when the user set fewer (each
+# is one face redraw in its crop, stronger, with a new seed; the most alike face is kept).
+IDENTITY_TRIES = 2
+
 # A photo the edit would enlarge more than this is first enlarged and sharpened with Enhance
 # photo (its gentlest skin fix, then SeedVR2 by the smallest of its factors that reaches the
 # edit's size), so the redraw — and every pixel kept from the photo, the background too —
@@ -487,10 +493,11 @@ async def _lora_photos(job: AdvancedJob) -> list[Path]:
 async def _check(
     job: AdvancedJob, user: User, spec: Spec, image: Image, key: str
 ) -> dict[str, Any]:
+    options = job.options or {}
     await _stage(job.id, key, "check", status="running")
     original = storage.absolute(job.source["file_path"]) if job.source else None
     # The person became the LoRA's character: the face is measured against the LoRA's photos.
-    lora_identity = bool((job.options or {}).get("identity"))
+    lora_identity = bool(options.get("identity"))
     async with SessionLocal() as db:
         report = await evaluate(
             db,
@@ -499,7 +506,8 @@ async def _check(
             result=storage.absolute(image.file_path),
             original=original,
             identity_refs=await _lora_photos(job) if lora_identity or not original else [],
-            use_ai=bool((job.options or {}).get("analysis")),
+            # Quality checks off: only the measured face of a LoRA character (on this Mac).
+            use_ai=bool(options.get("analysis") and options.get("quality")),
             lora_identity=lora_identity,
         )
     report["image_id"] = str(image.id)
@@ -574,14 +582,19 @@ async def _run(job_id: uuid.UUID) -> None:
                 current = _image_input(image)
             assert image is not None
         attempts: list[dict[str, Any]] = [{"attempt": 0, "image": image, "report": None}]
-        # 2. check, 3. correct what failed (at most N times; never endless)
-        if options.get("quality"):
+        # 2. check, 3. correct what failed (at most N times; never endless). A person turned
+        # into the LoRA's character always has the face measured and corrected.
+        identity = job.mode == "edit" and bool(options.get("identity"))
+        corrections = int(options.get("corrections", 0))
+        if identity:
+            corrections = max(corrections, IDENTITY_TRIES)
+        if options.get("quality") or identity:
             report = await _check(job, user, spec, image, "check")
             report["attempt"] = 0
             attempts[0]["report"] = report
             await _update(job_id, reports=[report])
             reports = [report]
-            for attempt in range(1, int(options.get("corrections", 0)) + 1):
+            for attempt in range(1, corrections + 1):
                 bad = [c for c in failed(report) if c.get("kind") == "modify"]
                 if not bad:
                     break

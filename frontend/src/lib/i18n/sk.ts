@@ -1045,7 +1045,7 @@ export const sk: Record<MessageKey, string> = {
   "adv.regions": "Čo zmeniť",
   "adv.regionsHint": "Bez analýzy: prekreslia sa tieto oblasti s tvojím textom ako promptom, a k tomu vlasy, tvár či postava, keď ich text mení.",
   "adv.identity": "Premeniť osobu na postavu z LoRA",
-  "adv.identityHint": "Najprv sa s LoRA prekreslí postava (telo, proporcie), potom tvár; póza a pozadie ostanú. Vypni, keď fotka už tú postavu ukazuje.",
+  "adv.identityHint": "S LoRA sa jemne prekreslí postava (pokožka, telo), potom tvár; póza a pozadie ostanú. Tvár sa porovná s fotkami LoRA a kým nesedí, prekreslí sa ešte najviac 2-krát. Vypni, keď fotka už tú postavu ukazuje.",
   "adv.quality": "Kontrola kvality",
   "adv.qualityHint": "Každá požiadavka sa skontroluje (AI), podoba tváre a zmenená plocha sa zmerajú.",
   "adv.qualityMeasuredHint": "Bez analýzy len merané: podoba tváre a zmenená plocha.",

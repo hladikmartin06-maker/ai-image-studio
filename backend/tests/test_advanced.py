@@ -483,7 +483,7 @@ async def test_edit_hair_and_mouth_corrects_only_what_failed(
         assert graph["7"]["inputs"]["model"] == ["60", 0]
         assert graph["34"]["inputs"]["mask"] == ["37", 0] == graph["38"]["inputs"]["mask"]
     assert hair["4"]["inputs"]["text"].startswith("dark brown hair, ")
-    assert hair["7"]["inputs"]["denoise"] == 0.75 and mouth["7"]["inputs"]["denoise"] == 0.7
+    assert hair["7"]["inputs"]["denoise"] == 0.85 and mouth["7"]["inputs"]["denoise"] == 0.7
     assert "50" not in hair  # hair is not a face region: no crop
     # The mouth is redrawn in a square around the face, enlarged to 1024 px, and pasted back
     # at the same place inside the mask; no tint (no colour change).
@@ -626,13 +626,14 @@ async def test_identity_redraws_person_and_face_and_corrects_the_face(
         return (28.0, 30.0, 6.0, 8.0, 64, 80)  # a small face in a body shot
 
     monkeypatch.setattr(crop, "face_box", face_box)
-    # The face against the LoRA's photos: no match first, a match after the correction.
+    # The face against the LoRA's photos (alike 60 % among themselves, so the goal is 51 %):
+    # no match, then above SFace's threshold but still short of the goal, then a match.
     measured: list[list[Path]] = []
-    scores = [0.21, 0.52]
+    scores = [0.21, 0.45, 0.55]
 
     async def identity(result: Path, references: list[Path]):
         measured.append(references)
-        return scores.pop(0)
+        return scores.pop(0), 0.6
 
     monkeypatch.setattr(quality, "identity", identity)
     lora = await imported_lora(user)
@@ -650,8 +651,8 @@ async def test_identity_redraws_person_and_face_and_corrects_the_face(
         "image": {"kind": "reference", "id": ref["id"]},
         "lora": {"version_id": lora["preferred_version_id"], "strength": 1.0},
         "analysis": False,
-        "quality": True,
-        "corrections": 1,
+        "quality": False,  # the owner's setting: checks off, no corrections
+        "corrections": 0,
         "resolution": "2K",
     }
     # The plan before anything runs shows the same steps.
@@ -662,8 +663,19 @@ async def test_identity_redraws_person_and_face_and_corrects_the_face(
     assert job["status"] == "completed", job
     assert job["options"]["identity"] is True and job["options"]["prepare"] == "on"
     keys = [s["key"] for s in job["stages"]]
-    assert keys == ["plan", "prepare", "edit1", "edit2", "edit3", "check", "fix1-face", "check2"]
-    person, face, hair, fix = sent_graphs(comfy)[-4:]
+    assert keys == [
+        "plan",
+        "prepare",
+        "edit1",
+        "edit2",
+        "edit3",
+        "check",
+        "fix1-face",
+        "check2",
+        "fix2-face",
+        "check3",
+    ]
+    person, face, hair, fix, fix2 = sent_graphs(comfy)[-5:]
     # The person (SAM 3.1 "person") redrawn with the LoRA, strong enough for its figure;
     # every pixel outside stays the photo's. The face is taken out (SAM 3.1 "face"), so
     # its expression is left for the face edit.
@@ -677,7 +689,7 @@ async def test_identity_redraws_person_and_face_and_corrects_the_face(
         "operation": "subtract",
     }
     assert person["35"]["inputs"]["mask"] == ["47", 0] and "49" not in person
-    assert person["7"]["inputs"]["denoise"] == 0.6
+    assert person["7"]["inputs"]["denoise"] == 0.45
     lora_node = next(n for n in person.values() if n["class_type"] == "LoraLoaderModelOnly")
     assert lora_node["inputs"]["strength_model"] == 1.0
     assert person["4"]["inputs"]["text"].startswith("lmx, lmxx2 woman")
@@ -687,16 +699,21 @@ async def test_identity_redraws_person_and_face_and_corrects_the_face(
     assert hair["31"]["inputs"]["text"] == "hair" and hair["41"]["inputs"]["blend_mode"] == (
         "multiply"
     )
-    # The face did not match the LoRA (measured): only the face again, stronger.
-    first, second = job["reports"]
+    # The face did not match the LoRA (measured, even with the checks off): only the face
+    # again, stronger, until it reaches the goal (at most twice when the user set fewer).
+    first, second, third = job["reports"]
     match = next(c for c in first["checks"] if c["id"] == "face_match")
-    assert match["passed"] is False and match["kind"] == "modify" and match["note"] == "21 %"
+    assert match["passed"] is False and match["kind"] == "modify"
+    assert match["note"] == "21 % / 51 %" and first["identity_goal"] == 0.51
+    assert next(c for c in second["checks"] if c["id"] == "face_match")["passed"] is False
     assert first["identity_reference"] == "lora" and first["changed_area"] is not None
     assert all(len(refs) == 2 for refs in measured)  # the LoRA's photos, not the original
-    assert fix["31"]["inputs"]["text"] == "face"
+    assert fix["31"]["inputs"]["text"] == fix2["31"]["inputs"]["text"] == "face"
     assert fix["7"]["inputs"]["denoise"] == pytest.approx(0.85)
-    assert next(c for c in second["checks"] if c["id"] == "face_match")["passed"] is True
-    assert job["result"]["image_id"] == second["image_id"]
+    assert fix2["7"]["inputs"]["denoise"] == pytest.approx(0.85)  # capped: the head stays
+    assert next(c for c in third["checks"] if c["id"] == "face_match")["passed"] is True
+    assert first["ai"] is None  # no AI checks with the checks off
+    assert job["result"]["image_id"] == third["image_id"]
     # Identity off: the LoRA only helps, and a region has to be chosen again.
     r = await user.post("/api/advanced/jobs", json={**body, "identity": False})
     assert r.status_code == 400

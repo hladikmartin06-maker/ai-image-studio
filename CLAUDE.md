@@ -184,8 +184,11 @@ repositories.
   (`advanced/crop.py`, YuNet) and pasted back inside the mask only; masked edits use a soft
   mask with DifferentialDiffusion. An edit with a LoRA turns the person into its character
   (owner's request 2026-11-05; `options.identity`, switch on by default): the person (SAM
-  "person" minus SAM "face", target body, 0.6 — more recomposed the owner's photos) and then
-  the face are redrawn with the LoRA before other edits, the face is measured against the LoRA's photos as its own check ("face_match") and corrected.
+  "person" minus SAM "face", target body, 0.45 — more changed the owner's poses) and then
+  the face are redrawn with the LoRA before other edits; the face is always measured against
+  the LoRA's photos ("face_match", goal 0.85 × their own likeness, `quality.IDENTITY_SHARE`)
+  and redrawn up to twice more (`engine.IDENTITY_TRIES`, at most 0.85), even with the
+  checks off.
   A photo the edit would enlarge more than 1.3× is first enlarged with Enhance photo
   (`options.prepare`, SeedVR2 by the smallest factor that reaches the edit's size;
   skipped and shown when its models are missing). Without analysis, the

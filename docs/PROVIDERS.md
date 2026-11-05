@@ -512,8 +512,9 @@ one click), optionally Enhance photo, SFace on this Mac and the user's own AI as
   the whole photo (no mask, no DifferentialDiffusion).
 - **Strengths** (denoise; the studio's own values, Krea publishes none): hair 0.85, mouth
   0.7, eyes 0.6, face 0.55 (0.75 when the person becomes the LoRA's character), expression
-  0.6, clothing 0.85, background 0.9, body (the person) 0.6, whole photo 0.5; with a new
-  colour hair and clothing 0.75; each correction adds 0.1 and a new seed (0.2–0.95). The
+  0.6, clothing 0.85, background 0.9, body (the person) 0.45, whole photo 0.5; with a new
+  colour hair 0.85 (0.75 left the old colour's strands as light streaks, three times on
+  2026-11-05) and clothing 0.75; each correction adds 0.1 and a new seed (0.2–0.95). The
   user can set one strength instead.
 - **The owner's tests on a GPU (2026-11-05, Krea 2 Turbo, 10 requests)**: every one was an
   edit with a character LoRA, "Whole photo" and analysis off — one image to image at 0.5.
@@ -546,17 +547,22 @@ one click), optionally Enhance photo, SFace on this Mac and the user's own AI as
   #3A281D the hair came out at its tone (measured 54/37/27) and the owner wanted it darker.
 - **A person becomes the LoRA's character** (an edit with a LoRA, switch on by default,
   since 2026-11-05): before the other edits the person (SAM 3.1 "person", target body) is
-  redrawn with the LoRA at 0.6 — its figure and proportions, the pose and every pixel
-  outside the person stay; the face is taken out of that mask (a second SAM 3.1 "face",
+  redrawn with the LoRA at 0.45 — mostly the skin tone and surface, its figure only a
+  little; the pose and every pixel outside the person stay; the face is taken out of that mask (a second SAM 3.1 "face",
   grown 8 px → `MaskComposite` "subtract" from the grown mask, `comfy_extras/nodes_mask.py`,
   result clamped to 0–1), so the expression is left for the face edit. When SAM 3.1 finds
   nothing it returns an empty mask, not an error (`comfy_extras/nodes_sam3.py`, v0.35.0,
-  read 2026-11-05), so a person seen from behind keeps the whole region. At 0.7 the owner's second tests (2026-11-05) lost a tongue-out expression
-  in this step, got a foot drawn into a pillow and once a whole new close-up with holes of
-  the old background in the face. Then the face in its enlarged crop at 0.75; "Whole photo" is
+  read 2026-11-05), so a person seen from behind keeps the whole region. At 0.7 the owner's
+  second tests (2026-11-05) lost a tongue-out expression in this step, got a foot drawn into
+  a pillow and once a whole new close-up with holes of the old background in the face; at
+  0.6 an arm lying on the bed became a hand propping up the head. Then the face in its enlarged crop at 0.75; "Whole photo" is
   dropped then. The face is measured with SFace against the LoRA's training photos and is a
-  check of its own ("face_match", passed at SFace's threshold 0.363): a face that does not
-  match is redrawn again (corrections), also without AI analysis.
+  check of its own ("face_match"), always — also with the checks off. It passes at 0.85 ×
+  how alike the LoRA's photos are to each other (their SFace baseline), never below SFace's
+  threshold 0.363: at the threshold alone a face 41 % alike passed while the photos are
+  64 % alike (Taila 2), and the owner saw a different woman. A face short of it is redrawn
+  again in its crop (+0.1, new seed, at most 0.85 so the head keeps its angle; at least two
+  tries when the user set fewer corrections) and the most alike face is kept.
 - **Small photos** (since 2026-11-05): when the edit would enlarge the photo more than 1.3×,
   it is first run through Enhance photo with its gentlest skin fix (0.15) and SeedVR2 by the
   smallest of 1.5×, 2×, 3× that reaches the edit's size (3× when none does; 1.5× before the
@@ -596,7 +602,7 @@ one click), optionally Enhance photo, SFace on this Mac and the user's own AI as
 - **Not run on a real GPU**, with a real SAM 3.1 or against a real assistant: verified with
   the fake ComfyUI (nodes, files, the uploaded photo, the graphs sent) and the fake AI
   answers. How well SAM 3.1 finds a region and how well Krea 2 redraws a masked latent
-  (hair colour, closed mouth, expression, the person with a LoRA at 0.6 without its face)
+  (hair colour, closed mouth, expression, the person with a LoRA at 0.45 without its face)
   is untested —
   likewise the tint modes and strengths, DifferentialDiffusion's edge, the face crop and
   the enlarging of small photos; the owner's manual tests on a GPU decide the default

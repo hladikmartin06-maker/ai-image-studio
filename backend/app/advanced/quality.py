@@ -36,8 +36,12 @@ the RESULT, using the original for "keep"/"preserve" checks."""
 # A pixel counts as changed when a channel differs by more than this (out of 255); JPEG and
 # resizing alone move pixels a little.
 CHANGE_LEVEL = 24
-# The measured face check of a request that turns the person into the LoRA's character.
+# The measured face check of a request that turns the person into the LoRA's character. It
+# passes at this share of how alike the LoRA's own photos are (their baseline), never below
+# SFace's match threshold: at the threshold alone a face 41 % alike passed while the photos
+# are 64 % alike, and the owner saw a different woman (2026-11-05).
 FACE_MATCH = "face_match"
+IDENTITY_SHARE = 0.85
 
 
 def changed_area(original: Path, result: Path) -> float:
@@ -52,13 +56,14 @@ def changed_area(original: Path, result: Path) -> float:
     return round(100.0 * changed / total, 2) if total else 0.0
 
 
-async def identity(result: Path, references: list[Path]) -> float | None:
-    """Median face similarity to the reference photos (SFace), or None without faces."""
+async def identity(result: Path, references: list[Path]) -> tuple[float | None, float | None]:
+    """Median face similarity to the reference photos (SFace), or None without faces, and how
+    alike the reference photos are to each other (None with fewer than two faces)."""
     if not references:
-        return None
+        return None, None
     report = await faces.likeness([(0, result)], references)
     rows = report.get("steps") or []
-    return rows[0]["score"] if rows else None
+    return (rows[0]["score"] if rows else None), report.get("baseline")
 
 
 async def evaluate(
@@ -87,6 +92,7 @@ async def evaluate(
         ],
         "artifacts": "",
         "identity": None,
+        "identity_goal": None,
         "identity_reference": ("lora" if identity_refs else None) if use_lora else "original",
         "threshold": faces.MATCH_THRESHOLD,
         "changed_area": None,
@@ -96,8 +102,9 @@ async def evaluate(
     if original is not None:
         report["changed_area"] = await asyncio.to_thread(changed_area, original, result)
     refs = identity_refs if use_lora else [original]
+    baseline = None
     try:
-        report["identity"] = await identity(result, refs)
+        report["identity"], baseline = await identity(result, refs)
     except faces.FaceError as exc:
         report["error"] = exc.message
     if use_ai and spec.checks:
@@ -124,14 +131,16 @@ async def evaluate(
             report["error"] = exc.message
     if lora_identity and identity_refs:
         score = report["identity"]
+        goal = round(max(faces.MATCH_THRESHOLD, IDENTITY_SHARE * (baseline or 0.0)), 3)
+        report["identity_goal"] = goal
         report["checks"].append(
             {
                 "id": FACE_MATCH,
                 "question": "Does the face match the LoRA's photos? (measured)",
                 "kind": "modify",
                 "target": "face",
-                "passed": None if score is None else score >= faces.MATCH_THRESHOLD,
-                "note": "" if score is None else f"{round(score * 100)} %",
+                "passed": None if score is None else score >= goal,
+                "note": "" if score is None else f"{round(score * 100)} % / {round(goal * 100)} %",
                 "measured": True,
             }
         )
