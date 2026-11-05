@@ -3,7 +3,9 @@
 - The user's AI provider looks at the result (and the original photo for an edit) and
   answers each yes/no check of the plan — an estimate; "not evaluated" when it declines.
 - Face identity: SFace on this Mac (services/faces.py) — the median similarity to the
-  original photo (edit) or to the LoRA's training photos (text to image with a LoRA).
+  original photo (edit) or to the LoRA's training photos (text to image with a LoRA, and an
+  edit that turns the person into the LoRA's character: then it is also a check of its own,
+  passed at SFace's match threshold, so a face that does not match is corrected).
 - Changed area (edit): the share of pixels that differ from the original photo, measured.
 Nothing here is a guarantee; the numbers are what was measured."""
 
@@ -34,6 +36,8 @@ the RESULT, using the original for "keep"/"preserve" checks."""
 # A pixel counts as changed when a channel differs by more than this (out of 255); JPEG and
 # resizing alone move pixels a little.
 CHANGE_LEVEL = 24
+# The measured face check of a request that turns the person into the LoRA's character.
+FACE_MATCH = "face_match"
 
 
 def changed_area(original: Path, result: Path) -> float:
@@ -66,7 +70,9 @@ async def evaluate(
     original: Path | None,
     identity_refs: list[Path],
     use_ai: bool,
+    lora_identity: bool = False,
 ) -> dict[str, Any]:
+    use_lora = lora_identity or original is None
     report: dict[str, Any] = {
         "checks": [
             {
@@ -81,9 +87,7 @@ async def evaluate(
         ],
         "artifacts": "",
         "identity": None,
-        "identity_reference": "original"
-        if original is not None
-        else ("lora" if identity_refs else None),
+        "identity_reference": ("lora" if identity_refs else None) if use_lora else "original",
         "threshold": faces.MATCH_THRESHOLD,
         "changed_area": None,
         "ai": None,
@@ -91,7 +95,7 @@ async def evaluate(
     }
     if original is not None:
         report["changed_area"] = await asyncio.to_thread(changed_area, original, result)
-    refs = [original] if original is not None else identity_refs
+    refs = identity_refs if use_lora else [original]
     try:
         report["identity"] = await identity(result, refs)
     except faces.FaceError as exc:
@@ -118,6 +122,19 @@ async def evaluate(
             report["ai"] = meta
         except IntelligenceError as exc:
             report["error"] = exc.message
+    if lora_identity and identity_refs:
+        score = report["identity"]
+        report["checks"].append(
+            {
+                "id": FACE_MATCH,
+                "question": "Does the face match the LoRA's photos? (measured)",
+                "kind": "modify",
+                "target": "face",
+                "passed": None if score is None else score >= faces.MATCH_THRESHOLD,
+                "note": "" if score is None else f"{round(score * 100)} %",
+                "measured": True,
+            }
+        )
     return report
 
 

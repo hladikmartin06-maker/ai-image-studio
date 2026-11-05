@@ -63,6 +63,7 @@ NODES = [
     "EmptyImage",
     "ImageBlend",
     "ImageCrop",
+    "DifferentialDiffusion",
     "ImageScaleBy",
     "SeedVR2Preprocess",
     "VAEEncodeTiled",

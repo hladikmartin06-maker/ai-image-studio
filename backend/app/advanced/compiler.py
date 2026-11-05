@@ -19,7 +19,9 @@ from app.advanced.intelligence import IntelligenceError, ask_json
 from app.models import User
 from app.services.safety import ADULT_OFF, PromptRefused, check_prompt, is_explicit
 
-Target = Literal["hair", "mouth", "eyes", "face", "expression", "clothing", "background", "whole"]
+Target = Literal[
+    "hair", "mouth", "eyes", "face", "expression", "clothing", "background", "body", "whole"
+]
 TARGETS: tuple[str, ...] = (
     "hair",
     "mouth",
@@ -28,8 +30,13 @@ TARGETS: tuple[str, ...] = (
     "expression",
     "clothing",
     "background",
+    "body",
     "whole",
 )
+# The order edits run in (rules and the LoRA identity steps): the whole photo or the person
+# first, the face next, the hair last so its colour has the final say.
+ORDER = ("whole", "body", "background", "clothing", "face", "expression", "eyes", "mouth", "hair")
+MAX_EDITS = 6
 
 
 class Edit(BaseModel):
@@ -61,7 +68,7 @@ class Spec(BaseModel):
     # Text to image: the Krea 2 prompt (and RAW's negative prompt).
     prompt: str = Field(default="", max_length=2000)
     negative: str = Field(default="", max_length=600)
-    edits: list[Edit] = Field(default_factory=list, max_length=4)
+    edits: list[Edit] = Field(default_factory=list, max_length=MAX_EDITS)
     checks: list[Check] = Field(default_factory=list, max_length=10)
     source: Literal["ai", "rules", "user"] = "rules"
     ai: dict[str, Any] | None = None
@@ -79,7 +86,8 @@ Schema:
 {"summary": str, "preserve": [str], "modify": [str], "prompt": str, "negative": str,
  "edits": [{"target": T, "region": str, "prompt": str, "color": "#RRGGBB"|null}],
  "checks": [{"id": str, "question": str, "kind": "modify"|"preserve", "target": T|null}]}
-T is one of: hair, mouth, eyes, face, expression, clothing, background, whole.
+T is one of: hair, mouth, eyes, face, expression, clothing, background, body, whole
+("body" = the whole person: figure, proportions, skin; region "person").
 
 Rules:
 - Keep the user's intent exactly. Never invent details the user did not ask for.
@@ -111,7 +119,12 @@ brown hair, …"; "closed mouth, lips gently together, …"). "color": for a col
 hair or clothing, the new colour as a typical hex value of how it looks in a photo
 (e.g. dark brown hair "#3A281D", platinum blonde "#E5DCC8"); otherwise null. Add a preserve
 check for the head pose ("Is the head turned and tilted the same way as in the original?").
-Use target "whole" only when the change concerns the entire image."""
+Use target "whole" only when the change concerns the entire image.
+
+IDENTITY (the request says so): the studio itself redraws the person (body) and the face
+with the character LoRA and measures the face against the LoRA's photos. Add edits only for
+the other requested changes (hair, clothing, background, mouth …); no preserve check about
+the original person's identity or face, no check about the character's likeness."""
 
 
 def _clean_mouth(text: str, closed: bool) -> str:
@@ -194,8 +207,65 @@ def _colour_first(edit: Edit, name: str) -> None:
         edit.prompt = f"{name} hair, {edit.prompt}"
 
 
-def validate(spec: Spec, *, user_prompt: str, adult: bool) -> Spec:
-    """Prompts checked like every prompt; regions filled in; mouth contradictions removed."""
+# Without AI analysis the regions a request clearly asks to change are found in its text, one
+# sentence at a time: a region word with a change word (or a hair colour), in a sentence
+# that does not keep something ("Preserve the body position and the hair" changes nothing).
+_KEEP = re.compile(
+    r"\b(preserve|maintain|retain|keep (?:the|her|his|their|its?|them|everything)|unchanged|"
+    r"(?:stays?|remains?) the same|as in the original|ponechaj\w*|zachovaj\w*|nemeň\w*|"
+    r"nemen\w*|bez zmeny)\b",
+    re.IGNORECASE,
+)
+_CHANGE = re.compile(
+    r"\b(change|make|turn|transform|match|replace|give|switch|swap|new|different|dye|"
+    r"recolou?r|bigger|larger|smaller|longer|shorter|slimmer|thinner|thicker|curvier|fuller|"
+    r"zmeň\w*|zmen\w*|sprav\w*|daj|uprav\w*|prefarb\w*|nov\w*|väčš\w*|vacs\w*|menš\w*|"
+    r"mens\w*|dlhš\w*|dlhs\w*|kratš\w*|krats\w*)\b",
+    re.IGNORECASE,
+)
+_REGION_WORDS = {
+    "body": r"body|figure|proportions?|curves|buttocks?|butt|hips|waist|breasts?|"
+    r"telo|tela|tele|telom|postav\w*|proporci\w*|zadok\w*|boky|bokov",
+    "face": r"face|facial|tvár\w*|tvari|tvarou",
+    "hair": r"hair\w*|ponytail|bangs|braids?|vlas\w*|účes\w*|uces\w*|vrkoč\w*|vrkoc\w*",
+}
+
+
+def detected_targets(text: str) -> list[str]:
+    """The regions (body, face, hair) the text asks to change."""
+    found: list[str] = []
+    for sentence in re.split(r"[.;!?\n]+", text):
+        if not sentence.strip() or _KEEP.search(sentence):
+            continue
+        change = bool(_CHANGE.search(sentence))
+        for target, words in _REGION_WORDS.items():
+            if target in found or not re.search(rf"\b({words})\b", sentence, re.IGNORECASE):
+                continue
+            if change or (target == "hair" and hair_colour(sentence)):
+                found.append(target)
+    return found
+
+
+def _ordered(edits: list[Edit]) -> list[Edit]:
+    return sorted(edits, key=lambda e: ORDER.index(e.target))
+
+
+def _with_identity(spec: Spec, text: str) -> None:
+    """The person and the face redrawn with the character LoRA, before the other changes:
+    the body takes the LoRA's figure, the face its identity. The plan's own body or face edit
+    is kept (the user may have edited it); "whole" is not needed then."""
+    edits = [e for e in spec.edits if e.target != "whole"]
+    body = next((e for e in edits if e.target == "body"), None) or Edit(target="body", prompt=text)
+    face = next((e for e in edits if e.target == "face"), None) or Edit(target="face", prompt=text)
+    rest = _ordered([e for e in edits if e.target not in ("body", "face")])
+    spec.edits = [body, face, *rest][:MAX_EDITS]
+
+
+def validate(spec: Spec, *, user_prompt: str, adult: bool, identity: bool = False) -> Spec:
+    """Prompts checked like every prompt; regions filled in; mouth contradictions removed.
+    `identity` (an edit with a character LoRA): the person and the face are redrawn with it."""
+    if identity and spec.mode == "edit":
+        _with_identity(spec, " ".join(user_prompt.split()))
     closed = _wants_closed_mouth(user_prompt) or any(
         _wants_closed_mouth(c.question) for c in spec.checks
     )
@@ -237,20 +307,18 @@ def validate(spec: Spec, *, user_prompt: str, adult: bool) -> Spec:
 
 def by_rules(*, mode: str, prompt: str, targets: list[str], negative: str = "") -> Spec:
     """Without analysis: the user's text as the prompt; for an edit, the regions they chose
-    (each redrawn with that text). No AI checks — only the measured ones."""
+    plus those the text asks to change (body, face, hair), each redrawn with that text. No
+    AI checks — only the measured ones."""
     text = " ".join(prompt.split())
     if mode == "text-to-image":
         return Spec(mode="text-to-image", prompt=text, negative=negative, source="rules")
-    chosen = [t for t in targets if t in TARGETS] or ["whole"]
-    return Spec(
-        mode="edit",
-        modify=[text],
-        edits=[
-            Edit(target=t, region=graphs.REGIONS.get(t, ""), prompt=text)  # type: ignore[arg-type]
-            for t in chosen[:4]
-        ],
-        source="rules",
-    )
+    chosen = [t for t in targets if t in TARGETS]
+    chosen += [t for t in detected_targets(text) if t not in chosen]
+    edits = [
+        Edit(target=t, region=graphs.REGIONS.get(t, ""), prompt=text)  # type: ignore[arg-type]
+        for t in chosen or ["whole"]
+    ]
+    return Spec(mode="edit", modify=[text], edits=_ordered(edits)[:MAX_EDITS], source="rules")
 
 
 async def by_ai(
@@ -261,11 +329,14 @@ async def by_ai(
     prompt: str,
     photo: bytes | None,
     lora_note: str | None,
+    identity: bool = False,
 ) -> Spec:
     """The user's AI provider writes the plan (it sees the photo for an edit)."""
     lines = [f"MODE: {'EDIT' if mode == 'edit' else 'TEXT TO IMAGE'}", f"USER REQUEST: {prompt}"]
     if lora_note:
         lines.append(f"CHARACTER LoRA: {lora_note} (its trigger word is added by the studio).")
+    if identity:
+        lines.append("IDENTITY: yes — the person in the photo becomes the LoRA's character.")
     data, meta = await ask_json(
         db,
         user,
@@ -281,7 +352,7 @@ async def by_ai(
             modify=list(data.get("modify") or []),
             prompt=str(data.get("prompt") or ""),
             negative=str(data.get("negative") or ""),
-            edits=[Edit(**_edit_fields(e)) for e in (data.get("edits") or [])][:4]
+            edits=[Edit(**_edit_fields(e)) for e in (data.get("edits") or [])][:MAX_EDITS]
             if mode == "edit"
             else [],
             checks=[Check(**c) for c in (data.get("checks") or [])][:10],

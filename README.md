@@ -92,11 +92,17 @@ Integrations and Settings.
     compared with the original or the LoRA's photos, and the changed area is measured; these
     are estimates, not guarantees). What failed is corrected again (0–3 times, only that part),
     the best attempt is kept, and "Enhance photo" can finish it. Without the assistant, switch
-    the analysis off and pick the parts to change yourself. For a **new hair colour** the hair
-    is first tinted with the colour (shown in the plan, where you can change or remove it),
-    so Krea 2 starts from it; the **mouth, eyes and expression** are redrawn in an enlarged
-    crop of the face (found on this Mac), so small details come out right and the head's
-    pose stays as it was. Steps, checks and before/after are
+    the analysis off and pick the parts to change yourself (hair, face or body that your text
+    asks to change are added by themselves). **A photo with a LoRA** turns the person into the
+    LoRA's character: first the person (figure, proportions), then the face are redrawn with
+    the LoRA, while the pose and the background stay; the face is compared with the LoRA's
+    photos and redrawn again when it does not match (switch "Turn the person into the LoRA
+    character" off when the photo already shows the character). **Small photos** are first
+    enlarged and sharpened with Enhance photo. For a **new hair colour** the hair is first
+    tinted with the colour (keeping its light and shadow; shown in the plan, where you can
+    change or remove it), so Krea 2 starts from it; the **mouth, eyes and expression** are
+    redrawn in an enlarged crop of the face (found on this Mac), so small details come out
+    right and the head's pose stays as it was. Steps, checks and before/after are
     shown in the panel; attempts not chosen stay out of the library. Like everywhere else, the
     result opens in the viewer and can be downloaded, deleted (with "Undo"), enhanced or added
     to a LoRA; "All images of this request" shows every attempt. The buttons at the top of a

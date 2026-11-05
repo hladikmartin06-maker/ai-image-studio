@@ -48,6 +48,9 @@ class AdvancedBody(BaseModel):
     seed: int | None = Field(default=None, ge=0, le=krea2.SEED_MAX)
     # Edit: the regions to redraw when there is no AI analysis.
     targets: list[str] = Field(default_factory=list, max_length=4)
+    # Edit with a LoRA: the person in the photo becomes the LoRA's character (body and face
+    # redrawn with it, the face measured against its photos). Off = the LoRA only helps.
+    identity: bool = True
     # Edit strength for every region (None = per region: hair 0.85, mouth 0.7, …).
     denoise: float | None = Field(default=None, ge=graphs.DENOISE_MIN, le=graphs.DENOISE_MAX)
     # Stages the user switched on.
@@ -171,8 +174,15 @@ async def _prepare(
             source = await source_input(db, user, body.image)
         except GenerationRejected as exc:
             raise _reject(exc) from exc
-        regions = body.analysis or any(t != "whole" for t in targets) or bool(body.spec)
-        if not body.analysis and not targets and not body.spec:
+        identity = body.identity and body.lora is not None
+        regions = (
+            body.analysis
+            or identity
+            or any(t != "whole" for t in targets)
+            or bool(compiler.detected_targets(body.prompt))
+            or bool(body.spec)
+        )
+        if not body.analysis and not targets and not body.spec and not identity:
             raise api_error(400, "invalid_parameter", "Choose what to change, or turn on analysis.")
         if regions and not caps["sam3"]:
             raise api_error(
@@ -245,6 +255,11 @@ async def _prepare(
         # repeat the request; corrections always take new seeds.
         "first_seed": body.seed if body.seed is not None else secrets.randbelow(krea2.SEED_MAX),
         "targets": targets,
+        "identity": body.mode == "edit" and body.identity and lora_meta is not None,
+        # A small photo is first enlarged with Enhance photo ("missing": not installed).
+        "prepare": ("on" if caps["enhance"] else "missing")
+        if source and engine.small_photo(source, body.resolution)
+        else None,
         "denoise": body.denoise,
         "analysis": body.analysis,
         "quality": body.quality,
@@ -264,6 +279,7 @@ class PlanBody(BaseModel):
     variant: Literal["turbo", "raw"] = "turbo"
     analysis: bool = True
     targets: list[str] = Field(default_factory=list, max_length=4)
+    identity: bool = True
     adult: bool = False
 
 
@@ -292,13 +308,20 @@ async def plan(
         if body.lora is not None:
             lora, _version = await resolve_lora(db, user, body.lora, body.variant)
             lora_note = f"{lora.name} ({lora.trigger_word})"
+        identity = body.mode == "edit" and body.identity and body.lora is not None
         if body.analysis:
             spec = await compiler.by_ai(
-                db, user, mode=body.mode, prompt=prompt, photo=photo, lora_note=lora_note
+                db,
+                user,
+                mode=body.mode,
+                prompt=prompt,
+                photo=photo,
+                lora_note=lora_note,
+                identity=identity,
             )
         else:
             spec = compiler.by_rules(mode=body.mode, prompt=prompt, targets=body.targets)
-        spec = compiler.validate(spec, user_prompt=prompt, adult=body.adult)
+        spec = compiler.validate(spec, user_prompt=prompt, adult=body.adult, identity=identity)
     except (GenerationRejected, PromptRefused, IntelligenceError) as exc:
         raise _reject(exc) from exc
     return spec.model_dump()
@@ -416,7 +439,12 @@ async def create_job(
     if body.spec is not None:
         try:
             checked = compiler.Spec(**{**body.spec, "mode": body.mode, "source": "user"})
-            checked = compiler.validate(checked, user_prompt=body.prompt, adult=options["adult"])
+            checked = compiler.validate(
+                checked,
+                user_prompt=body.prompt,
+                adult=options["adult"],
+                identity=options["identity"],
+            )
         except ValidationError as exc:
             raise api_error(400, "invalid_parameter", "The plan is not valid.") from exc
         except PromptRefused as exc:

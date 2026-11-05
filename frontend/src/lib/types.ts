@@ -1164,7 +1164,7 @@ export interface AdvancedCapabilities {
   file_capability: string;
 }
 
-export type AdvancedTarget = "hair" | "mouth" | "eyes" | "face" | "expression" | "clothing" | "background" | "whole";
+export type AdvancedTarget = "hair" | "mouth" | "eyes" | "face" | "expression" | "clothing" | "background" | "body" | "whole";
 
 export interface AdvancedEdit {
   target: AdvancedTarget;
@@ -1200,7 +1200,8 @@ export interface AdvancedSpec {
 export interface AdvancedReport {
   attempt: number;
   image_id: string;
-  checks: (AdvancedCheck & { passed: boolean | null; note: string })[];
+  // `measured`: the face against the LoRA's photos (SFace), not an AI answer.
+  checks: (AdvancedCheck & { passed: boolean | null; note: string; measured?: boolean })[];
   artifacts: string;
   identity: number | null;
   identity_reference: "original" | "lora" | null;
@@ -1233,6 +1234,10 @@ export interface AdvancedOptions {
   // The first attempt's seed (the user's, else the one chosen when it started).
   first_seed?: number;
   targets?: AdvancedTarget[];
+  // Edit with a LoRA: the person became the LoRA's character.
+  identity?: boolean;
+  // A small photo enlarged first ("missing": Enhance photo not installed).
+  prepare?: "on" | "missing" | null;
   denoise?: number | null;
   analysis?: boolean;
   quality?: boolean;

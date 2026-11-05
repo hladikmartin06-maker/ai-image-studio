@@ -49,7 +49,7 @@ import {
 import type { AdvancedJob, AdvancedReport, AdvancedSpec, AdvancedStage, AdvancedTarget } from "@/lib/types";
 
 type Mode = "text-to-image" | "edit";
-const TARGETS: AdvancedTarget[] = ["hair", "mouth", "eyes", "face", "expression", "clothing", "background", "whole"];
+const TARGETS: AdvancedTarget[] = ["hair", "mouth", "eyes", "face", "expression", "clothing", "background", "body", "whole"];
 const RATIOS = ["1:1", "4:5", "3:4", "2:3", "9:16", "5:4", "4:3", "3:2", "16:9"];
 
 function pct(v: number | null | undefined) {
@@ -60,6 +60,7 @@ function pct(v: number | null | undefined) {
 function stageLabel(stage: AdvancedStage, t: (k: MessageKey, v?: Record<string, string | number>) => string) {
   const target = (name: string) => (TARGETS.includes(name as AdvancedTarget) ? t(`adv.target.${name}` as MessageKey) : name);
   if (stage.key === "plan") return t("adv.stage.plan");
+  if (stage.key === "prepare") return t(stage.status === "skipped" ? "adv.stage.prepareMissing" : "adv.stage.prepare");
   if (stage.key === "generate") return t("adv.stage.generate");
   if (stage.key === "enhance") return t("adv.stage.enhance");
   if (stage.key.startsWith("check")) return t("adv.stage.check");
@@ -96,7 +97,7 @@ function Report({ report, job }: { report: AdvancedReport; job: AdvancedJob }) {
                 {c.passed === true ? <Check size={12} /> : c.passed === false ? <X size={12} /> : "?"}
               </span>
               <span className="grow">
-                <span className="small">{c.question}</span>
+                <span className="small">{c.measured ? t("adv.faceMatch") : c.question}</span>
                 {c.note ? <span className="tiny subtle"> — {c.note}</span> : null}
               </span>
               <Badge>{t(c.kind === "modify" ? "adv.kindModify" : "adv.kindPreserve")}</Badge>
@@ -325,6 +326,7 @@ export function AdvancedPanel({ header }: { header: React.ReactNode }) {
   const [corrections, setCorrections] = useState(1);
   const [enhance, setEnhance] = useState(false);
   const [targets, setTargets] = useState<AdvancedTarget[]>([]);
+  const [identity, setIdentity] = useState(true);
   const [more, setMore] = useState(false);
   const [aspect, setAspect] = useState("3:4");
   const [resolution, setResolution] = useState("1K");
@@ -375,6 +377,7 @@ export function AdvancedPanel({ header }: { header: React.ReactNode }) {
     const seedUsed = o.seed ?? o.first_seed;
     setSeed(seedUsed !== undefined && seedUsed !== null ? String(seedUsed) : "");
     setTargets(o.targets ?? []);
+    setIdentity(Boolean(o.identity));
     setDenoise(o.denoise ?? null);
     setAnalysis(o.analysis ?? true);
     setQuality(o.quality ?? true);
@@ -387,6 +390,8 @@ export function AdvancedPanel({ header }: { header: React.ReactNode }) {
     else toast.success(t("adv.loaded"));
   };
 
+  // A photo and a LoRA: the person becomes the LoRA's character (unless switched off).
+  const identityOn = mode === "edit" && Boolean(loraVersion) && identity;
   const problems: string[] = [];
   if (!conn) problems.push(t("k2.noConnection"));
   else if (conn.status !== "ready") problems.push(conn.status === "deploying" ? t("k2.starting") : t("k2.notReady"));
@@ -394,8 +399,8 @@ export function AdvancedPanel({ header }: { header: React.ReactNode }) {
   else if (c && (mode === "edit" ? c.missing_nodes_edit : c.missing_nodes_text).length)
     problems.push(t("adv.nodesMissing", { nodes: (mode === "edit" ? c.missing_nodes_edit : c.missing_nodes_text).join(", ") }));
   if (mode === "edit" && !photo) problems.push(t("adv.photoFirst"));
-  if (mode === "edit" && c && !c.sam3 && (analysis || targets.some((x) => x !== "whole"))) problems.push(t("adv.sam3Missing"));
-  if (mode === "edit" && !analysis && !targets.length && !draft) problems.push(t("adv.chooseRegion"));
+  if (mode === "edit" && c && !c.sam3 && (analysis || identityOn || targets.some((x) => x !== "whole"))) problems.push(t("adv.sam3Missing"));
+  if (mode === "edit" && !analysis && !identityOn && !targets.length && !draft) problems.push(t("adv.chooseRegion"));
   if (analysis && c && !c.ai) problems.push(t("adv.aiMissing"));
   if (!prompt.trim()) problems.push(t("adv.promptFirst"));
   if (chosenLora?.disabled) problems.push(t("adv.loraIncompatible"));
@@ -412,6 +417,7 @@ export function AdvancedPanel({ header }: { header: React.ReactNode }) {
     resolution,
     seed: seed ? Number(seed) : null,
     targets,
+    identity: identityOn,
     denoise,
     analysis,
     quality,
@@ -452,6 +458,7 @@ export function AdvancedPanel({ header }: { header: React.ReactNode }) {
           variant,
           analysis,
           targets,
+          identity: identityOn,
           adult,
         }),
       );
@@ -571,6 +578,15 @@ export function AdvancedPanel({ header }: { header: React.ReactNode }) {
                   <input type="range" min={0} max={1.5} step={0.05} value={strength} onChange={(e) => setStrength(Number(e.target.value))} />
                 </Field>
               ) : null}
+              {loraVersion && mode === "edit" ? (
+                <label className="row" style={{ gap: 10, alignItems: "flex-start" }}>
+                  <Switch checked={identity} onChange={(v) => { setIdentity(v); setDraft(null); }} label={t("adv.identity")} />
+                  <div>
+                    <div className="small">{t("adv.identity")}</div>
+                    <div className="hint">{t("adv.identityHint")}</div>
+                  </div>
+                </label>
+              ) : null}
               <Field label={t("adv.prompt")} hint={t(mode === "edit" ? "adv.promptEditHint" : "adv.promptTextHint")}>
                 <textarea
                   className="textarea"
@@ -611,7 +627,7 @@ export function AdvancedPanel({ header }: { header: React.ReactNode }) {
                     <div className="hint">{t(analysis ? "adv.qualityHint" : "adv.qualityMeasuredHint")}</div>
                   </div>
                 </label>
-                {quality && analysis ? (
+                {quality && (analysis || identityOn) ? (
                   <Field label={t("adv.corrections")} hint={t("adv.correctionsHint")}>
                     <Segmented label={t("adv.corrections")} value={corrections} onChange={setCorrections} options={[0, 1, 2, 3].map((n) => ({ value: n, label: n ? String(n) : t("adv.off") }))} />
                   </Field>

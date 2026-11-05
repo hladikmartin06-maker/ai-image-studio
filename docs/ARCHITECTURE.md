@@ -143,9 +143,12 @@ Enhance photo: POST /api/comfy/enhance ─▶ Generation (model pgupscaler, mode
 
 Advanced: POST /api/advanced/jobs (idempotent; ready connection, files, nodes, AI and LoRA
           checked first) ─▶ advanced_jobs row ─▶ engine task:
-          plan (assistant → spec, or rules) ─▶ Krea 2 text to image | one masked edit per
-          region (SAM 3.1 mask ─▶ SetLatentNoiseMask ─▶ ImageCompositeMasked) ─▶ checks
-          (assistant per requirement, SFace, changed area) ─▶ ≤ 3 corrections of what failed
+          plan (assistant → spec, or rules + regions found in the text; with a LoRA the
+          person and then the face first) ─▶ Krea 2 text to image | a small photo enlarged
+          (Enhance photo) ─▶ one masked edit per region (SAM 3.1 mask ─▶ soft mask +
+          DifferentialDiffusion ─▶ ImageCompositeMasked) ─▶ checks (assistant per
+          requirement, SFace against the original or the LoRA's photos, changed area)
+          ─▶ ≤ 3 corrections of what failed
           ─▶ best attempt ─▶ optional Enhance photo ─▶ completed
           every GPU step = a Generation(provider "comfyui", comfy_meta.advanced {job_id,
           stage}) in the same per-connection queue as Krea 2; the engine waits for it in the

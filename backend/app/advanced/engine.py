@@ -327,14 +327,13 @@ async def _edit(
     region = edit.region if edit.target != "whole" else None
     # A colour change starts from the tinted region, so it needs less redrawing.
     colour = edit.color if region and edit.target in graphs.COLOUR_TARGETS else None
-    default = (
-        graphs.DENOISE_COLOUR.get(edit.target, graphs.DENOISE[edit.target])
-        if colour
-        else graphs.DENOISE[edit.target]
-    )
+    default = graphs.DENOISE[edit.target]
+    if colour:
+        default = graphs.DENOISE_COLOUR.get(edit.target, default)
+    elif edit.target == "face" and options.get("identity"):
+        default = graphs.DENOISE_IDENTITY_FACE
     base = edit.denoise or options.get("denoise") or default
     denoise = min(graphs.DENOISE_MAX, float(base) + 0.1 * attempt)
-    tint = min(graphs.TINT_MAX, graphs.TINT + graphs.TINT_STEP * attempt) if colour else None
     # Face regions are redrawn in an enlarged square around the face.
     square = None
     if region and edit.target in crop.FACE_TARGETS and source.get("file_path"):
@@ -353,8 +352,8 @@ async def _edit(
         denoise=denoise,
         region=region,
         grow=graphs.GROW.get(edit.target, graphs.GROW_DEFAULT),
-        tint=colour,
-        tint_strength=tint or graphs.TINT,
+        colour=colour,
+        attempt=attempt,
         crop=square,
         crop_size=crop.CROP_SIZE,
     )
@@ -372,7 +371,7 @@ async def _edit(
             "cfg": args["cfg"],
             "denoise": denoise,
             "region": region or "whole photo",
-            **({"color": colour, "tint": round(tint or 0, 2)} if colour else {}),
+            **({"color": colour, "tint": list(graphs.tint(colour, attempt))} if colour else {}),
             **({"face_crop": list(square)} if square else {}),
             "engine": "advanced",
         },
@@ -383,32 +382,72 @@ async def _edit(
     )
 
 
-async def _enhance(job: AdvancedJob, image: Image) -> Image:
+async def _enhance(
+    job: AdvancedJob,
+    source: dict[str, Any],
+    *,
+    key: str = "enhance",
+    strength: float | None = None,
+    upscale: float | None = None,
+) -> Image:
     options = job.options or {}
     seed = secrets.randbelow(krea2.SEED_MAX)
+    strength = strength or float(options.get("enhance_strength", enhance.DEFAULT_STRENGTH))
+    upscale = upscale or float(options.get("enhance_upscale", enhance.DEFAULT_UPSCALE))
     workflow = enhance.build_workflow(
         image=enhance.INPUT_PLACEHOLDER,
-        strength=float(options.get("enhance_strength", enhance.DEFAULT_STRENGTH)),
+        strength=strength,
         face_only=False,
-        upscale=float(options.get("enhance_upscale", enhance.DEFAULT_UPSCALE)),
+        upscale=upscale,
         seed=seed,
     )
     return await _gpu(
         job,
-        key="enhance",
+        key=key,
         label=enhance.NAME,
         workflow=workflow,
         prompt=enhance.SKIN_PROMPT,
-        settings={
-            "strength": options.get("enhance_strength", enhance.DEFAULT_STRENGTH),
-            "upscale": options.get("enhance_upscale", enhance.DEFAULT_UPSCALE),
-            "seed": seed,
-            "engine": "advanced",
-        },
-        source=_image_input(image),
+        settings={"strength": strength, "upscale": upscale, "seed": seed, "engine": "advanced"},
+        source=source,
         model_key=enhance.MODEL_KEY,
         family=enhance.FAMILY,
         lora=None,
+    )
+
+
+# A photo the edit would enlarge more than this is first enlarged and sharpened with Enhance
+# photo (its gentlest skin fix, then SeedVR2), so the redraw — and every pixel kept from the
+# photo — starts sharp instead of stretched. The studio's values.
+PREPARE_GAIN = 1.3
+PREPARE_STRENGTH = enhance.STRENGTHS[0]
+PREPARE_UPSCALE = enhance.UPSCALES[0]
+
+
+def small_photo(source: dict[str, Any], resolution: str) -> bool:
+    sw, sh = int(source.get("width") or 0), int(source.get("height") or 0)
+    if sw <= 0 or sh <= 0:
+        return False
+    width, height = krea2.size_for_source(sw, sh, resolution)
+    return max(width / sw, height / sh) > PREPARE_GAIN
+
+
+async def _prepare_photo(job: AdvancedJob, source: dict[str, Any]) -> Image | None:
+    """Enlarges a small photo before the edits (options "prepare": "on"); without the
+    Enhance photo models ("missing") the step is shown as skipped and the photo is only
+    resized, as before."""
+    prepare = (job.options or {}).get("prepare")
+    if prepare == "missing":
+        await _stage(
+            job.id,
+            "prepare",
+            "prepare",
+            status="skipped",
+            detail=f"{enhance.NAME} is not installed: the small photo is only resized.",
+        )
+    if prepare != "on":
+        return None
+    return await _enhance(
+        job, source, key="prepare", strength=PREPARE_STRENGTH, upscale=PREPARE_UPSCALE
     )
 
 
@@ -439,6 +478,8 @@ async def _check(
 ) -> dict[str, Any]:
     await _stage(job.id, key, "check", status="running")
     original = storage.absolute(job.source["file_path"]) if job.source else None
+    # The person became the LoRA's character: the face is measured against the LoRA's photos.
+    lora_identity = bool((job.options or {}).get("identity"))
     async with SessionLocal() as db:
         report = await evaluate(
             db,
@@ -446,8 +487,9 @@ async def _check(
             spec=spec,
             result=storage.absolute(image.file_path),
             original=original,
-            identity_refs=[] if original else await _lora_photos(job),
+            identity_refs=await _lora_photos(job) if lora_identity or not original else [],
             use_ai=bool((job.options or {}).get("analysis")),
+            lora_identity=lora_identity,
         )
     report["image_id"] = str(image.id)
     await _stage(job.id, key, "check", status="completed", detail=report.get("error"))
@@ -476,10 +518,16 @@ async def _plan(job: AdvancedJob, user: User) -> Spec:
                 prompt=job.prompt,
                 photo=photo,
                 lora_note=f"{lora['name']} ({lora['trigger_word']})" if lora else None,
+                identity=bool(options.get("identity")),
             )
     else:
         spec = by_rules(mode=job.mode, prompt=job.prompt, targets=options.get("targets") or [])
-    spec = validate(spec, user_prompt=job.prompt, adult=bool(options.get("adult")))
+    spec = validate(
+        spec,
+        user_prompt=job.prompt,
+        adult=bool(options.get("adult")),
+        identity=bool(options.get("identity")),
+    )
     await _update(job.id, spec=spec.model_dump())
     await _stage(job.id, "plan", "plan", status="completed", detail=spec.source)
     return spec
@@ -505,7 +553,10 @@ async def _run(job_id: uuid.UUID) -> None:
             produced.append(image)
         else:
             current = job.source or {}
-            image = None
+            image = await _prepare_photo(job, current)
+            if image is not None:
+                produced.append(image)
+                current = _image_input(image)
             for index, edit in enumerate(spec.edits):
                 image = await _edit(job, spec, edit, current, f"edit{index + 1}", 0)
                 produced.append(image)
@@ -534,7 +585,7 @@ async def _run(job_id: uuid.UUID) -> None:
             image = best["image"]
         # 4. optional skin fix and upscale of the chosen image
         if options.get("enhance"):
-            image = await _enhance(job, image)
+            image = await _enhance(job, _image_input(image))
             produced.append(image)
         await _finish(job_id, image, produced)
     except Cancelled:

@@ -8,14 +8,17 @@ ComfyUI v0.35.0 (the pinned rented image; checked in its nodes.py and comfy_extr
 - text to image: UNETLoader → LoraLoaderModelOnly → CLIPLoader (krea2) → CLIPTextEncode →
   (ConditioningZeroOut | negative) → EmptyLatentImage → KSampler → VAEDecode → SaveImage;
 - masked edit: LoadImage → ImageScale → SAM 3.1 (CheckpointLoaderSimple + CLIPTextEncode with
-  its own text model + SAM3_Detect, as in Enhance photo) → GrowMask → the latent noise mask
-  (SetLatentNoiseMask) so Krea 2 redraws only that region → VAEDecode → ImageCompositeMasked
-  with a feathered mask, so every pixel outside the region is the photo's own;
+  its own text model + SAM3_Detect, as in Enhance photo) → GrowMask → a feathered mask as the
+  latent noise mask (SetLatentNoiseMask) with DifferentialDiffusion on the model, so Krea 2
+  redraws the region fully and its soft edge gradually (no seam) → VAEDecode →
+  ImageCompositeMasked with the same mask, so every pixel outside the region is the photo's;
 - whole photo: the same without a mask (image to image at `denoise`);
 - colour change (hair, clothing): before the redraw the region is tinted towards the new
-  colour (EmptyImage in that colour, ImageBlend "normal", ImageCompositeMasked inside the
-  mask), so Krea 2 starts from the right colour instead of fighting the old one (Turbo has
-  CFG 1, so a negative prompt cannot push the old colour away);
+  colour (EmptyImage in that colour, ImageBlend, ImageCompositeMasked inside the mask), so
+  Krea 2 starts from the right colour instead of fighting the old one (Turbo has CFG 1, so a
+  negative prompt cannot push the old colour away). "multiply" for a darker colour, "screen"
+  for a lighter one: both keep the strands' light and shadow, a flat "normal" blend washed
+  them out to grey;
 - face regions (mouth, eyes, face, expression): "crop and stitch" — ImageCrop around the face
   (found on the Mac, `advanced/crop.py`), ImageScale to 1024 px, the same masked redraw
   there, ImageScale back and ImageCompositeMasked into the photo at that place, inside the
@@ -59,10 +62,12 @@ NODES_EDIT = (
     "EmptyImage",
     "ImageBlend",
     "ImageCrop",
+    "DifferentialDiffusion",
 )
 
 # Region edits: how much of the region is redrawn by default (the studio's values; Krea
-# publishes none). A colour change needs more than closing the lips.
+# publishes none). A colour change needs more than closing the lips; the person ("body")
+# needs enough for a character LoRA to give it its figure while the pose stays.
 DENOISE = {
     "hair": 0.85,
     "mouth": 0.7,
@@ -71,8 +76,11 @@ DENOISE = {
     "expression": 0.6,
     "clothing": 0.85,
     "background": 0.9,
+    "body": 0.7,
     "whole": 0.5,
 }
+# The face when the person becomes the LoRA's character: a new identity, not a touch-up.
+DENOISE_IDENTITY_FACE = 0.75
 # SAM 3.1's text prompt per target when the plan gives none.
 REGIONS = {
     "hair": "hair",
@@ -82,22 +90,34 @@ REGIONS = {
     "expression": "face",
     "clothing": "clothing",
     "background": "background",
+    "body": "person",
 }
 DENOISE_MIN = 0.2
 DENOISE_MAX = 0.95
 
 # Colour changes (the studio's values, to be tuned on a GPU): the region is tinted first, so
-# less has to be redrawn — the hairstyle and its light stay closer to the photo.
+# less has to be redrawn — the hairstyle and its light stay closer to the photo. Darker
+# colours multiply (blonde → dark brown keeps every strand), lighter ones screen.
 COLOUR_TARGETS = ("hair", "clothing")
 DENOISE_COLOUR = {"hair": 0.75, "clothing": 0.75}
-TINT = 0.55  # how much of the region's pixels become the new colour before the redraw
-TINT_STEP = 0.15  # more on every correction
-TINT_MAX = 0.85
+TINT = {"multiply": 0.85, "screen": 0.55}  # how far the region goes towards the colour
+TINT_STEP = 0.1  # more on every correction
+TINT_MAX = 1.0
+DARK = 0.5  # a colour's luma (0–1) below this is "darker": multiply
 
 # How far the mask grows past what SAM 3.1 found (px at the edit size) — hair gets more, so
-# loose strands and the edge are redrawn too and no rim of the old colour stays.
-GROW = {"hair": 24}
+# loose strands and the edge are redrawn too and no rim of the old colour stays — and how
+# soft its edge is (ImageBlur radius, at most 31).
+GROW = {"hair": 32}
 GROW_DEFAULT = 16
+FEATHER = 16
+
+
+def tint(hex_colour: str, attempt: int = 0) -> tuple[str, float]:
+    """The blend mode for this colour and how strong it is on this attempt."""
+    r, g, b = (int(hex_colour.lstrip("#")[i : i + 2], 16) / 255 for i in (0, 2, 4))
+    mode = "multiply" if 0.299 * r + 0.587 * g + 0.114 * b < DARK else "screen"
+    return mode, round(min(TINT_MAX, TINT[mode] + TINT_STEP * attempt), 2)
 
 
 def _krea(
@@ -207,19 +227,24 @@ def edit(
     denoise: float,
     region: str | None,
     grow: int = GROW_DEFAULT,
-    feather: int = 9,
-    tint: str | None = None,
-    tint_strength: float = TINT,
+    feather: int = FEATHER,
+    colour: str | None = None,
+    attempt: int = 0,
     crop: tuple[int, int, int] | None = None,
     crop_size: int = 1024,
     prefix: str = "advanced",
 ) -> dict[str, Any]:
     """Redraws only `region` (SAM 3.1's text prompt) of the photo; None = the whole photo.
     The result outside the region is the photo itself (pasted back with a soft edge).
-    `tint` ("#RRGGBB"): the region is first tinted towards that colour (`tint_strength`).
-    `crop` (left, top, side at width × height): only that square is redrawn, at `crop_size`."""
+    `colour` ("#RRGGBB"): the region is first tinted towards it (stronger on every
+    `attempt`). `crop` (left, top, side at width × height): only that square is redrawn, at
+    `crop_size`."""
     wf: dict[str, Any] = {}
     model = _krea(wf, unet=unet, text_encoder=text_encoder, vae=vae, loras=loras)
+    if region:
+        # The soft edge of the mask is redrawn gradually instead of all or nothing.
+        wf["60"] = {"class_type": "DifferentialDiffusion", "inputs": {"model": model}}
+        model = ["60", 0]
     _conditioning(wf, variant, prompt, negative)
     wf["10"] = {"class_type": "LoadImage", "inputs": {"image": INPUT}}
     wf["11"] = {
@@ -278,11 +303,11 @@ def edit(
                     "class_type": "GrowMask",
                     "inputs": {"mask": ["32", 0], "expand": grow, "tapered_corners": True},
                 },
+                # The soft mask decides what is redrawn and what is pasted back.
                 "34": {
                     "class_type": "SetLatentNoiseMask",
-                    "inputs": {"samples": ["12", 0], "mask": ["33", 0]},
+                    "inputs": {"samples": ["12", 0], "mask": ["37", 0]},
                 },
-                # A soft edge for pasting the redrawn region back into the photo.
                 "35": {"class_type": "MaskToImage", "inputs": {"mask": ["33", 0]}},
                 "36": {
                     "class_type": "ImageBlur",
@@ -295,15 +320,16 @@ def edit(
             }
         )
         latent = ["34", 0]
-        if tint:
+        if colour:
             # The colour first: the region (only inside the mask) blended towards it.
+            mode, strength = tint(colour, attempt)
             wf["40"] = {
                 "class_type": "EmptyImage",
                 "inputs": {
                     "width": size_w,
                     "height": size_h,
                     "batch_size": 1,
-                    "color": colour_int(tint),
+                    "color": colour_int(colour),
                 },
             }
             wf["41"] = {
@@ -311,16 +337,18 @@ def edit(
                 "inputs": {
                     "image1": base,
                     "image2": ["40", 0],
-                    "blend_factor": round(tint_strength, 2),
-                    "blend_mode": "normal",
+                    "blend_factor": strength,
+                    "blend_mode": mode,
                 },
             }
+            # Only what SAM 3.1 found is tinted (not the grown rim), so no coloured halo
+            # stays on the skin or the background around it.
             wf["42"] = {
                 "class_type": "ImageCompositeMasked",
                 "inputs": {
                     "destination": base,
                     "source": ["41", 0],
-                    "mask": ["33", 0],
+                    "mask": ["32", 0],
                     "x": 0,
                     "y": 0,
                     "resize_source": False,

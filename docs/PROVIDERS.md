@@ -502,25 +502,56 @@ one click), optionally Enhance photo, SFace on this Mac and the user's own AI as
   photo's aspect ratio, `crop: disabled`) → VAEEncode; per region: CheckpointLoaderSimple
   (SAM 3.1) + CLIPTextEncode with its own text model (the region's words, e.g. "hair",
   "mouth and lips") → `SAM3_Detect` (threshold 0.4, 2 refine iterations, masks merged) →
-  `GrowMask` 16 px → `SetLatentNoiseMask` (only the mask is redrawn) → KSampler at the
-  region's strength → VAEDecode → `MaskToImage` / `ImageBlur` 9 / `ImageToMask` (soft edge)
-  → `ImageCompositeMasked` onto the scaled photo, so every pixel outside the region is the
-  photo's own. Without a region: the same image to image on the whole photo.
+  `GrowMask` 16 px → `MaskToImage` / `ImageBlur` 16 / `ImageToMask` (soft edge) →
+  `SetLatentNoiseMask` with that soft mask and `DifferentialDiffusion` on the model (since
+  2026-11-05; `comfy_extras/nodes_differential_diffusion.py`, input `model`, its optional
+  `strength` left at 1.0; marked experimental, loaded by v0.35.0's `nodes.py`): the region is
+  redrawn fully and its edge gradually, so no seam → KSampler at the region's strength →
+  VAEDecode → `ImageCompositeMasked` with the same soft mask onto the scaled photo, so every
+  pixel outside the region is the photo's own. Without a region: the same image to image on
+  the whole photo (no mask, no DifferentialDiffusion).
 - **Strengths** (denoise; the studio's own values, Krea publishes none): hair 0.85, mouth
-  0.7, eyes 0.6, face 0.55, expression 0.6, clothing 0.85, background 0.9, whole photo 0.5;
-  with a new colour hair and clothing 0.75; each correction adds 0.1 and a new seed
-  (0.2–0.95). The user can set one strength instead.
+  0.7, eyes 0.6, face 0.55 (0.75 when the person becomes the LoRA's character), expression
+  0.6, clothing 0.85, background 0.9, body (the person) 0.7, whole photo 0.5; with a new
+  colour hair and clothing 0.75; each correction adds 0.1 and a new seed (0.2–0.95). The
+  user can set one strength instead.
+- **The owner's tests on a GPU (2026-11-05, Krea 2 Turbo, 10 requests)**: every one was an
+  edit with a character LoRA, "Whole photo" and analysis off — one image to image at 0.5.
+  That keeps the photo's hair colour (blonde stayed blonde), its body and half its face, and
+  the colour tint and face crop never ran. Two photos were small (548 × 640, 1016 × 1410)
+  and were stretched to 2K, so the results were soft. The face check compared with the
+  woman in the photo, not with the LoRA. What changed because of it is below.
 - **Colour changes** (hair, clothing; since 2026-11-04 after the owner's first tests): Krea 2
   Turbo runs at CFG 1, so a negative prompt cannot push the old colour away and a masked
   redraw tends to keep it. The region is therefore tinted first: `EmptyImage` (`color` =
-  0xRRGGBB, checked in v0.35.0 `nodes.py`) → `ImageBlend` (`blend_mode` "normal",
-  `blend_factor` 0.55, +0.15 per correction up to 0.85; `comfy_extras/
-  nodes_post_processing.py`) → `ImageCompositeMasked` inside the mask → VAEEncode. The
+  0xRRGGBB, checked in v0.35.0 `nodes.py`) → `ImageBlend` (`comfy_extras/
+  nodes_post_processing.py`, modes normal, multiply, screen, overlay, soft_light,
+  difference): since 2026-11-05 "multiply" at 0.85 for a darker colour (luma < 0.5) and
+  "screen" at 0.55 for a lighter one, +0.1 per correction up to 1.0 — tried on the owner's
+  blonde photo: "normal" 0.55 washed the strands to a flat grey, multiply kept every strand
+  and its light → `ImageCompositeMasked` inside what SAM 3.1 found (not the grown rim, so no
+  coloured halo on the skin) → VAEEncode. The
   colour is the plan's `color` (the assistant gives a hex value; without one the studio's
   own palette of hair tones, English and Slovak words next to "hair"/"vlasy",
   `compiler.HAIR_COLOURS`), shown and editable in the plan (or removed). The colour is also
-  put first in the edit's prompt ("dark brown hair, …"), and the hair mask grows 24 px
+  put first in the edit's prompt ("dark brown hair, …"), and the hair mask grows 32 px
   instead of 16, so no rim of the old colour stays.
+- **A person becomes the LoRA's character** (an edit with a LoRA, switch on by default,
+  since 2026-11-05): before the other edits the person (SAM 3.1 "person", target body) is
+  redrawn with the LoRA at 0.7 — its figure and proportions, the pose and every pixel
+  outside the person stay — then the face in its enlarged crop at 0.75; "Whole photo" is
+  dropped then. The face is measured with SFace against the LoRA's training photos and is a
+  check of its own ("face_match", passed at SFace's threshold 0.363): a face that does not
+  match is redrawn again (corrections), also without AI analysis.
+- **Small photos** (since 2026-11-05): when the edit would enlarge the photo more than 1.3×,
+  it is first run through Enhance photo with its gentlest skin fix (0.15) and SeedVR2 1.5×,
+  so the redraw and the kept pixels start sharp. Without the Enhance photo models the step
+  is shown as skipped and the photo is only resized.
+- **Without AI analysis** the regions the text asks to change are added to the chosen ones
+  (since 2026-11-05): per sentence a word for the hair, face or body with a change word
+  ("change", "match", "zmeň" …) or a hair colour, unless the sentence keeps something
+  ("preserve", "maintain", "zachovaj" …). Order: whole, body, background, clothing, face,
+  expression, eyes, mouth, hair.
 - **Face regions** (mouth, eyes, face, expression): a mouth is a few latent pixels in a whole
   photo, which is why closed lips, teeth, the tongue and expressions came out badly. The face
   is found on this Mac (YuNet, the face-match detector; nothing is sent) and a square of 1.8×
@@ -534,7 +565,7 @@ one click), optionally Enhance photo, SFace on this Mac and the user's own AI as
   gaze and adds a check that the head is turned and tilted as in the original.
 - **Plan**: the assistant (its Balanced model as chosen in Integrations) answers JSON — what to
   keep, what to change, the prompt (no contradictions: closed lips removes "open mouth",
-  teeth, tongue), up to 4 edits and 10 checks. It is checked like every prompt
+  teeth, tongue), up to 6 edits and 10 checks. It is checked like every prompt
   (`services/safety.py`; 18+ only with the switch, minors always refused), shown and editable
   before the run. Tokens are recorded (purpose "advanced"); no prices are shown.
 - **Checks** (estimates, never guarantees): the assistant answers per requirement on the
@@ -549,9 +580,11 @@ one click), optionally Enhance photo, SFace on this Mac and the user's own AI as
 - **Not run on a real GPU**, with a real SAM 3.1 or against a real assistant: verified with
   the fake ComfyUI (nodes, files, the uploaded photo, the graphs sent) and the fake AI
   answers. How well SAM 3.1 finds a region and how well Krea 2 redraws a masked latent
-  (hair colour, closed mouth, expression) is untested — likewise the tint strengths and the
-  face crop; the owner's manual tests on a GPU decide the default values. The face crop was
-  checked with the real YuNet detector on test photos (lena, obama, messi5).
+  (hair colour, closed mouth, expression, the person with a LoRA at 0.7) is untested —
+  likewise the tint modes and strengths, DifferentialDiffusion's edge, the face crop and
+  the enlarging of small photos; the owner's manual tests on a GPU decide the default
+  values. The face crop was checked with the real YuNet detector on test photos (lena,
+  obama, messi5); the tint modes only as pixel blends on a photo, not through Krea 2.
 
 # LoRA training (ai-toolkit)
 
