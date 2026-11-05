@@ -177,16 +177,18 @@ repositories.
   LoRA, Enhance photo); "Load settings" restores a request with its plan and first seed
   (`options.first_seed`); deleting a request removes its images and steps, never the photo
   it started from. Colour changes (hair, clothing) tint the region with the plan's colour
-  before the redraw (`graphs.tint`: multiply for darker, screen for lighter colours, only
-  inside SAM's own mask; palette `compiler.HAIR_COLOURS`); face regions (mouth, eyes, face,
+  before the redraw (`graphs.tint`: multiply for darker, screen for lighter colours, then
+  half-way to the flat colour (`FLATTEN`) so old highlights go, only inside SAM's own mask;
+  palette `compiler.HAIR_COLOURS`, the colour after "to"/"na" wins); face regions (mouth, eyes, face,
   expression) are redrawn in an enlarged crop around the face found on the Mac
   (`advanced/crop.py`, YuNet) and pasted back inside the mask only; masked edits use a soft
   mask with DifferentialDiffusion. An edit with a LoRA turns the person into its character
   (owner's request 2026-11-05; `options.identity`, switch on by default): the person (SAM
-  "person", target body) and then the face are redrawn with the LoRA before other edits, the
-  face is measured against the LoRA's photos as its own check ("face_match") and corrected.
+  "person" minus SAM "face", target body, 0.6 — more recomposed the owner's photos) and then
+  the face are redrawn with the LoRA before other edits, the face is measured against the LoRA's photos as its own check ("face_match") and corrected.
   A photo the edit would enlarge more than 1.3× is first enlarged with Enhance photo
-  (`options.prepare`; skipped and shown when its models are missing). Without analysis, the
+  (`options.prepare`, SeedVR2 by the smallest factor that reaches the edit's size;
+  skipped and shown when its models are missing). Without analysis, the
   hair, face or body the text asks to change are added to the chosen regions
   (`compiler.detected_targets`). Every number is the studio's estimate, tuned on the owner's
   GPU tests.

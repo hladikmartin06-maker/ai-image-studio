@@ -184,9 +184,35 @@ _GAP = r"[\s,-]+(?:[^\W\d_]+[\s,-]+){0,3}?"
 _FROM_TO = re.compile(r"\b(?:from|z|zo)\b[^.;]*?\b(?:to|into|na|do)\b", re.IGNORECASE)
 
 
+# "her platinum blonde hair … to deep dark brown" / "vlasy na čierne": in a sentence about
+# the hair, a colour a few words after "to"/"into"/"na"/"do" is the new one.
+_TO = re.compile(r"\b(?:to|into|na|do)\b(?P<after>(?:[\s,]+[^\W\d_]+){1,6})", re.IGNORECASE)
+
+
+def _target_colour(text: str) -> tuple[str, str] | None:
+    for sentence in re.split(r"[.;!?\n]+", text):
+        if not re.search(rf"\b{_HAIR}", sentence, re.IGNORECASE):
+            continue
+        for m in _TO.finditer(sentence):
+            after = m.group("after")
+            found = [
+                (c.start(), -len(c.group(0)), name, hex_colour)
+                for pattern, name, hex_colour in HAIR_COLOURS
+                for c in re.finditer(rf"\b(?:{pattern})\b", after, re.IGNORECASE)
+            ]
+            if found:
+                _, _, name, hex_colour = min(found)
+                return name, hex_colour
+    return None
+
+
 def hair_colour(text: str) -> tuple[str, str] | None:
-    """The hair colour a text asks for: (English name, "#RRGGBB"), or None. Only a colour
-    next to "hair"/"vlasy" counts, so "a blue dress" is not taken for the hair."""
+    """The hair colour a text asks for: (English name, "#RRGGBB"), or None. The colour it
+    changes to wins over the one it changes from; otherwise only a colour next to
+    "hair"/"vlasy" counts, so "a blue dress" is not taken for the hair."""
+    target = _target_colour(text)
+    if target:
+        return target
     clean = _FROM_TO.sub(" ", text)
     best: tuple[int, int, str, str] | None = None
     for pattern, name, hex_colour in HAIR_COLOURS:

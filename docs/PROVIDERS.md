@@ -512,7 +512,7 @@ one click), optionally Enhance photo, SFace on this Mac and the user's own AI as
   the whole photo (no mask, no DifferentialDiffusion).
 - **Strengths** (denoise; the studio's own values, Krea publishes none): hair 0.85, mouth
   0.7, eyes 0.6, face 0.55 (0.75 when the person becomes the LoRA's character), expression
-  0.6, clothing 0.85, background 0.9, body (the person) 0.7, whole photo 0.5; with a new
+  0.6, clothing 0.85, background 0.9, body (the person) 0.6, whole photo 0.5; with a new
   colour hair and clothing 0.75; each correction adds 0.1 and a new seed (0.2–0.95). The
   user can set one strength instead.
 - **The owner's tests on a GPU (2026-11-05, Krea 2 Turbo, 10 requests)**: every one was an
@@ -529,23 +529,33 @@ one click), optionally Enhance photo, SFace on this Mac and the user's own AI as
   difference): since 2026-11-05 "multiply" at 0.85 for a darker colour (luma < 0.5) and
   "screen" at 0.55 for a lighter one, +0.1 per correction up to 1.0 — tried on the owner's
   blonde photo: "normal" 0.55 washed the strands to a flat grey, multiply kept every strand
-  and its light → `ImageCompositeMasked` inside what SAM 3.1 found (not the grown rim, so no
+  and its light — then (since the owner's second tests, 2026-11-05: blonde → dark brown came
+  out mid brown with blonde streaks) a second `ImageBlend` "normal" at 0.5 towards the flat
+  colour (`graphs.FLATTEN`), so the old highlights do not return → `ImageCompositeMasked` inside what SAM 3.1 found (not the grown rim, so no
   coloured halo on the skin) → VAEEncode. The
   colour is the plan's `color` (the assistant gives a hex value; without one the studio's
   own palette of hair tones, English and Slovak words next to "hair"/"vlasy",
-  `compiler.HAIR_COLOURS`), shown and editable in the plan (or removed). The colour is also
+  `compiler.HAIR_COLOURS`; in a sentence about the hair a colour up to six words after
+  "to"/"into"/"na"/"do" wins — "her platinum blonde hair color to deep dark brown" had
+  tinted the hair platinum before 2026-11-05), shown and editable in the plan (or removed). The colour is also
   put first in the edit's prompt ("dark brown hair, …"), and the hair mask grows 32 px
   instead of 16, so no rim of the old colour stays.
 - **A person becomes the LoRA's character** (an edit with a LoRA, switch on by default,
   since 2026-11-05): before the other edits the person (SAM 3.1 "person", target body) is
-  redrawn with the LoRA at 0.7 — its figure and proportions, the pose and every pixel
-  outside the person stay — then the face in its enlarged crop at 0.75; "Whole photo" is
+  redrawn with the LoRA at 0.6 — its figure and proportions, the pose and every pixel
+  outside the person stay; the face is taken out of that mask (a second SAM 3.1 "face" →
+  `MaskComposite` "subtract", `comfy_extras/nodes_mask.py`), so the expression is left for
+  the face edit. At 0.7 the owner's second tests (2026-11-05) lost a tongue-out expression
+  in this step, got a foot drawn into a pillow and once a whole new close-up with holes of
+  the old background in the face. Then the face in its enlarged crop at 0.75; "Whole photo" is
   dropped then. The face is measured with SFace against the LoRA's training photos and is a
   check of its own ("face_match", passed at SFace's threshold 0.363): a face that does not
   match is redrawn again (corrections), also without AI analysis.
 - **Small photos** (since 2026-11-05): when the edit would enlarge the photo more than 1.3×,
-  it is first run through Enhance photo with its gentlest skin fix (0.15) and SeedVR2 1.5×,
-  so the redraw and the kept pixels start sharp. Without the Enhance photo models the step
+  it is first run through Enhance photo with its gentlest skin fix (0.15) and SeedVR2 by the
+  smallest of 1.5×, 2×, 3× that reaches the edit's size (3× when none does; 1.5× before the
+  owner's second tests left a 548 × 640 photo's background soft), so the redraw and the
+  kept pixels — the background too — start sharp. Without the Enhance photo models the step
   is shown as skipped and the photo is only resized.
 - **Without AI analysis** the regions the text asks to change are added to the chosen ones
   (since 2026-11-05): per sentence a word for the hair, face or body with a change word
@@ -580,7 +590,8 @@ one click), optionally Enhance photo, SFace on this Mac and the user's own AI as
 - **Not run on a real GPU**, with a real SAM 3.1 or against a real assistant: verified with
   the fake ComfyUI (nodes, files, the uploaded photo, the graphs sent) and the fake AI
   answers. How well SAM 3.1 finds a region and how well Krea 2 redraws a masked latent
-  (hair colour, closed mouth, expression, the person with a LoRA at 0.7) is untested —
+  (hair colour, closed mouth, expression, the person with a LoRA at 0.6 without its face)
+  is untested —
   likewise the tint modes and strengths, DifferentialDiffusion's edge, the face crop and
   the enlarging of small photos; the owner's manual tests on a GPU decide the default
   values. The face crop was checked with the real YuNet detector on test photos (lena,

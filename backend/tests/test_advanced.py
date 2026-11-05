@@ -441,17 +441,19 @@ async def test_edit_hair_and_mouth_corrects_only_what_failed(
     assert keys == ["plan", "prepare", "edit1", "edit2", "check", "fix1-mouth", "check2"]
     graphs_sent = sent_graphs(comfy)
     prepared, hair, mouth, fix = graphs_sent[-4:]
-    # The 64 × 80 photo is first enlarged with Enhance photo (gentlest skin fix, 1.5×).
+    # The 64 × 80 photo is first enlarged with Enhance photo (gentlest skin fix, its largest
+    # factor: the edit needs far more than 3×).
     assert prepared["24"]["inputs"]["denoise"] == enhance.STRENGTHS[0]
-    assert prepared["5"]["inputs"]["scale_by"] == enhance.UPSCALES[0]
+    assert prepared["5"]["inputs"]["scale_by"] == enhance.UPSCALES[-1]
     # Only the region is redrawn and pasted back into the photo.
     for graph, region in ((hair, "hair"), (mouth, "mouth and lips"), (fix, "mouth and lips")):
         kinds = {n["class_type"] for n in graph.values()}
         assert {"SAM3_Detect", "SetLatentNoiseMask", "ImageCompositeMasked", "LoadImage"} <= kinds
         assert graph["31"]["inputs"]["text"] == region
     # Hair colour: the plan named "dark brown", so the hair is tinted with it first (only
-    # what SAM 3.1 found, multiplied so the strands keep their light) and redrawn less; the
-    # colour leads the prompt; a wider mask with a soft edge redrawn gradually.
+    # what SAM 3.1 found, multiplied so the strands keep their light, then half-way to the
+    # flat colour so the old highlights go) and redrawn less; the colour leads the prompt;
+    # a wider mask with a soft edge redrawn gradually.
     assert hair["40"]["class_type"] == "EmptyImage"
     assert hair["40"]["inputs"]["color"] == 0x3A281D
     assert hair["41"]["inputs"] == {
@@ -460,8 +462,16 @@ async def test_edit_hair_and_mouth_corrects_only_what_failed(
         "blend_factor": 0.85,
         "blend_mode": "multiply",
     }
+    assert hair["43"]["inputs"] == {
+        "image1": ["41", 0],
+        "image2": ["40", 0],
+        "blend_factor": 0.5,
+        "blend_mode": "normal",
+    }
+    assert hair["42"]["inputs"]["source"] == ["43", 0]
     assert hair["42"]["inputs"]["mask"] == ["32", 0]
     assert hair["12"]["inputs"]["pixels"] == ["42", 0]
+    assert "46" not in hair and "46" not in mouth  # nothing taken out of these regions
     assert hair["33"]["inputs"]["expand"] == 32 and mouth["33"]["inputs"]["expand"] == 16
     for graph in (hair, mouth, fix):
         assert graph["60"]["class_type"] == "DifferentialDiffusion"
@@ -650,9 +660,19 @@ async def test_identity_redraws_person_and_face_and_corrects_the_face(
     assert keys == ["plan", "prepare", "edit1", "edit2", "edit3", "check", "fix1-face", "check2"]
     person, face, hair, fix = sent_graphs(comfy)[-4:]
     # The person (SAM 3.1 "person") redrawn with the LoRA, strong enough for its figure;
-    # every pixel outside stays the photo's.
+    # every pixel outside stays the photo's. The face is taken out (SAM 3.1 "face"), so
+    # its expression is left for the face edit.
     assert person["31"]["inputs"]["text"] == "person" and "50" not in person
-    assert person["7"]["inputs"]["denoise"] == 0.7
+    assert person["45"]["inputs"]["text"] == "face"
+    assert person["47"]["inputs"] == {
+        "destination": ["32", 0],
+        "source": ["46", 0],
+        "x": 0,
+        "y": 0,
+        "operation": "subtract",
+    }
+    assert person["33"]["inputs"]["mask"] == ["47", 0]
+    assert person["7"]["inputs"]["denoise"] == 0.6
     lora_node = next(n for n in person.values() if n["class_type"] == "LoraLoaderModelOnly")
     assert lora_node["inputs"]["strength_model"] == 1.0
     assert person["4"]["inputs"]["text"].startswith("lmx, lmxx2 woman")
@@ -675,6 +695,16 @@ async def test_identity_redraws_person_and_face_and_corrects_the_face(
     # Identity off: the LoRA only helps, and a region has to be chosen again.
     r = await user.post("/api/advanced/jobs", json={**body, "identity": False})
     assert r.status_code == 400
+
+
+def test_small_photo_is_enlarged_to_the_edit_size():
+    # The owner's photos (2026-11-05): 548 × 640 at 2K needs 3.2× (SeedVR2's largest, 3×),
+    # 1016 × 1410 needs 1.45× (1.5×); one already big enough is not enlarged at all.
+    assert engine.prepare_upscale({"width": 548, "height": 640}, "2K") == 3.0
+    assert engine.prepare_upscale({"width": 1016, "height": 1410}, "2K") == 1.5
+    assert engine.prepare_upscale({"width": 800, "height": 1000}, "2K") == 3.0
+    assert engine.prepare_upscale({"width": 1000, "height": 1300}, "2K") == 2.0
+    assert engine.small_photo({"width": 1162, "height": 1593}, "2K") is False
 
 
 async def test_small_photo_without_enhance_models_is_only_resized(user: Api, tmp_path):
@@ -866,6 +896,14 @@ def test_hair_colour_from_the_request():
     # Only a colour next to the hair counts.
     assert hair_colour("a blue dress and long wavy blonde hair")[0] == "blonde"
     assert hair_colour("a blue dress, close her mouth") is None
+    # The colour it changes to, not the one it has (owner's test, 2026-11-05).
+    assert hair_colour(
+        "Completely change her platinum blonde hair color to deep natural dark brown, "
+        "with no remaining blonde sections."
+    ) == ("dark brown", "#3A281D")
+    assert hair_colour("Change her platinum blonde hair colour to jet black")[0] == "jet black"
+    assert hair_colour("prefarbi jej vlasy do čierna")[0] == "black"
+    assert hair_colour("Walk to the red car. Her hair is blonde.")[0] == "blonde"
     assert hair_colour("make the hair platinum blonde")[0] == "platinum blonde"
 
 

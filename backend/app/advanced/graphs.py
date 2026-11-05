@@ -63,11 +63,14 @@ NODES_EDIT = (
     "ImageBlend",
     "ImageCrop",
     "DifferentialDiffusion",
+    "MaskComposite",
 )
 
 # Region edits: how much of the region is redrawn by default (the studio's values; Krea
 # publishes none). A colour change needs more than closing the lips; the person ("body")
-# needs enough for a character LoRA to give it its figure while the pose stays.
+# needs enough for a character LoRA to give it its figure while the pose stays — at 0.7 the
+# owner's tests (2026-11-05) got a foot drawn into a pillow and once a whole new close-up
+# with holes of the old background in the face.
 DENOISE = {
     "hair": 0.85,
     "mouth": 0.7,
@@ -76,7 +79,7 @@ DENOISE = {
     "expression": 0.6,
     "clothing": 0.85,
     "background": 0.9,
-    "body": 0.7,
+    "body": 0.6,
     "whole": 0.5,
 }
 # The face when the person becomes the LoRA's character: a new identity, not a touch-up.
@@ -92,6 +95,9 @@ REGIONS = {
     "background": "background",
     "body": "person",
 }
+# What a region's redraw leaves alone (SAM 3.1 finds it too and it is taken out of the
+# mask): the person's figure without the face, so the expression stays for the face edit.
+EXCLUDE = {"body": "face"}
 DENOISE_MIN = 0.2
 DENOISE_MAX = 0.95
 
@@ -103,6 +109,9 @@ DENOISE_COLOUR = {"hair": 0.75, "clothing": 0.75}
 TINT = {"multiply": 0.85, "screen": 0.55}  # how far the region goes towards the colour
 TINT_STEP = 0.1  # more on every correction
 TINT_MAX = 1.0
+# After the tint the region is also blended this far towards the flat colour, so the old
+# colour's highlights (blonde streaks under dark brown) do not come back in the redraw.
+FLATTEN = 0.5
 DARK = 0.5  # a colour's luma (0–1) below this is "darker": multiply
 
 # How far the mask grows past what SAM 3.1 found (px at the edit size) — hair gets more, so
@@ -226,6 +235,7 @@ def edit(
     loras: list[tuple[str, float]],
     denoise: float,
     region: str | None,
+    exclude: str | None = None,
     grow: int = GROW_DEFAULT,
     feather: int = FEATHER,
     colour: str | None = None,
@@ -236,6 +246,7 @@ def edit(
 ) -> dict[str, Any]:
     """Redraws only `region` (SAM 3.1's text prompt) of the photo; None = the whole photo.
     The result outside the region is the photo itself (pasted back with a soft edge).
+    `exclude` (SAM 3.1's text prompt): taken out of the region.
     `colour` ("#RRGGBB"): the region is first tinted towards it (stronger on every
     `attempt`). `crop` (left, top, side at width × height): only that square is redrawn, at
     `crop_size`."""
@@ -281,6 +292,34 @@ def edit(
     pixels: list[Any] = base
     latent: list[Any] = ["12", 0]
     if region:
+        found: list[Any] = ["32", 0]
+        if exclude:
+            wf["45"] = {
+                "class_type": "CLIPTextEncode",
+                "inputs": {"clip": ["30", 1], "text": exclude},
+            }
+            wf["46"] = {
+                "class_type": "SAM3_Detect",
+                "inputs": {
+                    "model": ["30", 0],
+                    "image": base,
+                    "conditioning": ["45", 0],
+                    "threshold": 0.4,
+                    "refine_iterations": 2,
+                    "individual_masks": False,
+                },
+            }
+            wf["47"] = {
+                "class_type": "MaskComposite",
+                "inputs": {
+                    "destination": ["32", 0],
+                    "source": ["46", 0],
+                    "x": 0,
+                    "y": 0,
+                    "operation": "subtract",
+                },
+            }
+            found = ["47", 0]
         wf.update(
             {
                 "30": {"class_type": "CheckpointLoaderSimple", "inputs": {"ckpt_name": SAM3_FILE}},
@@ -301,7 +340,7 @@ def edit(
                 },
                 "33": {
                     "class_type": "GrowMask",
-                    "inputs": {"mask": ["32", 0], "expand": grow, "tapered_corners": True},
+                    "inputs": {"mask": found, "expand": grow, "tapered_corners": True},
                 },
                 # The soft mask decides what is redrawn and what is pasted back.
                 "34": {
@@ -341,14 +380,23 @@ def edit(
                     "blend_mode": mode,
                 },
             }
+            wf["43"] = {
+                "class_type": "ImageBlend",
+                "inputs": {
+                    "image1": ["41", 0],
+                    "image2": ["40", 0],
+                    "blend_factor": FLATTEN,
+                    "blend_mode": "normal",
+                },
+            }
             # Only what SAM 3.1 found is tinted (not the grown rim), so no coloured halo
             # stays on the skin or the background around it.
             wf["42"] = {
                 "class_type": "ImageCompositeMasked",
                 "inputs": {
                     "destination": base,
-                    "source": ["41", 0],
-                    "mask": ["32", 0],
+                    "source": ["43", 0],
+                    "mask": found,
                     "x": 0,
                     "y": 0,
                     "resize_source": False,

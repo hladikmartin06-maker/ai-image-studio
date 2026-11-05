@@ -325,6 +325,7 @@ async def _edit(
         source.get("width") or 1024, source.get("height") or 1024, options.get("resolution", "1K")
     )
     region = edit.region if edit.target != "whole" else None
+    exclude = graphs.EXCLUDE.get(edit.target) if region else None
     # A colour change starts from the tinted region, so it needs less redrawing.
     colour = edit.color if region and edit.target in graphs.COLOUR_TARGETS else None
     default = graphs.DENOISE[edit.target]
@@ -351,6 +352,7 @@ async def _edit(
         seed=seed,
         denoise=denoise,
         region=region,
+        exclude=exclude,
         grow=graphs.GROW.get(edit.target, graphs.GROW_DEFAULT),
         colour=colour,
         attempt=attempt,
@@ -371,6 +373,7 @@ async def _edit(
             "cfg": args["cfg"],
             "denoise": denoise,
             "region": region or "whole photo",
+            **({"exclude": exclude} if exclude else {}),
             **({"color": colour, "tint": list(graphs.tint(colour, attempt))} if colour else {}),
             **({"face_crop": list(square)} if square else {}),
             "engine": "advanced",
@@ -416,19 +419,28 @@ async def _enhance(
 
 
 # A photo the edit would enlarge more than this is first enlarged and sharpened with Enhance
-# photo (its gentlest skin fix, then SeedVR2), so the redraw — and every pixel kept from the
-# photo — starts sharp instead of stretched. The studio's values.
+# photo (its gentlest skin fix, then SeedVR2 by the smallest of its factors that reaches the
+# edit's size), so the redraw — and every pixel kept from the photo, the background too —
+# starts sharp instead of stretched. The studio's values.
 PREPARE_GAIN = 1.3
 PREPARE_STRENGTH = enhance.STRENGTHS[0]
-PREPARE_UPSCALE = enhance.UPSCALES[0]
+
+
+def _gain(source: dict[str, Any], resolution: str) -> float:
+    sw, sh = int(source.get("width") or 0), int(source.get("height") or 0)
+    if sw <= 0 or sh <= 0:
+        return 1.0
+    width, height = krea2.size_for_source(sw, sh, resolution)
+    return max(width / sw, height / sh)
 
 
 def small_photo(source: dict[str, Any], resolution: str) -> bool:
-    sw, sh = int(source.get("width") or 0), int(source.get("height") or 0)
-    if sw <= 0 or sh <= 0:
-        return False
-    width, height = krea2.size_for_source(sw, sh, resolution)
-    return max(width / sw, height / sh) > PREPARE_GAIN
+    return _gain(source, resolution) > PREPARE_GAIN
+
+
+def prepare_upscale(source: dict[str, Any], resolution: str) -> float:
+    gain = _gain(source, resolution)
+    return next((u for u in enhance.UPSCALES if u >= gain), enhance.UPSCALES[-1])
 
 
 async def _prepare_photo(job: AdvancedJob, source: dict[str, Any]) -> Image | None:
@@ -446,9 +458,8 @@ async def _prepare_photo(job: AdvancedJob, source: dict[str, Any]) -> Image | No
         )
     if prepare != "on":
         return None
-    return await _enhance(
-        job, source, key="prepare", strength=PREPARE_STRENGTH, upscale=PREPARE_UPSCALE
-    )
+    upscale = prepare_upscale(source, (job.options or {}).get("resolution", "1K"))
+    return await _enhance(job, source, key="prepare", strength=PREPARE_STRENGTH, upscale=upscale)
 
 
 async def _lora_photos(job: AdvancedJob) -> list[Path]:
