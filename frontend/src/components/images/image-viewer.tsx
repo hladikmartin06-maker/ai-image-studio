@@ -76,6 +76,8 @@ export function ImageViewer({
   const input = image.comfy?.input ?? null;
   const original = input && missingOriginal !== input.url ? input.url : null;
   const shown = original ? view : "result";
+  // A step of a Generate › Advanced request: repeated from that panel, not on its own.
+  const advanced = Boolean(image.comfy?.advanced);
 
   const settingsRows: [string, string][] = [];
   if (s.resolution) settingsRows.push([t("gen.resolution"), isVideo(image) ? s.resolution : s.resolution.toUpperCase()]);
@@ -173,14 +175,16 @@ export function ImageViewer({
             <Button size="sm" icon={<Download />} onClick={() => actions.download(image)}>
               {t("common.download")}
             </Button>
-            <Button
-              size="sm"
-              icon={<RefreshCw />}
-              loading={actions.regenerating}
-              onClick={() => actions.regenerateImage(image)}
-            >
-              {t("images.regenerate")}
-            </Button>
+            {advanced ? null : (
+              <Button
+                size="sm"
+                icon={<RefreshCw />}
+                loading={actions.regenerating}
+                onClick={() => actions.regenerateImage(image)}
+              >
+                {t("images.regenerate")}
+              </Button>
+            )}
             {isVideo(image) ? null : (
               <>
                 <Button size="sm" icon={<Film />} onClick={() => void actions.animateImage(image)}>
@@ -337,9 +341,11 @@ export function ImageViewer({
           </div>
         ) : null}
         <div className="viewer-side-section row wrap" style={{ borderBottom: 0, marginTop: "auto" }}>
-          <Button size="sm" variant="ghost" icon={<SlidersHorizontal />} onClick={() => actions.openInStudio(image)}>
-            {t("images.openInStudio")}
-          </Button>
+          {advanced ? null : (
+            <Button size="sm" variant="ghost" icon={<SlidersHorizontal />} onClick={() => actions.openInStudio(image)}>
+              {t("images.openInStudio")}
+            </Button>
+          )}
           <span className="spacer" />
           <Button size="sm" variant="danger" icon={<Trash2 />} onClick={onDelete}>
             {t("common.delete")}

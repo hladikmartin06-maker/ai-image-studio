@@ -59,6 +59,10 @@ NODES = [
     "ImageCompositeMasked",
     # Advanced generation: Krea 2 redraws only a masked region (built-in, ComfyUI >= 0.30).
     "SetLatentNoiseMask",
+    # Advanced: colour tint before a redraw, and face edits in an enlarged crop.
+    "EmptyImage",
+    "ImageBlend",
+    "ImageCrop",
     "ImageScaleBy",
     "SeedVR2Preprocess",
     "VAEEncodeTiled",

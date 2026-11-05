@@ -92,8 +92,16 @@ Integrations and Settings.
     compared with the original or the LoRA's photos, and the changed area is measured; these
     are estimates, not guarantees). What failed is corrected again (0–3 times, only that part),
     the best attempt is kept, and "Enhance photo" can finish it. Without the assistant, switch
-    the analysis off and pick the parts to change yourself. Steps, checks and before/after are
-    shown in the panel; attempts not chosen stay out of the library.
+    the analysis off and pick the parts to change yourself. For a **new hair colour** the hair
+    is first tinted with the colour (shown in the plan, where you can change or remove it),
+    so Krea 2 starts from it; the **mouth, eyes and expression** are redrawn in an enlarged
+    crop of the face (found on this Mac), so small details come out right and the head's
+    pose stays as it was. Steps, checks and before/after are
+    shown in the panel; attempts not chosen stay out of the library. Like everywhere else, the
+    result opens in the viewer and can be downloaded, deleted (with "Undo"), enhanced or added
+    to a LoRA; "All images of this request" shows every attempt. The buttons at the top of a
+    request copy its prompt, **load its settings** (with the plan and seed it used, so Run
+    repeats it) and delete the whole request with its images.
 - **AI Models** — your own fictional adult characters with up to 200 photos (shown across the
   whole page, primary photo first). The profile (description, age, hair, face, body, style, …)
   is optional and opens in a window. Select one on Generate: its description is added to the

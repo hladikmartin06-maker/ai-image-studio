@@ -5,14 +5,16 @@ LoRA versions and compatibility rules."""
 
 from __future__ import annotations
 
+import secrets
 import uuid
 from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel, Field, ValidationError
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from app.advanced import compiler, engine, graphs
 from app.advanced.intelligence import IntelligenceError
@@ -22,9 +24,11 @@ from app.comfy.generation import LoraUse, SourceImage, resolve_lora, source_inpu
 from app.comfy.service import file_capability, lora_filename, owned
 from app.db import get_db
 from app.deps import api_error, current_user
-from app.models import AdvancedJob, AIIntegration, ComfyConnection, Image, User
+from app.models import AdvancedJob, AIIntegration, ComfyConnection, Generation, Image, User
+from app.services import storage
 from app.services.generation import GenerationRejected
 from app.services.safety import ADULT_OFF, PromptRefused, check_prompt, is_explicit
+from app.services.serializers import image_json
 
 router = APIRouter(prefix="/api/advanced", tags=["advanced"])
 
@@ -237,6 +241,9 @@ async def _prepare(
         "aspect_ratio": body.aspect_ratio,
         "resolution": body.resolution,
         "seed": body.seed,
+        # The first attempt's seed (the user's, else one chosen now): "Load settings" can
+        # repeat the request; corrections always take new seeds.
+        "first_seed": body.seed if body.seed is not None else secrets.randbelow(krea2.SEED_MAX),
         "targets": targets,
         "denoise": body.denoise,
         "analysis": body.analysis,
@@ -297,7 +304,36 @@ async def plan(
     return spec.model_dump()
 
 
-def job_json(job: AdvancedJob, result: Image | None) -> dict[str, Any]:
+ACTIVE_STEP = ("queued", "processing")
+
+
+async def _steps(
+    db: AsyncSession, user_id: uuid.UUID, job_ids: list[uuid.UUID]
+) -> dict[str, list[Generation]]:
+    """The ComfyUI runs (steps) of these jobs, with their images, oldest first."""
+    if not job_ids:
+        return {}
+    rows = (
+        await db.scalars(
+            select(Generation)
+            .where(
+                Generation.user_id == user_id,
+                Generation.provider == "comfyui",
+                Generation.comfy_meta["advanced"]["job_id"].astext.in_([str(i) for i in job_ids]),
+            )
+            .options(selectinload(Generation.images), selectinload(Generation.tasks))
+            .order_by(Generation.created_at)
+        )
+    ).all()
+    out: dict[str, list[Generation]] = {}
+    for gen in rows:
+        out.setdefault((gen.comfy_meta or {})["advanced"]["job_id"], []).append(gen)
+    return out
+
+
+def job_json(
+    job: AdvancedJob, result: Image | None, steps: list[Generation] | None = None
+) -> dict[str, Any]:
     options = dict(job.options or {})
     for key in ("unet", "text_encoder", "vae"):
         options.pop(key, None)
@@ -322,16 +358,17 @@ def job_json(job: AdvancedJob, result: Image | None) -> dict[str, Any]:
         "status": job.status,
         "error_code": job.error_code,
         "error_message": job.error_message,
-        "result": {
-            "image_id": str(result.id),
-            "url": f"/api/images/{result.id}/file",
-            "thumb_url": f"/api/images/{result.id}/thumb",
-            "width": result.width,
-            "height": result.height,
-            "generation_id": str(result.generation_id),
-        }
+        # The chosen image, like every image elsewhere (download, viewer, delete).
+        "result": {**image_json(result), "image_id": str(result.id)}
         if result is not None
         else None,
+        # Every image the request made (attempts, corrections, enhance), oldest first.
+        "images": [
+            image_json(image, gen)
+            for gen in steps or []
+            for image in sorted(gen.images, key=lambda i: i.index)
+        ],
+        "steps_running": sum(1 for gen in steps or [] if gen.status in ACTIVE_STEP),
         "seconds": round((ended - started).total_seconds(), 1) if started and ended else None,
         "created_at": job.created_at.isoformat() if job.created_at else None,
     }
@@ -346,9 +383,19 @@ async def _owned_job(db: AsyncSession, user: User, job_id: uuid.UUID) -> Advance
     return job
 
 
-async def _json(db: AsyncSession, job: AdvancedJob) -> dict[str, Any]:
-    result = await db.get(Image, job.result_image_id) if job.result_image_id else None
-    return job_json(job, result)
+async def _json(
+    db: AsyncSession, job: AdvancedJob, steps: list[Generation] | None = None
+) -> dict[str, Any]:
+    if steps is None:
+        steps = (await _steps(db, job.user_id, [job.id])).get(str(job.id), [])
+    result = next((i for gen in steps for i in gen.images if i.id == job.result_image_id), None)
+    if result is None and job.result_image_id:
+        result = await db.scalar(
+            select(Image)
+            .where(Image.id == job.result_image_id)
+            .options(selectinload(Image.generation))
+        )
+    return job_json(job, result, steps)
 
 
 @router.post("/jobs", status_code=201)
@@ -416,7 +463,8 @@ async def list_jobs(
             .limit(limit)
         )
     ).all()
-    return {"items": [await _json(db, j) for j in jobs]}
+    steps = await _steps(db, user.id, [j.id for j in jobs])
+    return {"items": [await _json(db, j, steps.get(str(j.id), [])) for j in jobs]}
 
 
 @router.get("/jobs/{job_id}")
@@ -435,3 +483,23 @@ async def cancel_job(
         job.cancel_requested = True
         await db.commit()
     return await _json(db, job)
+
+
+@router.delete("/jobs/{job_id}")
+async def delete_job(
+    job_id: uuid.UUID, user: User = Depends(current_user), db: AsyncSession = Depends(get_db)
+):
+    """Removes the request with every image it made and its steps' history entries (as
+    deleting a generation does). A photo it started from is the user's own and stays."""
+    job = await _owned_job(db, user, job_id)
+    steps = (await _steps(db, user.id, [job.id])).get(str(job.id), [])
+    if job.status in ("queued", "running") or any(g.status in ACTIVE_STEP for g in steps):
+        raise api_error(409, "in_progress", "Stop the request or wait until it has finished.")
+    paths = [p for gen in steps for img in gen.images for p in (img.file_path, img.thumb_path)]
+    await db.delete(job)
+    for gen in steps:
+        await db.execute(delete(Image).where(Image.generation_id == gen.id))
+        await db.delete(gen)
+    await db.commit()
+    storage.delete_files(*paths)
+    return {"ok": True}

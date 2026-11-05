@@ -1,6 +1,21 @@
 "use client";
 
-import { Check, ChevronDown, CircleSlash, Download, ListChecks, Loader2, RefreshCw, Sparkles, Square, X } from "lucide-react";
+import {
+  Check,
+  ChevronDown,
+  CircleSlash,
+  Copy,
+  Download,
+  ListChecks,
+  Loader2,
+  Maximize2,
+  RefreshCw,
+  SlidersHorizontal,
+  Sparkles,
+  Square,
+  Trash2,
+  X,
+} from "lucide-react";
 import { useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 
@@ -8,12 +23,17 @@ import { ComfyConnectionBar } from "@/components/comfy/connection-bar";
 import { loraFits } from "@/components/comfy/generate-panel";
 import { type PickedPhoto, PhotoPicker } from "@/components/comfy/photo-picker";
 import { CompareSlider } from "@/components/lora/compare";
+import { copyText, useImageActions, useQuickDelete } from "@/components/images/actions";
+import { ImageTile } from "@/components/images/image-tile";
+import { ImageViewer } from "@/components/images/image-viewer";
+import { AddToLora } from "@/components/lora/add-to-lora";
 import { newRequestId } from "@/components/studio/common";
-import { Badge, Button, EmptyState, Field, Notice, Segmented, Select, Skeleton, Switch } from "@/components/ui";
+import { Badge, Button, EmptyState, Field, IconButton, Notice, Segmented, Select, Skeleton, Switch } from "@/components/ui";
 import { ApiError } from "@/lib/api";
 import { formatBytes } from "@/lib/format";
 import { useI18n } from "@/lib/i18n";
 import type { MessageKey } from "@/lib/i18n";
+import { isHidden, useHiddenVersion } from "@/lib/pending-deletes";
 import {
   useAdvancedCapabilities,
   useAdvancedJobs,
@@ -22,6 +42,7 @@ import {
   useComfyModelDownload,
   useLoras,
   usePlanAdvanced,
+  useSettings,
   useStartAdvanced,
   useTestComfy,
 } from "@/lib/queries";
@@ -111,11 +132,31 @@ function Report({ report, job }: { report: AdvancedReport; job: AdvancedJob }) {
   );
 }
 
-function JobView({ job }: { job: AdvancedJob }) {
+function JobView({
+  job,
+  blurNsfw,
+  onLoad,
+}: {
+  job: AdvancedJob;
+  blurNsfw: boolean;
+  onLoad: (job: AdvancedJob) => void;
+}) {
   const { t } = useI18n();
   const cancel = useCancelAdvanced();
+  const actions = useImageActions();
+  const quick = useQuickDelete();
+  useHiddenVersion();
+  const [viewer, setViewer] = useState<number | null>(null);
   const active = job.status === "queued" || job.status === "running";
   const last = job.reports.at(-1);
+  // Deleted images disappear at once (they go after the "Undo" moment).
+  const images = job.images.filter((img) => !isHidden(img.id));
+  const result = job.result && !isHidden(job.result.id) ? job.result : null;
+  const open = (id: string) => {
+    const index = images.findIndex((img) => img.id === id);
+    if (index >= 0) setViewer(index);
+  };
+  const ar = result ? result.width / result.height : 3 / 4;
   return (
     <div className="card card-pad col" style={{ gap: 14 }}>
       <div className="row wrap" style={{ gap: 8 }}>
@@ -124,6 +165,28 @@ function JobView({ job }: { job: AdvancedJob }) {
         </Badge>
         <span className="small grow truncate" title={job.prompt}>{job.prompt}</span>
         {job.seconds !== null ? <span className="tiny subtle">{t("adv.took", { s: Math.round(job.seconds) })}</span> : null}
+        <div className="row" style={{ gap: 2 }}>
+          <IconButton
+            label={t("common.copyPrompt")}
+            onClick={async () => {
+              if (await copyText(job.prompt)) toast.success(t("common.promptCopied"));
+            }}
+          >
+            <Copy />
+          </IconButton>
+          <IconButton label={t("gen.loadSettings")} onClick={() => onLoad(job)}>
+            <SlidersHorizontal />
+          </IconButton>
+          {active ? null : (
+            <IconButton
+              label={job.steps_running ? t("adv.deleteBusy") : t("adv.deleteJob")}
+              disabled={job.steps_running > 0}
+              onClick={() => quick.deleteAdvancedQuick(job)}
+            >
+              <Trash2 />
+            </IconButton>
+          )}
+        </div>
         {active ? (
           <Button size="sm" variant="ghost" icon={<Square />} loading={cancel.isPending} onClick={() => cancel.mutate(job.id)}>
             {t("adv.cancel")}
@@ -142,14 +205,39 @@ function JobView({ job }: { job: AdvancedJob }) {
         </ol>
       ) : null}
       {job.error_message ? <Notice tone={job.status === "cancelled" ? undefined : "danger"}>{job.error_message}</Notice> : null}
-      {job.result ? (
-        job.source ? (
-          <CompareSlider a={job.source.url} b={job.result.url} labelA={t("adv.original")} labelB={t("adv.result")} />
-        ) : (
-          <a href={job.result.url} target="_blank" rel="noreferrer">
-            <img src={job.result.url} alt="" style={{ width: "100%", borderRadius: 12 }} />
-          </a>
-        )
+      {result ? (
+        <div className="col" style={{ gap: 8 }}>
+          {job.source ? (
+            <CompareSlider a={job.source.url} b={result.url} labelA={t("adv.original")} labelB={t("adv.result")} />
+          ) : (
+            <div className="job-grid adv-result" style={{ ["--ar" as string]: String(ar) }}>
+              <ImageTile
+                image={result}
+                onOpen={() => open(result.id)}
+                onDownload={() => actions.download(result)}
+                onDelete={() => quick.deleteImageQuick(result)}
+                showPrompt={false}
+                blurNsfw={blurNsfw}
+              />
+            </div>
+          )}
+          <div className="row wrap" style={{ gap: 6 }}>
+            <Button size="sm" icon={<Maximize2 />} onClick={() => open(result.id)}>
+              {t("adv.open")}
+            </Button>
+            <Button size="sm" icon={<Download />} onClick={() => actions.download(result)}>
+              {t("common.download")}
+            </Button>
+            <Button size="sm" icon={<Sparkles />} onClick={() => actions.enhanceImage(result)}>
+              {t("images.enhance")}
+            </Button>
+            <AddToLora imageIds={[result.id]} />
+            <span className="spacer" />
+            <Button size="sm" variant="ghost" icon={<Trash2 />} onClick={() => quick.deleteImageQuick(result)}>
+              {t("adv.deletePhoto")}
+            </Button>
+          </div>
+        </div>
       ) : null}
       {last ? (
         <div className="col" style={{ gap: 6 }}>
@@ -160,12 +248,35 @@ function JobView({ job }: { job: AdvancedJob }) {
           <Report report={job.reports.find((r) => r.image_id === job.result?.image_id) ?? last} job={job} />
         </div>
       ) : null}
+      {images.length > 1 || (images.length > 0 && !result) ? (
+        <details>
+          <summary className="tiny subtle">{t("adv.allImages", { n: images.length })}</summary>
+          <div className="tiny subtle" style={{ margin: "6px 0 8px" }}>
+            {t("adv.allImagesHint")}
+          </div>
+          <div className="job-grid adv-all" style={{ ["--ar" as string]: String(ar) }}>
+            {images.map((img) => (
+              <ImageTile
+                key={img.id}
+                image={img}
+                onOpen={() => open(img.id)}
+                onDownload={() => actions.download(img)}
+                onDelete={() => quick.deleteImageQuick(img)}
+                extra={<AddToLora imageIds={[img.id]} compact />}
+                showPrompt={false}
+                blurNsfw={blurNsfw}
+              />
+            ))}
+          </div>
+        </details>
+      ) : null}
       {job.spec && (job.spec.preserve.length || job.spec.modify.length) ? (
         <details>
           <summary className="tiny subtle">{t("adv.planUsed")}</summary>
           <PlanSummary spec={job.spec} />
         </details>
       ) : null}
+      <ImageViewer images={images} index={viewer} onClose={() => setViewer(null)} onIndexChange={setViewer} />
     </div>
   );
 }
@@ -196,6 +307,7 @@ export function AdvancedPanel({ header }: { header: React.ReactNode }) {
   const conns = useComfyConnections();
   const jobs = useAdvancedJobs();
   const loras = useLoras("", true);
+  const settings = useSettings();
   const start = useStartAdvanced();
   const plan = usePlanAdvanced();
   const download = useComfyModelDownload();
@@ -241,7 +353,39 @@ export function AdvancedPanel({ header }: { header: React.ReactNode }) {
     return out;
   }, [loras.data, variant, t]);
   const chosenLora = loraOptions.find((o) => o.value === loraVersion);
-  const job = (jobs.data?.items ?? []).find((j) => j.id === selected) ?? jobs.data?.items[0];
+  useHiddenVersion();
+  // A request just deleted disappears at once (it goes after the "Undo" moment).
+  const items = (jobs.data?.items ?? []).filter((j) => !isHidden(j.id));
+  const job = items.find((j) => j.id === selected) ?? items[0];
+
+  // "Load these settings": the form as that request ran, with the plan it used (shown
+  // and editable) and the first attempt's seed, so Run repeats it.
+  const loadJob = (j: AdvancedJob) => {
+    const o = j.options;
+    setMode(j.mode);
+    setVariant(j.variant);
+    setPrompt(j.prompt);
+    setPhoto(j.mode === "edit" && j.source ? { kind: j.source.kind as "reference" | "image", id: j.source.id, thumb_url: j.source.thumb_url } : null);
+    const loraId = o.lora?.version_id ?? "";
+    const loraExists = Boolean(loraId) && (loras.data?.items ?? []).some((l) => l.usable_versions.some((v) => v.id === loraId));
+    setLoraVersion(loraExists ? loraId : "");
+    setStrength(o.lora?.strength ?? 1);
+    setAspect(o.aspect_ratio ?? "3:4");
+    setResolution(o.resolution ?? "1K");
+    const seedUsed = o.seed ?? o.first_seed;
+    setSeed(seedUsed !== undefined && seedUsed !== null ? String(seedUsed) : "");
+    setTargets(o.targets ?? []);
+    setDenoise(o.denoise ?? null);
+    setAnalysis(o.analysis ?? true);
+    setQuality(o.quality ?? true);
+    setCorrections(o.corrections ?? 1);
+    setEnhance(Boolean(o.enhance));
+    setAdult(Boolean(o.adult));
+    setDraft(j.spec && (j.spec.prompt || j.spec.edits.length) ? { ...j.spec } : null);
+    setMore(true);
+    if (loraId && !loraExists) toast.warning(t("adv.loraGone"));
+    else toast.success(t("adv.loaded"));
+  };
 
   const problems: string[] = [];
   if (!conn) problems.push(t("k2.noConnection"));
@@ -539,16 +683,34 @@ export function AdvancedPanel({ header }: { header: React.ReactNode }) {
                       <textarea className="textarea" rows={4} value={draft.prompt} onChange={(e) => setDraft({ ...draft, prompt: e.target.value })} />
                     </Field>
                   ) : (
-                    draft.edits.map((edit, i) => (
-                      <Field key={i} label={t("adv.editFor", { target: t(`adv.target.${edit.target}` as MessageKey), region: edit.region || t("adv.target.whole") })}>
-                        <textarea
-                          className="textarea"
-                          rows={3}
-                          value={edit.prompt}
-                          onChange={(e) => setDraft({ ...draft, edits: draft.edits.map((x, j) => (j === i ? { ...x, prompt: e.target.value } : x)) })}
-                        />
-                      </Field>
-                    ))
+                    draft.edits.map((edit, i) => {
+                      const change = (patch: Partial<typeof edit>) =>
+                        setDraft({ ...draft, edits: draft.edits.map((x, j) => (j === i ? { ...x, ...patch } : x)) });
+                      return (
+                        <Field key={i} label={t("adv.editFor", { target: t(`adv.target.${edit.target}` as MessageKey), region: edit.region || t("adv.target.whole") })}>
+                          <div className="col" style={{ gap: 6 }}>
+                            <textarea className="textarea" rows={3} value={edit.prompt} onChange={(e) => change({ prompt: e.target.value })} />
+                            {edit.target === "hair" || edit.target === "clothing" ? (
+                              <div className="row" style={{ gap: 8 }}>
+                                {edit.color ? (
+                                  <input
+                                    type="color"
+                                    className="adv-color"
+                                    value={edit.color}
+                                    aria-label={t("adv.color")}
+                                    onChange={(e) => change({ color: e.target.value.toUpperCase() })}
+                                  />
+                                ) : null}
+                                <span className="tiny subtle grow">{t(edit.color ? "adv.colorOn" : "adv.colorOff")}</span>
+                                <Button size="sm" variant="ghost" onClick={() => change({ color: edit.color ? "" : "#5A3E2B" })}>
+                                  {t(edit.color ? "adv.colorRemove" : "adv.colorAdd")}
+                                </Button>
+                              </div>
+                            ) : null}
+                          </div>
+                        </Field>
+                      );
+                    })
                   )}
                   {draft.checks.length ? (
                     <div className="tiny subtle">
@@ -583,14 +745,18 @@ export function AdvancedPanel({ header }: { header: React.ReactNode }) {
           <EmptyState icon={<Sparkles />} title={t("adv.emptyTitle")} description={t("adv.emptyBody")} />
         ) : (
           <div className="col gap-16">
-            <JobView job={job} />
-            {(jobs.data?.items.length ?? 0) > 1 ? (
+            <JobView key={job.id} job={job} blurNsfw={settings.data?.blur_nsfw ?? true} onLoad={loadJob} />
+            {items.length > 1 ? (
               <div className="col" style={{ gap: 6 }}>
                 <div className="eyebrow">{t("adv.history")}</div>
                 <div className="adv-history">
-                  {jobs.data!.items.map((j) => (
+                  {items.map((j) => (
                     <button key={j.id} type="button" className="adv-history-item" aria-pressed={j.id === job.id} onClick={() => setSelected(j.id)}>
-                      {j.result ? <img src={j.result.thumb_url} alt="" /> : <span className="adv-history-empty">{t(`adv.status.${j.status}` as MessageKey)}</span>}
+                      {j.result && !isHidden(j.result.id) ? (
+                        <img src={j.result.thumb_url} alt="" className={settings.data?.blur_nsfw !== false && j.result.nsfw ? "adv-blur" : undefined} />
+                      ) : (
+                        <span className="adv-history-empty">{t(`adv.status.${j.status}` as MessageKey)}</span>
+                      )}
                       <span className="tiny truncate">{j.prompt}</span>
                     </button>
                   ))}

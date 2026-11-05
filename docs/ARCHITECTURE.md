@@ -151,6 +151,9 @@ Advanced: POST /api/advanced/jobs (idempotent; ready connection, files, nodes, A
           stage}) in the same per-connection queue as Krea 2; the engine waits for it in the
           database. Cancel stops the running step; a restart marks unfinished jobs
           "interrupted" (their steps follow the worker's own restart rules, nothing is resent).
+          GET /api/advanced/jobs lists each job with every image its steps made; DELETE
+          /api/advanced/jobs/{id} (only when no step runs) removes the job, those images and
+          the steps' history entries, not the photo it started from.
 
 ComfyUI deployed by the studio is never exposed: only the agent port is, and every request
 needs the agent token. Files in a container are copied to this Mac before the workload is

@@ -3919,6 +3919,25 @@ a.job-row:hover {
   object-fit: cover;
   border-radius: 8px;
 }
+.adv-history-item img.adv-blur {
+  filter: blur(14px) saturate(0.8);
+}
+.adv-result {
+  grid-template-columns: minmax(0, 1fr);
+  max-width: 520px;
+}
+.adv-color {
+  width: 36px;
+  height: 28px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: none;
+  cursor: pointer;
+}
+.adv-all {
+  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+}
 .adv-history-empty {
   display: flex;
   align-items: center;

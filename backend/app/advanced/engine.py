@@ -21,7 +21,7 @@ from typing import Any
 from sqlalchemy import select, update
 from sqlalchemy.orm import selectinload
 
-from app.advanced import graphs
+from app.advanced import crop, graphs
 from app.advanced.compiler import Edit, Spec, by_ai, by_rules, validate
 from app.advanced.intelligence import IntelligenceError
 from app.advanced.quality import evaluate, failed, rank
@@ -274,7 +274,12 @@ def _negative(job: AdvancedJob, spec: Spec, target: str | None = None) -> str:
 
 
 def _seed(job: AdvancedJob, attempt: int) -> int:
-    seed = (job.options or {}).get("seed")
+    """The first attempt uses the request's seed (chosen once when it was made, so it can
+    be repeated); every correction a new one."""
+    options = job.options or {}
+    seed = options.get("seed")
+    if not isinstance(seed, int):
+        seed = options.get("first_seed")
     if isinstance(seed, int) and attempt == 0:
         return seed
     return secrets.randbelow(krea2.SEED_MAX)
@@ -319,12 +324,25 @@ async def _edit(
     width, height = krea2.size_for_source(
         source.get("width") or 1024, source.get("height") or 1024, options.get("resolution", "1K")
     )
-    base = edit.denoise or options.get("denoise") or graphs.DENOISE[edit.target]
+    region = edit.region if edit.target != "whole" else None
+    # A colour change starts from the tinted region, so it needs less redrawing.
+    colour = edit.color if region and edit.target in graphs.COLOUR_TARGETS else None
+    default = (
+        graphs.DENOISE_COLOUR.get(edit.target, graphs.DENOISE[edit.target])
+        if colour
+        else graphs.DENOISE[edit.target]
+    )
+    base = edit.denoise or options.get("denoise") or default
     denoise = min(graphs.DENOISE_MAX, float(base) + 0.1 * attempt)
+    tint = min(graphs.TINT_MAX, graphs.TINT + graphs.TINT_STEP * attempt) if colour else None
+    # Face regions are redrawn in an enlarged square around the face.
+    square = None
+    if region and edit.target in crop.FACE_TARGETS and source.get("file_path"):
+        box = await crop.face_box(storage.absolute(source["file_path"]))
+        square = crop.plan_crop(box, width, height)
     seed = _seed(job, attempt)
     prompt = _with_trigger(job, edit.prompt)
     args = _krea_args(job)
-    region = edit.region if edit.target != "whole" else None
     workflow = graphs.edit(
         **args,
         prompt=prompt,
@@ -334,6 +352,11 @@ async def _edit(
         seed=seed,
         denoise=denoise,
         region=region,
+        grow=graphs.GROW.get(edit.target, graphs.GROW_DEFAULT),
+        tint=colour,
+        tint_strength=tint or graphs.TINT,
+        crop=square,
+        crop_size=crop.CROP_SIZE,
     )
     return await _gpu(
         job,
@@ -349,6 +372,8 @@ async def _edit(
             "cfg": args["cfg"],
             "denoise": denoise,
             "region": region or "whole photo",
+            **({"color": colour, "tint": round(tint or 0, 2)} if colour else {}),
+            **({"face_crop": list(square)} if square else {}),
             "engine": "advanced",
         },
         source=source,

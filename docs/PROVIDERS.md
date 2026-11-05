@@ -508,7 +508,30 @@ one click), optionally Enhance photo, SFace on this Mac and the user's own AI as
   photo's own. Without a region: the same image to image on the whole photo.
 - **Strengths** (denoise; the studio's own values, Krea publishes none): hair 0.85, mouth
   0.7, eyes 0.6, face 0.55, expression 0.6, clothing 0.85, background 0.9, whole photo 0.5;
-  each correction adds 0.1 and a new seed (0.2–0.95). The user can set one strength instead.
+  with a new colour hair and clothing 0.75; each correction adds 0.1 and a new seed
+  (0.2–0.95). The user can set one strength instead.
+- **Colour changes** (hair, clothing; since 2026-11-04 after the owner's first tests): Krea 2
+  Turbo runs at CFG 1, so a negative prompt cannot push the old colour away and a masked
+  redraw tends to keep it. The region is therefore tinted first: `EmptyImage` (`color` =
+  0xRRGGBB, checked in v0.35.0 `nodes.py`) → `ImageBlend` (`blend_mode` "normal",
+  `blend_factor` 0.55, +0.15 per correction up to 0.85; `comfy_extras/
+  nodes_post_processing.py`) → `ImageCompositeMasked` inside the mask → VAEEncode. The
+  colour is the plan's `color` (the assistant gives a hex value; without one the studio's
+  own palette of hair tones, English and Slovak words next to "hair"/"vlasy",
+  `compiler.HAIR_COLOURS`), shown and editable in the plan (or removed). The colour is also
+  put first in the edit's prompt ("dark brown hair, …"), and the hair mask grows 24 px
+  instead of 16, so no rim of the old colour stays.
+- **Face regions** (mouth, eyes, face, expression): a mouth is a few latent pixels in a whole
+  photo, which is why closed lips, teeth, the tongue and expressions came out badly. The face
+  is found on this Mac (YuNet, the face-match detector; nothing is sent) and a square of 1.8×
+  the face box (at least 320 px, so at most ~3.2× enlarged) is cropped (`ImageCrop`, x/y/
+  width/height, `comfy_extras/nodes_images.py`, marked deprecated in v0.35.0 but registered),
+  scaled to 1024 px, masked and redrawn there, scaled back and pasted at the same place with
+  `ImageCompositeMasked` inside the feathered mask only — the head's pose and every other
+  pixel stay the photo's. A close-up (the face already ≥ ~790 px) or no face found: the whole
+  photo as before. A closed mouth is also said first in the prompt ("closed mouth, lips
+  gently together, …") because Turbo ignores negative prompts; the plan states head pose and
+  gaze and adds a check that the head is turned and tilted as in the original.
 - **Plan**: the assistant (its Balanced model as chosen in Integrations) answers JSON — what to
   keep, what to change, the prompt (no contradictions: closed lips removes "open mouth",
   teeth, tongue), up to 4 edits and 10 checks. It is checked like every prompt
@@ -526,8 +549,9 @@ one click), optionally Enhance photo, SFace on this Mac and the user's own AI as
 - **Not run on a real GPU**, with a real SAM 3.1 or against a real assistant: verified with
   the fake ComfyUI (nodes, files, the uploaded photo, the graphs sent) and the fake AI
   answers. How well SAM 3.1 finds a region and how well Krea 2 redraws a masked latent
-  (hair colour, closed mouth, expression) is untested; the owner's manual tests on a GPU
-  decide the default strengths.
+  (hair colour, closed mouth, expression) is untested — likewise the tint strengths and the
+  face crop; the owner's manual tests on a GPU decide the default values. The face crop was
+  checked with the real YuNet detector on test photos (lena, obama, messi5).
 
 # LoRA training (ai-toolkit)
 

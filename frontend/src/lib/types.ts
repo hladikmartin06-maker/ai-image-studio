@@ -1171,6 +1171,9 @@ export interface AdvancedEdit {
   region: string;
   prompt: string;
   denoise?: number | null;
+  // Hair or clothing: the new colour ("#RRGGBB") the region is tinted with before the
+  // redraw; "" = none (removed by the user); null = none found.
+  color?: string | null;
 }
 
 export interface AdvancedCheck {
@@ -1218,6 +1221,27 @@ export interface AdvancedStage {
   image_id?: string;
 }
 
+/** What a request ran with (model file names are not sent to the browser). */
+export interface AdvancedOptions {
+  connection_name?: string;
+  steps?: number;
+  cfg?: number;
+  lora?: { lora_id: string; version_id: string; name: string; version: number; strength: number } | null;
+  aspect_ratio?: string;
+  resolution?: string;
+  seed?: number | null;
+  // The first attempt's seed (the user's, else the one chosen when it started).
+  first_seed?: number;
+  targets?: AdvancedTarget[];
+  denoise?: number | null;
+  analysis?: boolean;
+  quality?: boolean;
+  corrections?: number;
+  enhance?: boolean;
+  enhance_upscale?: number;
+  adult?: boolean;
+}
+
 export interface AdvancedJob {
   id: string;
   mode: "text-to-image" | "edit";
@@ -1225,14 +1249,19 @@ export interface AdvancedJob {
   prompt: string;
   source: { kind: string; id: string; thumb_url: string; url: string; width: number | null; height: number | null } | null;
   lora: { name: string; version: number; trigger_word: string; strength: number } | null;
-  options: Record<string, unknown>;
+  options: AdvancedOptions;
   spec: AdvancedSpec | null;
   stages: AdvancedStage[];
   reports: AdvancedReport[];
   status: "queued" | "running" | "completed" | "failed" | "cancelled" | "interrupted";
   error_code: string | null;
   error_message: string | null;
-  result: { image_id: string; url: string; thumb_url: string; width: number | null; height: number | null; generation_id: string } | null;
+  // The chosen image, like every image elsewhere.
+  result: (StudioImage & { image_id: string }) | null;
+  // Every image the request made (attempts, corrections, enhance), oldest first.
+  images: StudioImage[];
+  // Steps still queued or running on the GPU (the request can be deleted only when 0).
+  steps_running: number;
   seconds: number | null;
   created_at: string | null;
 }

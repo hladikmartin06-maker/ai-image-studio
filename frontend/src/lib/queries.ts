@@ -321,6 +321,7 @@ export function useSaveToLibrary() {
     onSuccess: (img) => {
       patchImageEverywhere(qc, img.id, () => img);
       qc.invalidateQueries({ queryKey: keys.images });
+      qc.invalidateQueries({ queryKey: advancedKeys.jobs });
     },
   });
 }
@@ -335,6 +336,7 @@ export function useDeleteImage() {
       patchImageEverywhere(qc, id, () => null);
       qc.invalidateQueries({ queryKey: keys.images });
       qc.invalidateQueries({ queryKey: keys.generations });
+      qc.invalidateQueries({ queryKey: advancedKeys.jobs });
       qc.invalidateQueries({ queryKey: keys.stats });
       qc.invalidateQueries({ queryKey: keys.storage });
     },
@@ -1322,6 +1324,23 @@ export function useStartAdvanced() {
 export function usePlanAdvanced() {
   return useMutation({
     mutationFn: (body: Record<string, unknown>) => api<AdvancedSpec>("/api/advanced/plan", { body }),
+  });
+}
+
+/** Removes a request with every image it made (sent after the "Undo" moment). */
+export function useDeleteAdvanced() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => api(`/api/advanced/jobs/${id}`, { method: "DELETE" }),
+    onMutate: (id) => hideDeleted(id),
+    onError: (_e, id) => showAgain(id),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: advancedKeys.jobs });
+      qc.invalidateQueries({ queryKey: keys.generations });
+      qc.invalidateQueries({ queryKey: keys.images });
+      qc.invalidateQueries({ queryKey: keys.stats });
+      qc.invalidateQueries({ queryKey: keys.storage });
+    },
   });
 }
 

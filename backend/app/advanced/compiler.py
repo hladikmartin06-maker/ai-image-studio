@@ -39,6 +39,9 @@ class Edit(BaseModel):
     # The whole photo as it should look after this change (Krea 2 sees the whole image).
     prompt: str = Field(min_length=1, max_length=2000)
     denoise: float | None = Field(default=None, ge=graphs.DENOISE_MIN, le=graphs.DENOISE_MAX)
+    # Hair or clothing: the new colour ("#RRGGBB"), the region is tinted with it before the
+    # redraw. None = found in the text when it names one; "" = none (the user removed it).
+    color: str | None = Field(default=None, pattern=r"^(#[0-9a-fA-F]{6})?$")
 
 
 class Check(BaseModel):
@@ -74,7 +77,7 @@ text-to-image model, for fictional adult characters. Reply with one JSON object 
 
 Schema:
 {"summary": str, "preserve": [str], "modify": [str], "prompt": str, "negative": str,
- "edits": [{"target": T, "region": str, "prompt": str}],
+ "edits": [{"target": T, "region": str, "prompt": str, "color": "#RRGGBB"|null}],
  "checks": [{"id": str, "question": str, "kind": "modify"|"preserve", "target": T|null}]}
 T is one of: hair, mouth, eyes, face, expression, clothing, background, whole.
 
@@ -88,19 +91,27 @@ Rules:
   identity, background and anything the user said to keep.
 
 TEXT TO IMAGE: "prompt" is an optimized English Krea 2 prompt: subject, appearance,
-expression and mouth, hair, clothing, environment, lighting, composition, camera, photoreal
-details — only what the user's text says or clearly implies. "negative" lists what must not
+head pose and gaze, expression and mouth, hair (colour first, then style), clothing,
+environment, lighting, composition, camera, photoreal details — only what the user's text
+says or clearly implies. State the head pose, gaze and mouth plainly when the user names
+them (e.g. "facing the camera, head straight, looking into the lens, neutral expression,
+lips closed"). "negative" lists what must not
 appear (only when the user excluded something). "edits" is []; a check's "target" is the
 region it concerns or null.
 
 EDIT (a photo is attached): "preserve" lists every visible property that must stay
-(identity, face geometry, eyes, nose, lips, body proportions, pose, camera angle and
-framing, clothing, background, lighting, …) except what the user asked to change; "modify"
-lists only the requested changes. One edit per changed region, in the order to apply:
-"region" is a short English noun phrase a segmentation model can find (e.g. "hair",
-"mouth and lips", "background"); "prompt" describes the WHOLE photo faithfully as it should
-look after that change (the subject, pose, clothing, place, light as seen), with the change
-stated clearly. Use target "whole" only when the change concerns the entire image."""
+(identity, face geometry, head pose and angle, gaze, eyes, nose, lips, body proportions,
+pose, camera angle and framing, clothing, background, lighting, …) except what the user
+asked to change; "modify" lists only the requested changes. One edit per changed region, in
+the order to apply: "region" is a short English noun phrase a segmentation model can find
+(e.g. "hair", "mouth and lips", "background"); "prompt" describes the WHOLE photo faithfully
+as it should look after that change (the subject, head pose, clothing, place, light as
+seen), with the change stated first and clearly (e.g. "dark brown hair, a woman with dark
+brown hair, …"; "closed mouth, lips gently together, …"). "color": for a colour change of
+hair or clothing, the new colour as a typical hex value of how it looks in a photo
+(e.g. dark brown hair "#3A281D", platinum blonde "#E5DCC8"); otherwise null. Add a preserve
+check for the head pose ("Is the head turned and tilted the same way as in the original?").
+Use target "whole" only when the change concerns the entire image."""
 
 
 def _clean_mouth(text: str, closed: bool) -> str:
@@ -127,6 +138,62 @@ def _wants_closed_mouth(text: str) -> bool:
     return bool(CLOSED_MOUTH.search(text))
 
 
+# Hair colours (the studio's palette: typical tones as they look in photos), most specific
+# first; English and Slovak words. Used to tint the hair before the redraw when the plan
+# names a colour but gives no hex value (no AI analysis, or the AI left it out).
+HAIR_COLOURS: tuple[tuple[str, str, str], ...] = (
+    (r"platinum(?: blonde?)?|platinov\w*", "platinum blonde", "#E5DCC8"),
+    (r"strawberry blonde?", "strawberry blonde", "#C8915E"),
+    (r"(?:honey|golden) blonde?|zlat\w* blond\w*", "golden blonde", "#C9A05A"),
+    (r"(?:dark|deep) blonde?|tmavo ?blond\w*", "dark blonde", "#A88654"),
+    (r"(?:light|pale) blonde?|svetlo ?blond\w*", "light blonde", "#DCC594"),
+    (r"blonde?|blond\w*", "blonde", "#CDAE74"),
+    (r"(?:dark|deep) brown|dark chocolate|tmavo ?hned[éeýyáaoíuú]\w*", "dark brown", "#3A281D"),
+    (r"(?:light|pale) brown|svetlo ?hned[éeýyáaoíuú]\w*", "light brown", "#8A6646"),
+    (r"chestnut(?: brown)?|gaštan\w*|gastan\w*", "chestnut brown", "#5C3622"),
+    (r"chocolate(?: brown)?|čokolád\w*|cokolad\w*", "chocolate brown", "#4A2E20"),
+    (r"brunette|brown|hned[éeýyáaoíuú]\w*", "brown", "#5A3E2B"),
+    (r"jet black|uhľovo čiern\w*", "jet black", "#0F0D0D"),
+    (r"black|čiern\w*|ciern\w*", "black", "#1B1716"),
+    (r"auburn|kaštan\w*|kastan\w*", "auburn", "#7B3522"),
+    (r"copper|meden\w*", "copper", "#B05A2C"),
+    (r"ginger|redhead|red|ryšav\w*|rysav\w*|červen\w*|cerven\w*", "red", "#9C4128"),
+    (r"silver|grey|gray|siv\w*|strieborn\w*", "silver grey", "#A9A9AC"),
+    (r"white|biel\w*", "white", "#E9E7E3"),
+    (r"pink|ružov\w*|ruzov\w*", "pink", "#E29AB9"),
+    (r"blue|modr\w*", "blue", "#3B5DA6"),
+    (r"purple|violet|fialov\w*", "purple", "#764C9E"),
+    (r"green|zelen\w*", "green", "#4E8A58"),
+)
+_HAIR = r"(?:hair|vlas\w*)"
+_GAP = r"[\s,-]+(?:[^\W\d_]+[\s,-]+){0,3}?"
+# "from blonde to dark brown" / "z blond na tmavohnedé": the old colour is not the new one.
+_FROM_TO = re.compile(r"\b(?:from|z|zo)\b[^.;]*?\b(?:to|into|na|do)\b", re.IGNORECASE)
+
+
+def hair_colour(text: str) -> tuple[str, str] | None:
+    """The hair colour a text asks for: (English name, "#RRGGBB"), or None. Only a colour
+    next to "hair"/"vlasy" counts, so "a blue dress" is not taken for the hair."""
+    clean = _FROM_TO.sub(" ", text)
+    best: tuple[int, int, str, str] | None = None
+    for pattern, name, hex_colour in HAIR_COLOURS:
+        for regex in (
+            rf"\b(?P<c>{pattern})\b{_GAP}{_HAIR}",
+            rf"{_HAIR}{_GAP}\b(?P<c>{pattern})\b",
+        ):
+            for m in re.finditer(regex, clean, re.IGNORECASE):
+                key = (m.start("c"), -len(m.group("c")), name, hex_colour)
+                if best is None or key[:2] < best[:2]:
+                    best = key
+    return (best[2], best[3]) if best else None
+
+
+def _colour_first(edit: Edit, name: str) -> None:
+    """The new colour stated first in the edit's prompt, so Krea 2 weighs it most."""
+    if not edit.prompt.lower().startswith(f"{name} hair"):
+        edit.prompt = f"{name} hair, {edit.prompt}"
+
+
 def validate(spec: Spec, *, user_prompt: str, adult: bool) -> Spec:
     """Prompts checked like every prompt; regions filled in; mouth contradictions removed."""
     closed = _wants_closed_mouth(user_prompt) or any(
@@ -135,10 +202,20 @@ def validate(spec: Spec, *, user_prompt: str, adult: bool) -> Spec:
     spec.prompt = _clean_mouth(spec.prompt, closed)
     for edit in spec.edits:
         edit.prompt = _clean_mouth(edit.prompt, closed or edit.target == "mouth")
+        if edit.target == "mouth" and closed and not edit.prompt.lower().startswith("closed mouth"):
+            # Turbo ignores negative prompts: the closed mouth is said first instead.
+            edit.prompt = f"closed mouth, lips gently together, {edit.prompt}"
         if edit.target != "whole" and not edit.region.strip():
             edit.region = graphs.REGIONS.get(edit.target, edit.target)
         if edit.target == "whole":
             edit.region = ""
+        if edit.target not in graphs.COLOUR_TARGETS:
+            edit.color = None
+        elif edit.target == "hair" and edit.color is None:
+            found = hair_colour(edit.prompt) or hair_colour(user_prompt)
+            if found:
+                edit.color = found[1]
+                _colour_first(edit, found[0])
     texts = [
         spec.prompt,
         spec.negative,
@@ -204,7 +281,9 @@ async def by_ai(
             modify=list(data.get("modify") or []),
             prompt=str(data.get("prompt") or ""),
             negative=str(data.get("negative") or ""),
-            edits=[Edit(**e) for e in (data.get("edits") or [])][:4] if mode == "edit" else [],
+            edits=[Edit(**_edit_fields(e)) for e in (data.get("edits") or [])][:4]
+            if mode == "edit"
+            else [],
             checks=[Check(**c) for c in (data.get("checks") or [])][:10],
             source="ai",
             ai=meta,
@@ -214,3 +293,14 @@ async def by_ai(
             "bad_answer", "The AI's plan did not have the expected form."
         ) from exc
     return spec
+
+
+def _edit_fields(raw: Any) -> dict[str, Any]:
+    """An edit from the AI's answer; a colour that is not "#RRGGBB" counts as none given."""
+    if not isinstance(raw, dict):
+        raise TypeError("edit")
+    fields = {k: raw.get(k) for k in ("target", "region", "prompt") if raw.get(k) is not None}
+    colour = raw.get("color")
+    if isinstance(colour, str) and re.fullmatch(r"#[0-9a-fA-F]{6}", colour.strip()):
+        fields["color"] = colour.strip().upper()
+    return fields

@@ -173,7 +173,13 @@ repositories.
   LoRA training, the worker/runner or existing tables (`test_advanced` pins the built-in
   graphs by hash); its data only in the additive migration 0007. A failed step fails the job
   with its message — never another model. No face swap. Attempts not chosen stay out of the
-  library.
+  library. Results have the usual image actions (viewer, download, delete with Undo, Add to
+  LoRA, Enhance photo); "Load settings" restores a request with its plan and first seed
+  (`options.first_seed`); deleting a request removes its images and steps, never the photo
+  it started from. Colour changes (hair, clothing) tint the region with the plan's colour
+  before the redraw (`graphs.TINT`, palette `compiler.HAIR_COLOURS`); face regions (mouth,
+  eyes, face, expression) are redrawn in an enlarged crop around the face found on the Mac
+  (`advanced/crop.py`, YuNet) and pasted back inside the mask only.
 - Hugging Face: token in Integrations › Hugging Face, checked with `whoami-v2` and the Krea 2
   repositories' `auth-check` (`services/huggingface.py`). Accepting the license is the user's
   own click on huggingface.co (no API exists); the studio links there and checks again, and

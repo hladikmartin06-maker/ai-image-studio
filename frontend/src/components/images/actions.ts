@@ -11,15 +11,17 @@ import { api, ApiError, downloadUrl } from "@/lib/api";
 import { hideDeleted, showAgain } from "@/lib/pending-deletes";
 import { useT } from "@/lib/i18n";
 import {
+  advancedKeys,
   patchImageEverywhere,
   removeGenerationEverywhere,
+  useDeleteAdvanced,
   useDeleteGeneration,
   useDeleteImage,
   useRegenerate,
   useSaveToLibrary,
 } from "@/lib/queries";
 import { applyToStudio, enhanceInStudio } from "@/lib/studio-bridge";
-import type { Generation, ReferenceImage, StudioImage } from "@/lib/types";
+import type { AdvancedJob, Generation, ReferenceImage, StudioImage } from "@/lib/types";
 
 export async function copyText(text: string) {
   try {
@@ -49,6 +51,7 @@ export function useQuickDelete() {
   const qc = useQueryClient();
   const removeImage = useDeleteImage();
   const removeGeneration = useDeleteGeneration();
+  const removeAdvanced = useDeleteAdvanced();
 
   const later = useCallback(
     (id: string, hide: () => void, commit: () => Promise<unknown>, message: string) => {
@@ -60,6 +63,7 @@ export function useQuickDelete() {
         showAgain(id);
         qc.invalidateQueries({ queryKey: ["generations"] });
         qc.invalidateQueries({ queryKey: ["images"] });
+        qc.invalidateQueries({ queryKey: advancedKeys.jobs });
       };
       const timer = window.setTimeout(() => {
         if (undone) return;
@@ -105,7 +109,22 @@ export function useQuickDelete() {
     [later, qc, removeGeneration, t],
   );
 
-  return { deleteImageQuick, deleteGenerationQuick };
+  // Generate › Advanced: a whole request with every image it made.
+  const deleteAdvancedQuick = useCallback(
+    (job: AdvancedJob) =>
+      later(
+        job.id,
+        () => {
+          // Its images go from every list too, until "Undo".
+          for (const img of job.images) patchImageEverywhere(qc, img.id, () => null);
+        },
+        () => removeAdvanced.mutateAsync(job.id),
+        t("adv.deleted"),
+      ),
+    [later, qc, removeAdvanced, t],
+  );
+
+  return { deleteImageQuick, deleteGenerationQuick, deleteAdvancedQuick };
 }
 
 export function useImageActions() {

@@ -11,7 +11,15 @@ ComfyUI v0.35.0 (the pinned rented image; checked in its nodes.py and comfy_extr
   its own text model + SAM3_Detect, as in Enhance photo) → GrowMask → the latent noise mask
   (SetLatentNoiseMask) so Krea 2 redraws only that region → VAEDecode → ImageCompositeMasked
   with a feathered mask, so every pixel outside the region is the photo's own;
-- whole photo: the same without a mask (image to image at `denoise`).
+- whole photo: the same without a mask (image to image at `denoise`);
+- colour change (hair, clothing): before the redraw the region is tinted towards the new
+  colour (EmptyImage in that colour, ImageBlend "normal", ImageCompositeMasked inside the
+  mask), so Krea 2 starts from the right colour instead of fighting the old one (Turbo has
+  CFG 1, so a negative prompt cannot push the old colour away);
+- face regions (mouth, eyes, face, expression): "crop and stitch" — ImageCrop around the face
+  (found on the Mac, `advanced/crop.py`), ImageScale to 1024 px, the same masked redraw
+  there, ImageScale back and ImageCompositeMasked into the photo at that place, inside the
+  mask only.
 """
 
 from __future__ import annotations
@@ -48,6 +56,9 @@ NODES_EDIT = (
     "ImageToMask",
     "SetLatentNoiseMask",
     "ImageCompositeMasked",
+    "EmptyImage",
+    "ImageBlend",
+    "ImageCrop",
 )
 
 # Region edits: how much of the region is redrawn by default (the studio's values; Krea
@@ -74,6 +85,19 @@ REGIONS = {
 }
 DENOISE_MIN = 0.2
 DENOISE_MAX = 0.95
+
+# Colour changes (the studio's values, to be tuned on a GPU): the region is tinted first, so
+# less has to be redrawn — the hairstyle and its light stay closer to the photo.
+COLOUR_TARGETS = ("hair", "clothing")
+DENOISE_COLOUR = {"hair": 0.75, "clothing": 0.75}
+TINT = 0.55  # how much of the region's pixels become the new colour before the redraw
+TINT_STEP = 0.15  # more on every correction
+TINT_MAX = 0.85
+
+# How far the mask grows past what SAM 3.1 found (px at the edit size) — hair gets more, so
+# loose strands and the edge are redrawn too and no rim of the old colour stays.
+GROW = {"hair": 24}
+GROW_DEFAULT = 16
 
 
 def _krea(
@@ -182,12 +206,18 @@ def edit(
     loras: list[tuple[str, float]],
     denoise: float,
     region: str | None,
-    grow: int = 16,
+    grow: int = GROW_DEFAULT,
     feather: int = 9,
+    tint: str | None = None,
+    tint_strength: float = TINT,
+    crop: tuple[int, int, int] | None = None,
+    crop_size: int = 1024,
     prefix: str = "advanced",
 ) -> dict[str, Any]:
     """Redraws only `region` (SAM 3.1's text prompt) of the photo; None = the whole photo.
-    The result outside the region is the photo itself (pasted back with a soft edge)."""
+    The result outside the region is the photo itself (pasted back with a soft edge).
+    `tint` ("#RRGGBB"): the region is first tinted towards that colour (`tint_strength`).
+    `crop` (left, top, side at width × height): only that square is redrawn, at `crop_size`."""
     wf: dict[str, Any] = {}
     model = _krea(wf, unet=unet, text_encoder=text_encoder, vae=vae, loras=loras)
     _conditioning(wf, variant, prompt, negative)
@@ -202,7 +232,28 @@ def edit(
             "crop": "disabled",
         },
     }
-    wf["12"] = {"class_type": "VAEEncode", "inputs": {"pixels": ["11", 0], "vae": ["3", 0]}}
+    # What is redrawn: the photo, or for a face edit a square around the face, enlarged.
+    base: list[Any] = ["11", 0]
+    size_w, size_h = width, height
+    if region and crop:
+        left, top, side = crop
+        wf["50"] = {
+            "class_type": "ImageCrop",
+            "inputs": {"image": ["11", 0], "width": side, "height": side, "x": left, "y": top},
+        }
+        wf["51"] = {
+            "class_type": "ImageScale",
+            "inputs": {
+                "image": ["50", 0],
+                "upscale_method": "lanczos",
+                "width": crop_size,
+                "height": crop_size,
+                "crop": "disabled",
+            },
+        }
+        base = ["51", 0]
+        size_w = size_h = crop_size
+    pixels: list[Any] = base
     latent: list[Any] = ["12", 0]
     if region:
         wf.update(
@@ -216,7 +267,7 @@ def edit(
                     "class_type": "SAM3_Detect",
                     "inputs": {
                         "model": ["30", 0],
-                        "image": ["11", 0],
+                        "image": base,
                         "conditioning": ["31", 0],
                         "threshold": 0.4,
                         "refine_iterations": 2,
@@ -244,21 +295,75 @@ def edit(
             }
         )
         latent = ["34", 0]
+        if tint:
+            # The colour first: the region (only inside the mask) blended towards it.
+            wf["40"] = {
+                "class_type": "EmptyImage",
+                "inputs": {
+                    "width": size_w,
+                    "height": size_h,
+                    "batch_size": 1,
+                    "color": colour_int(tint),
+                },
+            }
+            wf["41"] = {
+                "class_type": "ImageBlend",
+                "inputs": {
+                    "image1": base,
+                    "image2": ["40", 0],
+                    "blend_factor": round(tint_strength, 2),
+                    "blend_mode": "normal",
+                },
+            }
+            wf["42"] = {
+                "class_type": "ImageCompositeMasked",
+                "inputs": {
+                    "destination": base,
+                    "source": ["41", 0],
+                    "mask": ["33", 0],
+                    "x": 0,
+                    "y": 0,
+                    "resize_source": False,
+                },
+            }
+            pixels = ["42", 0]
+    wf["12"] = {"class_type": "VAEEncode", "inputs": {"pixels": pixels, "vae": ["3", 0]}}
     wf["7"] = _sampler(variant, model, latent, seed, steps, cfg, denoise)
     wf["8"] = {"class_type": "VAEDecode", "inputs": {"samples": ["7", 0], "vae": ["3", 0]}}
     out: list[Any] = ["8", 0]
     if region:
+        source: list[Any] = ["8", 0]
+        x = y = 0
+        if crop:
+            # Back to the crop's size, pasted where it came from (the mask scales with it).
+            left, top, side = crop
+            wf["52"] = {
+                "class_type": "ImageScale",
+                "inputs": {
+                    "image": ["8", 0],
+                    "upscale_method": "lanczos",
+                    "width": side,
+                    "height": side,
+                    "crop": "disabled",
+                },
+            }
+            source, x, y = ["52", 0], left, top
         wf["38"] = {
             "class_type": "ImageCompositeMasked",
             "inputs": {
                 "destination": ["11", 0],
-                "source": ["8", 0],
+                "source": source,
                 "mask": ["37", 0],
-                "x": 0,
-                "y": 0,
+                "x": x,
+                "y": y,
                 "resize_source": False,
             },
         }
         out = ["38", 0]
     wf["9"] = {"class_type": "SaveImage", "inputs": {"images": out, "filename_prefix": prefix}}
     return wf
+
+
+def colour_int(hex_colour: str) -> int:
+    """ "#RRGGBB" → EmptyImage's `color` (0xRRGGBB)."""
+    return int(hex_colour.lstrip("#"), 16)
