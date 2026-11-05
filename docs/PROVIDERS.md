@@ -575,7 +575,8 @@ one click), optionally Enhance photo, SFace on this Mac and the user's own AI as
   "keep/preserve" sentences: "preserve … the exact mouth shape, lip position" opened the
   car photo's closed mouth and a correction added a tongue; without them the mouth stayed
   closed on two seeds and the selfie kept its tongue on two seeds — the photo keeps the
-  expression, the words only drew mouths. YuNet misplaces
+  expression, the words only drew mouths. The hair (redrawn at 0.85) keeps them: without
+  "preserve the exact original wavy hairstyle, bangs" the selfie's waves became straight. YuNet misplaces
   the face of an extreme expression (the selfie: the box beside the mouth), so its score is
   low whatever the face looks like; the gentle tries then still keep the expression.
 - **Small photos** (since 2026-11-05): when the edit would enlarge the photo more than 1.3×,

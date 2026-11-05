@@ -292,6 +292,17 @@ def _changes(text: str) -> str:
     return ". ".join(kept) or text
 
 
+def _region_text(text: str, target: str) -> str:
+    """A region's prompt without analysis: the face regions without the "keep" sentences
+    (redrawn gently, the photo keeps their shape); the hair with them, since it is redrawn
+    strongly and "keep the wavy hairstyle, bangs" says what it should look like (without it
+    the owner's selfie lost its waves, 2026-11-05)."""
+    if target not in _SENTENCE_WORDS:
+        return text
+    face = target in ("face", "expression", "eyes", "mouth")
+    return region_prompt(_changes(text) if face else text, target)
+
+
 def region_prompt(text: str, target: str) -> str:
     """The request's sentences about this region (its first words — the trigger and "woman" —
     kept in front); the whole request when none speaks of it."""
@@ -404,7 +415,7 @@ def by_rules(*, mode: str, prompt: str, targets: list[str], negative: str = "") 
         Edit(
             target=t,  # type: ignore[arg-type]
             region=graphs.REGIONS.get(t, ""),
-            prompt=region_prompt(_changes(text), t) if t in _SENTENCE_WORDS else text,
+            prompt=_region_text(text, t),
         )
         for t in chosen or ["whole"]
     ]

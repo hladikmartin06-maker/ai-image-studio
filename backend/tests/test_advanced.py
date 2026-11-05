@@ -724,7 +724,7 @@ async def test_identity_redraws_the_face_and_corrects_it_gently(
 
 
 def test_region_prompts_leave_out_what_to_keep():
-    from app.advanced.compiler import _changes, region_prompt
+    from app.advanced.compiler import _changes, _region_text, region_prompt
 
     selfie = (
         "lmxx2 woman, transform the woman's facial identity to match the trained LoRA identity. "
@@ -738,9 +738,13 @@ def test_region_prompts_leave_out_what_to_keep():
     assert face == (
         "lmxx2 woman, transform the woman's facial identity to match the trained LoRA identity"
     )
-    hair = region_prompt(_changes(selfie), "hair")
+    # The hair is redrawn strongly: its "keep" sentence says what it should look like.
+    wavy = selfie + " Preserve the exact original wavy hairstyle and bangs."
+    hair = _region_text(wavy, "hair")
     assert hair.startswith("lmxx2 woman, Completely change her platinum blonde hair color")
+    assert "wavy hairstyle and bangs" in hair
     assert "tongue" not in hair and "background" not in hair
+    assert _region_text(wavy, "face") == face
     # Nothing but "keep" sentences: the request as written.
     assert _changes("Keep her pose.") == "Keep her pose."
 
