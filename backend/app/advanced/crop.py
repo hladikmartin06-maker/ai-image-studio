@@ -25,8 +25,8 @@ MIN_GAIN = 1.3  # crop only when the face gets at least this much bigger
 
 
 async def face_box(path: Path) -> tuple[float, float, float, float, int, int] | None:
-    """The largest face (x, y, w, h) in the photo's own pixels and the photo's size; None
-    without a face or without the face models."""
+    """The main face (`faces.main_face`: the largest of the sure ones) as x, y, w, h in the
+    photo's own pixels, and the photo's size; None without a face or the face models."""
     try:
         engine = await faces._get_engine()
     except Exception:  # noqa: BLE001 - no crop is fine; the edit runs on the whole photo
@@ -53,7 +53,7 @@ async def face_box(path: Path) -> tuple[float, float, float, float, int, int] | 
             _, found = detector.detect(image)
         if found is None or len(found) == 0:
             return None
-        face = max(found, key=lambda f: f[2] * f[3])
+        face = faces.main_face(found)
         x, y, fw, fh = (float(v) / scale for v in face[:4])
         return x, y, fw, fh, ow, oh
 

@@ -65,6 +65,8 @@ NODES = [
     "ImageCrop",
     "DifferentialDiffusion",
     "MaskComposite",
+    "InvertMask",
+    "SolidMask",
     "ImageScaleBy",
     "SeedVR2Preprocess",
     "VAEEncodeTiled",

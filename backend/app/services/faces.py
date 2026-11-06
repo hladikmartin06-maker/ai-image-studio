@@ -32,6 +32,10 @@ MATCH_THRESHOLD = 0.363
 # Smaller faces (e.g. a full-body shot) are not compared: SFace aligns every face to 112 px,
 # and a face of a few dozen pixels gives an unreliable score.
 MIN_FACE_PX = 64
+# The face measured is the largest of those YuNet is sure of (at least this share of its best
+# score): in the owner's lift photo (2026-11-06) the cut-off profile at the edge (0.76) was
+# larger than the frontal face in the mirror (0.93), the photo's subject.
+SURE_SHARE = 0.9
 HF = "https://huggingface.co/opencv"
 ZOO = "https://media.githubusercontent.com/media/opencv/opencv_zoo/main/models"
 
@@ -161,7 +165,7 @@ class _Engine:
             _, faces = self.detector.detect(image)
             if faces is None or len(faces) == 0:
                 return None, None
-            face = max(faces, key=lambda f: f[2] * f[3])  # the largest face
+            face = main_face(faces)
             if float(face[2]) < MIN_FACE_PX:
                 return None, None
             vector = self.recognizer.feature(self.recognizer.alignCrop(image, face)).flatten()
@@ -170,6 +174,13 @@ class _Engine:
 
     def feature(self, data: bytes) -> Any | None:
         return self.analyze(data)[0]
+
+
+def main_face(found: Any) -> Any:
+    """The largest face among those detected with a score near the best one (YuNet's rows:
+    x, y, w, h, landmarks, score)."""
+    best = max(float(f[14]) for f in found)
+    return max((f for f in found if float(f[14]) >= SURE_SHARE * best), key=lambda f: f[2] * f[3])
 
 
 _engine: _Engine | None = None

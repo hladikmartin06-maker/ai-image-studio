@@ -1159,7 +1159,6 @@ export interface AdvancedCapabilities {
   missing_nodes_edit: string[];
   sam3: boolean;
   sam3_file: { url: string; folder: string; filename: string; size: number };
-  enhance: boolean;
   ai: boolean;
   file_capability: string;
 }
@@ -1236,14 +1235,12 @@ export interface AdvancedOptions {
   targets?: AdvancedTarget[];
   // Edit with a LoRA: the person became the LoRA's character.
   identity?: boolean;
-  // A small photo enlarged first ("missing": Enhance photo not installed).
-  prepare?: "on" | "missing" | null;
+  // Edit: the background redrawn sharper.
+  improve_background?: boolean;
   denoise?: number | null;
   analysis?: boolean;
   quality?: boolean;
   corrections?: number;
-  enhance?: boolean;
-  enhance_upscale?: number;
   adult?: boolean;
 }
 
@@ -1263,7 +1260,7 @@ export interface AdvancedJob {
   error_message: string | null;
   // The chosen image, like every image elsewhere.
   result: (StudioImage & { image_id: string }) | null;
-  // Every image the request made (attempts, corrections, enhance), oldest first.
+  // Every image the request made (attempts, corrections), oldest first.
   images: StudioImage[];
   // Steps still queued or running on the GPU (the request can be deleted only when 0).
   steps_running: number;

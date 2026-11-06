@@ -301,8 +301,8 @@ function PlanSummary({ spec }: { spec: AdvancedSpec }) {
   );
 }
 
-/** Generate › Advanced: one request runs everything — plan, Krea 2, masked edits, checks,
- * corrections and the optional enhance — on the user's ComfyUI. */
+/** Generate › Advanced: one request runs everything — plan, Krea 2, masked edits, checks and
+ * corrections — on the user's ComfyUI. */
 export function AdvancedPanel({ header }: { header: React.ReactNode }) {
   const { t, locale } = useI18n();
   const conns = useComfyConnections();
@@ -319,12 +319,15 @@ export function AdvancedPanel({ header }: { header: React.ReactNode }) {
   const [variant, setVariant] = useState<"turbo" | "raw">("turbo");
   const [photo, setPhoto] = useState<PickedPhoto | null>(null);
   const [loraVersion, setLoraVersion] = useState("");
-  const [strength, setStrength] = useState(1);
+  // null = the default for the mode: text to image draws the LoRA's face and figure closer
+  // at 1.3 (the owner's hard prompts, 2026-11-06: 42–53 % → 44–69 % alike, no artifacts).
+  const [chosenStrength, setStrength] = useState<number | null>(null);
+  const strength = chosenStrength ?? (mode === "text-to-image" ? 1.3 : 1);
   const [prompt, setPrompt] = useState("");
   const [analysis, setAnalysis] = useState(true);
   const [quality, setQuality] = useState(true);
   const [corrections, setCorrections] = useState(1);
-  const [enhance, setEnhance] = useState(false);
+  const [improveBackground, setImproveBackground] = useState(false);
   const [targets, setTargets] = useState<AdvancedTarget[]>([]);
   const [identity, setIdentity] = useState(true);
   const [more, setMore] = useState(false);
@@ -371,7 +374,7 @@ export function AdvancedPanel({ header }: { header: React.ReactNode }) {
     const loraId = o.lora?.version_id ?? "";
     const loraExists = Boolean(loraId) && (loras.data?.items ?? []).some((l) => l.usable_versions.some((v) => v.id === loraId));
     setLoraVersion(loraExists ? loraId : "");
-    setStrength(o.lora?.strength ?? 1);
+    setStrength(o.lora?.strength ?? null);
     setAspect(o.aspect_ratio ?? "3:4");
     setResolution(o.resolution ?? "1K");
     const seedUsed = o.seed ?? o.first_seed;
@@ -386,7 +389,7 @@ export function AdvancedPanel({ header }: { header: React.ReactNode }) {
     setAnalysis(o.analysis ?? true);
     setQuality(o.quality ?? true);
     setCorrections(o.corrections ?? 1);
-    setEnhance(Boolean(o.enhance));
+    setImproveBackground(Boolean(o.improve_background));
     setAdult(Boolean(o.adult));
     setDraft(!older && j.spec && (j.spec.prompt || j.spec.edits.length) ? { ...j.spec } : null);
     setMore(true);
@@ -403,8 +406,8 @@ export function AdvancedPanel({ header }: { header: React.ReactNode }) {
   else if (c && (mode === "edit" ? c.missing_nodes_edit : c.missing_nodes_text).length)
     problems.push(t("adv.nodesMissing", { nodes: (mode === "edit" ? c.missing_nodes_edit : c.missing_nodes_text).join(", ") }));
   if (mode === "edit" && !photo) problems.push(t("adv.photoFirst"));
-  if (mode === "edit" && c && !c.sam3 && (analysis || identityOn || targets.some((x) => x !== "whole"))) problems.push(t("adv.sam3Missing"));
-  if (mode === "edit" && !analysis && !identityOn && !targets.length && !draft) problems.push(t("adv.chooseRegion"));
+  if (mode === "edit" && c && !c.sam3 && (analysis || identityOn || improveBackground || targets.some((x) => x !== "whole"))) problems.push(t("adv.sam3Missing"));
+  if (mode === "edit" && !analysis && !identityOn && !improveBackground && !targets.length && !draft) problems.push(t("adv.chooseRegion"));
   if (analysis && c && !c.ai) problems.push(t("adv.aiMissing"));
   if (!prompt.trim()) problems.push(t("adv.promptFirst"));
   if (chosenLora?.disabled) problems.push(t("adv.loraIncompatible"));
@@ -422,11 +425,11 @@ export function AdvancedPanel({ header }: { header: React.ReactNode }) {
     seed: seed ? Number(seed) : null,
     targets,
     identity: identityOn,
+    improve_background: mode === "edit" && improveBackground,
     denoise,
     analysis,
     quality,
     corrections: quality ? corrections : 0,
-    enhance,
     adult,
     spec: withPlan && draft ? draft : null,
     client_request_id: newRequestId(),
@@ -463,6 +466,7 @@ export function AdvancedPanel({ header }: { header: React.ReactNode }) {
           analysis,
           targets,
           identity: identityOn,
+          improve_background: mode === "edit" && improveBackground,
           adult,
         }),
       );
@@ -636,13 +640,15 @@ export function AdvancedPanel({ header }: { header: React.ReactNode }) {
                     <Segmented label={t("adv.corrections")} value={corrections} onChange={setCorrections} options={[0, 1, 2, 3].map((n) => ({ value: n, label: n ? String(n) : t("adv.off") }))} />
                   </Field>
                 ) : null}
-                <label className="row" style={{ gap: 10, alignItems: "flex-start" }}>
-                  <Switch checked={enhance} disabled={c ? !c.enhance : false} onChange={setEnhance} label={t("adv.enhance")} />
-                  <div>
-                    <div className="small">{t("adv.enhance")}</div>
-                    <div className="hint">{t(c && !c.enhance ? "adv.enhanceMissing" : "adv.enhanceHint")}</div>
-                  </div>
-                </label>
+                {mode === "edit" ? (
+                  <label className="row" style={{ gap: 10, alignItems: "flex-start" }}>
+                    <Switch checked={improveBackground} onChange={(v) => { setImproveBackground(v); setDraft(null); }} label={t("adv.improveBackground")} />
+                    <div>
+                      <div className="small">{t("adv.improveBackground")}</div>
+                      <div className="hint">{t("adv.improveBackgroundHint")}</div>
+                    </div>
+                  </label>
+                ) : null}
               </div>
               <section className="card">
                 <button type="button" className="card-head adv-toggle" onClick={() => setMore((v) => !v)} aria-expanded={more}>

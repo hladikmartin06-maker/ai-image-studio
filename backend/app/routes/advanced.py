@@ -1,5 +1,5 @@
-"""Generate › Advanced: one request runs a plan, Krea 2 generation or masked edits, checks,
-corrections and an optional enhance (app/advanced). Separate from the built-in Krea 2 runs
+"""Generate › Advanced: one request runs a plan, Krea 2 generation or masked edits, checks
+and corrections (app/advanced). Separate from the built-in Krea 2 runs
 (routes/comfy.py) and LoRA training, which it only reads: their connections, model files,
 LoRA versions and compatibility rules."""
 
@@ -51,14 +51,14 @@ class AdvancedBody(BaseModel):
     # Edit with a LoRA: the person in the photo becomes the LoRA's character (body and face
     # redrawn with it, the face measured against its photos). Off = the LoRA only helps.
     identity: bool = True
+    # Edit: the background redrawn sharper, the same place (a new one is asked in the text).
+    improve_background: bool = False
     # Edit strength for every region (None = per region: hair 0.85, mouth 0.7, …).
     denoise: float | None = Field(default=None, ge=graphs.DENOISE_MIN, le=graphs.DENOISE_MAX)
     # Stages the user switched on.
     analysis: bool = True
     quality: bool = True
     corrections: int = Field(default=1, ge=0, le=3)
-    enhance: bool = False
-    enhance_upscale: float = pgupscaler.DEFAULT_UPSCALE
     adult: bool = False
     # A plan the user saw (and maybe edited) in the preview; None = make one in the job.
     spec: dict[str, Any] | None = None
@@ -113,7 +113,6 @@ def capabilities(conn: ComfyConnection, ai: bool) -> dict[str, Any]:
             "filename": pgupscaler.SAM3.filename,
             "size": pgupscaler.SAM3.size,
         },
-        "enhance": bool((info.get("enhance") or {}).get("ready")),
         "ai": ai,
         "file_capability": file_capability(conn),
     }
@@ -178,11 +177,18 @@ async def _prepare(
         regions = (
             body.analysis
             or identity
+            or body.improve_background
             or any(t != "whole" for t in targets)
             or bool(compiler.detected_targets(body.prompt))
             or bool(body.spec)
         )
-        if not body.analysis and not targets and not body.spec and not identity:
+        if (
+            not body.analysis
+            and not targets
+            and not body.spec
+            and not identity
+            and not body.improve_background
+        ):
             raise api_error(400, "invalid_parameter", "Choose what to change, or turn on analysis.")
         if regions and not caps["sam3"]:
             raise api_error(
@@ -199,12 +205,6 @@ async def _prepare(
         )
     if body.corrections and not body.quality:
         raise api_error(400, "invalid_parameter", "Corrections need the quality check.")
-    if body.enhance and not caps["enhance"]:
-        raise api_error(
-            409, "missing_models", f"The {pgupscaler.NAME} models are not installed on {conn.name}."
-        )
-    if body.enhance and body.enhance_upscale not in pgupscaler.UPSCALES:
-        raise api_error(400, "invalid_parameter", "Upscale is 1.5, 2 or 3.")
     prompt = body.prompt.strip()
     try:
         check_prompt(prompt, allows_mature=True)
@@ -256,16 +256,11 @@ async def _prepare(
         "first_seed": body.seed if body.seed is not None else secrets.randbelow(krea2.SEED_MAX),
         "targets": targets,
         "identity": body.mode == "edit" and body.identity and lora_meta is not None,
-        # A small photo is first enlarged with Enhance photo ("missing": not installed).
-        "prepare": ("on" if caps["enhance"] else "missing")
-        if source and engine.small_photo(source, body.resolution)
-        else None,
+        "improve_background": body.mode == "edit" and body.improve_background,
         "denoise": body.denoise,
         "analysis": body.analysis,
         "quality": body.quality,
         "corrections": body.corrections if body.quality else 0,
-        "enhance": body.enhance,
-        "enhance_upscale": body.enhance_upscale,
         "adult": body.adult or bool(source and source.get("nsfw")),
     }
     return conn, options, source
@@ -280,6 +275,7 @@ class PlanBody(BaseModel):
     analysis: bool = True
     targets: list[str] = Field(default_factory=list, max_length=4)
     identity: bool = True
+    improve_background: bool = False
     adult: bool = False
 
 
@@ -320,8 +316,19 @@ async def plan(
                 identity=identity,
             )
         else:
-            spec = compiler.by_rules(mode=body.mode, prompt=prompt, targets=body.targets)
-        spec = compiler.validate(spec, user_prompt=prompt, adult=body.adult, identity=identity)
+            spec = compiler.by_rules(
+                mode=body.mode,
+                prompt=prompt,
+                targets=body.targets,
+                whole=not body.improve_background,
+            )
+        spec = compiler.validate(
+            spec,
+            user_prompt=prompt,
+            adult=body.adult,
+            identity=identity,
+            improve_background=body.mode == "edit" and body.improve_background,
+        )
     except (GenerationRejected, PromptRefused, IntelligenceError) as exc:
         raise _reject(exc) from exc
     return spec.model_dump()
@@ -385,7 +392,7 @@ def job_json(
         "result": {**image_json(result), "image_id": str(result.id)}
         if result is not None
         else None,
-        # Every image the request made (attempts, corrections, enhance), oldest first.
+        # Every image the request made (attempts, corrections), oldest first.
         "images": [
             image_json(image, gen)
             for gen in steps or []
@@ -444,6 +451,7 @@ async def create_job(
                 user_prompt=body.prompt,
                 adult=options["adult"],
                 identity=options["identity"],
+                improve_background=options["improve_background"],
             )
         except ValidationError as exc:
             raise api_error(400, "invalid_parameter", "The plan is not valid.") from exc

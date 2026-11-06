@@ -167,8 +167,8 @@ repositories.
   finds the region, only it is redrawn and composited back; every other pixel stays the
   photo's), checks per requirement (AI vision, SFace identity against the original or the
   LoRA's photos, changed area — estimates, never guarantees), at most 3 corrections of only
-  what failed, the best attempt by those checks, optional Enhance photo. Only models already
-  in the studio; every GPU step is an ordinary ComfyUI generation of the engine's own graph
+  what failed, the best attempt by those checks. Krea 2 only: no upscaler in Advanced (Enhance
+  photo is a separate tool, the owner's request 2026-11-06). Only models already in the studio; every GPU step is an ordinary ComfyUI generation of the engine's own graph
   through the existing queue. It reads and never changes the Krea 2 workflow, Enhance photo,
   LoRA training, the worker/runner or existing tables (`test_advanced` pins the built-in
   graphs by hash); its data only in the additive migration 0007. A failed step fails the job
@@ -183,11 +183,25 @@ repositories.
   expression) are redrawn in an enlarged crop around the face found on the Mac
   (`advanced/crop.py`, YuNet) and pasted back inside the mask only; masked edits use a soft
   mask with DifferentialDiffusion. An edit with a LoRA turns the person into its character
-  (owner's request 2026-11-05; `options.identity`, switch on by default): the other edits
-  (hair …) first, then the face last with the LoRA (0.65, `graphs.DENOISE_IDENTITY_FACE`),
-  so the face measured is the face delivered (a hair step after it cut the likeness from
-  47 % to 16–28 % on the owner's photos, 2026-11-06); the person is not redrawn (it changed poses) and there is no light pass over the
-  whole photo afterwards (Krea 2 Turbo at 0.3 drew hatching into hair and cracks into skin). Without analysis each region gets the request's
+  (owner's request 2026-11-05; `options.identity`, switch on by default): first the figure
+  with the LoRA (the owner's request 2026-11-06: body, breasts, waist, hips like the LoRA's;
+  SAM 3.1 "person" plus "reflection of a person" (a woman in a mirror), without the face,
+  head, hair, hands and feet, which pin the pose (`graphs.EXCLUDE`; SAM 3.1 returns one match
+  per text unless told "hands:4"), the clothing at half strength so its colour stays
+  (`graphs.SOFTEN`); grown 40 px so the outline can change; `DENOISE_IDENTITY_BODY`), then the
+  other edits (background, hair …), the face last with the LoRA (0.65,
+  `graphs.DENOISE_IDENTITY_FACE`), so the face measured is the face delivered (a hair step
+  after it cut the likeness from 47 % to 16–28 % on the owner's photos, 2026-11-06); no light
+  pass over the whole photo afterwards (Krea 2 Turbo at 0.3 drew hatching into hair and
+  cracks into skin). The hair step finds every head of hair on the photo's people
+  ("hair:2" inside "person" + reflection) and leaves the face alone except bangs
+  (`graphs.SEVERAL`, `graphs.BESIDE`). Text to image with a LoRA redraws a face short of the
+  likeness goal the same way (crop, 0.65, up to three tries, the generated face kept when it
+  is the most alike; `engine._lora_face`); its LoRA strength starts at 1.3 (edits 1.0). The face measured and cropped is the largest of
+  those YuNet is sure of (`faces.main_face`). The background is everything but the people (SAM 3.1 "person" grown
+  8 px, `InvertMask`), redrawn without the LoRA or its trigger: a new one when the text asks
+  for it ("change the background to …", 0.9), or sharper, the same place, with the switch
+  "Improve the background" (`options.improve_background`, `DENOISE_BACKGROUND_SHARPER`). Without analysis each region gets the request's
   own sentences about it (`compiler.region_prompt`); the face regions without the
   "keep/preserve" sentences (`_changes`: "preserve the mouth shape" opened a closed mouth),
   the hair with them ("keep the wavy hairstyle" keeps the waves). The mouth is redrawn with
@@ -198,10 +212,8 @@ repositories.
   LoRA whose photos show an expression (Taila 2 has a tongue-out photo) may draw it now and
   then: that is fixed in its dataset, not here (a redness measure below the lips could not
   tell a tongue from the LoRA's fuller lips and was removed). Tuned on the owner's three photos on his A40 (2026-11-05).
-  A photo the edit would enlarge more than 1.3× is first enlarged with Enhance photo
-  (`options.prepare`, SeedVR2 by the smallest factor that reaches the edit's size;
-  skipped and shown when its models are missing). Without analysis, the
-  hair, face or body the text asks to change are added to the chosen regions
+  Without analysis, the hair, face, body or background the text asks to change are added to
+  the chosen regions
   (`compiler.detected_targets`). Every number is the studio's estimate, tuned on the owner's
   GPU tests.
 - Hugging Face: token in Integrations › Hugging Face, checked with `whoami-v2` and the Krea 2

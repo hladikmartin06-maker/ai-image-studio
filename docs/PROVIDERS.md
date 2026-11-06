@@ -493,7 +493,8 @@ Generate › "Pokročilé" (`backend/app/advanced/`, since 2026-11-04, the owner
 adds **no new model**: Krea 2 RAW / Turbo (the files, loaders and sampler settings of
 `krea2.VARIANTS`, read only), SAM 3.1 (`checkpoints/sam3.1_multiplex_fp16.safetensors`, the
 Enhance photo file from `huggingface.co/AIPRIVATEGROUP/pgupscaler`, installable alone with
-one click), optionally Enhance photo, SFace on this Mac and the user's own AI assistant.
+one click), SFace on this Mac and the user's own AI assistant. No upscaler (since
+2026-11-06, the owner's request: Enhance photo is a separate tool).
 
 - **Nodes** (built in, checked in ComfyUI v0.35.0's `nodes.py` and `comfy_extras`, the
   pinned rented image): text to image = UNETLoader, CLIPLoader (`krea2`),
@@ -558,9 +559,10 @@ one click), optionally Enhance photo, SFace on this Mac and the user's own AI as
   on the car and the bed (41 % when it came after a masked redraw of the whole person); one
   pass at 0.75–0.85 and two at 0.6 gave the same, but only gentle passes kept the selfie's
   tongue-out expression (0.85 lost it; at 0.75 with the whole text, hair was drawn over the
-  face). The person is no longer redrawn: at 0.7 it lost an expression, drew a foot into a
-  pillow and once a new close-up; at 0.6 an arm on the bed became a hand propping the head;
-  at 0.45 it changed nothing visible. A light pass over the whole photo afterwards (0.3,
+  face). The person was not redrawn from then until 2026-11-06 (see "The figure"): with
+  only the face left out, at 0.7 it lost an expression, drew a foot into a pillow and once a
+  new close-up; at 0.6 an arm on the bed became a hand propping the head; at 0.45 it changed
+  nothing visible. A light pass over the whole photo afterwards (0.3,
   tried and removed the same night) looked like one skin tone and light at small size, but
   up close Krea 2 Turbo — distilled for 8 steps from noise — drew hatching into the hair,
   cracks into the forehead and white dashes; the hair step before it was clean. A body edit and its
@@ -604,12 +606,46 @@ one click), optionally Enhance photo, SFace on this Mac and the user's own AI as
   "preserve the exact original wavy hairstyle, bangs" the selfie's waves became straight. YuNet misplaces
   the face of an extreme expression (the selfie: the box beside the mouth), so its score is
   low whatever the face looks like; the gentle tries then still keep the expression.
-- **Small photos** (since 2026-11-05): when the edit would enlarge the photo more than 1.3×,
-  it is first run through Enhance photo with its gentlest skin fix (0.15) and SeedVR2 by the
-  smallest of 1.5×, 2×, 3× that reaches the edit's size (3× when none does; 1.5× before the
-  owner's second tests left a 548 × 640 photo's background soft), so the redraw and the
-  kept pixels — the background too — start sharp. Without the Enhance photo models the step
-  is shown as skipped and the photo is only resized.
+- **The figure** (since 2026-11-06, the owner's request: breasts, waist, hips like the
+  LoRA's; tried the same day on his A40 with six photos — a car, a bed, a tongue-out selfie,
+  a mirror selfie, a woman on the floor and a lift with a mirror). Before the hair and the
+  face, the person is redrawn with the LoRA: SAM 3.1 "person" plus "reflection of a person"
+  (`MaskComposite` "add"; "person" left out the woman in the lift's mirror, the photo's
+  subject, and found only her cut-off profile at the edge; "reflection of a person" finds the
+  person in ordinary photos too), grown 40 px so the outline can change, without the face,
+  head, hair, hands and feet (each found by SAM 3.1, grown 8 px, added up and subtracted),
+  which pin the pose. SAM 3.1 returns only its best match per text in ComfyUI v0.35.0 unless
+  the text gives a count (`comfy/text_encoders/sam3_clip.py`, `_parse_prompts`: "text:N",
+  comma-separated texts; `nodes_sam3.py` keeps the N best above the threshold), so the anchors
+  are "face:2", "head:2", "hair:2", "hands:4", "feet:4" — with one "hands" only one hand was
+  pinned. The clothing ("clothing:4") is redrawn at half strength (`SolidMask` 0.5,
+  `MaskComposite` "multiply", subtracted; DifferentialDiffusion reads the mask as a per-pixel
+  strength and the paste-back blends with it): at full strength grey sweatpants came out
+  beige and pink lace shorts a white thong; at half strength both kept their colour at 0.75
+  and 0.85 while the skin, back and chest followed the LoRA. Strength 0.7 (0.6–0.85 tried:
+  the pose stayed at every strength with these anchors; 0.6 changed little; at 0.8 a lying
+  woman's buttocks came out misshapen, at 0.75 one seed drew a second hand on a chest and
+  covered a bare midriff, two other seeds were clean; 0.7 was clean on every photo).
+  Measured faces after the whole edit (figure, hair, face): 47–66 % alike to the LoRA's
+  photos, which are 64–67 % alike to each other.
+- **Hair on every person, never over the face** (2026-11-06): "hair:2" kept only where
+  "person" and "reflection of a person" are (grown 8 px, `MaskComposite` "and"), so a woman
+  and her reflection both change colour and a stranger does not; the face ("face:2", grown
+  8 px) minus what SAM 3.1 found as hair (bangs stay in) is left alone — the grown hair rim
+  had smeared the face of the woman on the floor and drawn a second hand on the lift photo's
+  cheek.
+- **Text to image with a LoRA** (2026-11-06): eight hard prompts (a street from afar, a gym
+  mirror selfie, a beach from above, a café profile, from behind, a laughing close-up, a bed
+  with a laptop, a car at night) gave faces 42–66 % alike at LoRA strength 1.0 and 44–69 %
+  at 1.3, with a fuller figure closer to the LoRA's and no artifacts, so the Advanced panel's
+  LoRA strength starts at 1.3 for text to image (1.0 for edits; the user's choice wins). A face short of the
+  goal is redrawn like an edit's LoRA face (its crop, 0.65, up to three tries) and the most
+  alike image is kept, the generated one included; no face (from behind) = as generated.
+  Krea 2 Turbo sometimes ignores parts of a prompt (two of three 18+ prompts came out
+  dressed; "looking back over her shoulder" came out from behind).
+- **The main face**: YuNet's largest face among those scored at least 0.9 × its best (the
+  lift photo's frontal reflection 0.93 against the larger cut-off profile 0.76), for the
+  face crop and the likeness (`faces.main_face`).
 - **Without AI analysis** the regions the text asks to change are added to the chosen ones
   (since 2026-11-05): per sentence a word for the hair, face or body with a change word
   ("change", "match", "zmeň" …) or a hair colour, unless the sentence keeps something

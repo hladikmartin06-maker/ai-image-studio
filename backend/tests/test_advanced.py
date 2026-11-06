@@ -438,15 +438,13 @@ async def test_edit_hair_and_mouth_corrects_only_what_failed(
     )
     assert job["status"] == "completed", job
     keys = [s["key"] for s in job["stages"]]
-    assert keys == ["plan", "prepare", "edit1", "edit2", "check", "fix1-mouth", "check2"]
+    # No enlarging first (no upscaler in Advanced since 2026-11-06), even for this 64 × 80.
+    assert keys == ["plan", "edit1", "edit2", "check", "fix1-mouth", "check2"]
     graphs_sent = sent_graphs(comfy)
-    prepared, hair, mouth, fix = graphs_sent[-4:]
-    # The 64 × 80 photo is first enlarged with Enhance photo (gentlest skin fix, its largest
-    # factor: the edit needs far more than 3×).
-    assert prepared["24"]["inputs"]["denoise"] == enhance.STRENGTHS[0]
-    assert prepared["5"]["inputs"]["scale_by"] == enhance.UPSCALES[-1]
+    hair, mouth, fix = graphs_sent[-3:]
+    assert len(graphs_sent) == 3
     # Only the region is redrawn and pasted back into the photo.
-    for graph, region in ((hair, "hair"), (mouth, "mouth and lips"), (fix, "mouth and lips")):
+    for graph, region in ((hair, "hair:2"), (mouth, "mouth and lips"), (fix, "mouth and lips")):
         kinds = {n["class_type"] for n in graph.values()}
         assert {"SAM3_Detect", "SetLatentNoiseMask", "ImageCompositeMasked", "LoadImage"} <= kinds
         assert graph["31"]["inputs"]["text"] == region
@@ -468,15 +466,35 @@ async def test_edit_hair_and_mouth_corrects_only_what_failed(
     assert hair["12"]["inputs"]["pixels"] == ["42", 0]
     # The eyes and brows (SAM 3.1, grown 8 px) are taken out of the hair: out of the grown
     # mask that is redrawn and out of what is tinted, so the hair redraw leaves them alone.
-    assert hair["45"]["inputs"]["text"] == "eyes and eyebrows"
-    assert hair["48"]["inputs"] == {"mask": ["46", 0], "expand": 8, "tapered_corners": True}
+    assert hair["70"]["inputs"]["text"] == "eyes and eyebrows:2"
+    assert hair["72"]["inputs"] == {"mask": ["71", 0], "expand": 8, "tapered_corners": True}
     assert hair["47"]["inputs"]["destination"] == ["33", 0]
-    assert hair["47"]["inputs"]["source"] == ["48", 0]
+    assert hair["47"]["inputs"]["source"] == ["65", 0]
     assert hair["47"]["inputs"]["operation"] == "subtract"
+    # The face is left alone too, except where SAM 3.1 found hair over it (bangs).
+    assert hair["61"]["inputs"]["text"] == "face:2"
+    assert hair["64"]["inputs"]["destination"] == ["63", 0]
+    assert hair["64"]["inputs"]["source"] == ["56", 0]
+    assert hair["65"]["inputs"]["destination"] == ["72", 0]
+    assert hair["65"]["inputs"]["source"] == ["64", 0]
     assert hair["35"]["inputs"]["mask"] == ["47", 0]
-    assert hair["49"]["inputs"]["destination"] == ["32", 0]
+    # Every head of hair of the photo's people (a woman and her reflection: two), only on
+    # what "person" and "reflection of a person" found, grown 8 px.
+    assert hair["31"]["inputs"]["text"] == "hair:2"
+    assert hair["53"]["inputs"]["text"] == "person"
+    assert hair["45"]["inputs"]["text"] == "reflection of a person"
+    assert hair["48"]["inputs"]["destination"] == ["54", 0]
+    assert hair["56"]["inputs"] == {
+        "destination": ["32", 0],
+        "source": ["55", 0],
+        "x": 0,
+        "y": 0,
+        "operation": "and",
+    }
+    assert hair["33"]["inputs"]["mask"] == ["56", 0]
+    assert hair["49"]["inputs"]["destination"] == ["56", 0]
     assert hair["42"]["inputs"]["mask"] == ["49", 0]
-    assert "46" not in mouth and mouth["35"]["inputs"]["mask"] == ["33", 0]
+    assert "71" not in mouth and mouth["35"]["inputs"]["mask"] == ["33", 0]
     assert hair["33"]["inputs"]["expand"] == 32 and mouth["33"]["inputs"]["expand"] == 16
     for graph in (hair, mouth, fix):
         assert graph["60"]["class_type"] == "DifferentialDiffusion"
@@ -528,13 +546,13 @@ async def test_edit_hair_and_mouth_corrects_only_what_failed(
         images = (await db.scalars(select(Image))).all()
     in_library = {str(i.id): i.in_library for i in images}
     assert in_library[job["result"]["image_id"]] is True
-    # The enlarged photo and the two first edits left the library.
-    assert sum(1 for v in in_library.values() if v is False) == 3
+    # The two first edits left the library.
+    assert sum(1 for v in in_library.values() if v is False) == 2
     listed = [i["id"] for i in job["images"]]
-    assert len(listed) == 4 and listed[-1] == job["result"]["id"]
-    assert [i["in_library"] for i in job["images"]] == [False, False, False, True]
+    assert len(listed) == 3 and listed[-1] == job["result"]["id"]
+    assert [i["in_library"] for i in job["images"]] == [False, False, True]
     files = [Path(p) for i in images if str(i.id) in listed for p in (i.file_path, i.thumb_path)]
-    assert len(files) == 8
+    assert len(files) == 6
     from app.services import storage
 
     assert all(storage.absolute(str(f)).exists() for f in files)
@@ -583,11 +601,11 @@ async def test_edit_without_ai_uses_the_chosen_region(user: Api, comfy, tmp_path
     assert (await user.post("/api/advanced/jobs", json=body)).status_code == 400
     job = await run(user, {**body, "targets": ["hair"], "denoise": 0.75})
     assert job["status"] == "completed", job
-    assert [s["key"] for s in job["stages"]] == ["plan", "prepare", "edit1", "check"]
+    assert [s["key"] for s in job["stages"]] == ["plan", "edit1", "check"]
     # The region chosen and the one the text asks for are the same: one edit.
     assert [e["target"] for e in job["spec"]["edits"]] == ["hair"]
     graph = sent_graphs(comfy)[-1]
-    assert graph["31"]["inputs"]["text"] == "hair" and graph["7"]["inputs"]["denoise"] == 0.75
+    assert graph["31"]["inputs"]["text"] == "hair:2" and graph["7"]["inputs"]["denoise"] == 0.75
     report = job["reports"][0]
     assert report["checks"] == [] and report["ai"] is None
     assert isinstance(report["changed_area"], float) and report["identity"] is not None
@@ -619,7 +637,7 @@ async def imported_lora(api: Api, trigger: str = "lmx") -> dict:
     return r.json()
 
 
-async def test_identity_tries_the_face_before_the_other_edits(
+async def test_identity_redraws_the_figure_then_tries_the_face_last(
     user: Api, comfy, tmp_path, face_engine, monkeypatch
 ):
     from app.advanced import quality
@@ -659,19 +677,54 @@ async def test_identity_tries_the_face_before_the_other_edits(
     }
     # The plan before anything runs shows the same steps.
     shown = (await user.post("/api/advanced/plan", json={**body, "targets": []})).json()
-    assert [e["target"] for e in shown["edits"]] == ["hair", "face"]
+    assert [e["target"] for e in shown["edits"]] == ["body", "hair", "face"]
     # No region chosen: with a LoRA the person becomes its character anyway.
     job = await run(user, body)
     assert job["status"] == "completed", job
-    assert job["options"]["identity"] is True and job["options"]["prepare"] == "on"
+    assert job["options"]["identity"] is True and "prepare" not in job["options"]
     keys = [s["key"] for s in job["stages"]]
-    assert keys == ["plan", "prepare", "edit1", "edit2", "edit2-try2", "edit2-try3", "check"]
-    hair, face, try2, try3 = sent_graphs(comfy)[-4:]
-    # The hair first with its colour, then the face last, in its enlarged crop, gently, with
-    # the LoRA and its own sentences; the person is not redrawn (no SAM 3.1 "person").
-    assert all(
-        g.get("31", {}).get("inputs", {}).get("text") != "person" for g in sent_graphs(comfy)
-    )
+    assert keys == ["plan", "edit1", "edit2", "edit3", "edit3-try2", "edit3-try3", "check"]
+    figure, hair, face, try2, try3 = sent_graphs(comfy)[-5:]
+    # The figure first with the LoRA, strongly, in a mask grown so its outline can change;
+    # the face, head, hair, hands and feet (SAM 3.1, grown 8 px, added up) are taken out, so
+    # the pose stays and the face keeps its expression for its own step. The person is also
+    # found in a mirror (SAM 3.1's "person" leaves reflections out).
+    assert figure["31"]["inputs"]["text"] == "person"
+    assert figure["45"]["inputs"]["text"] == "reflection of a person"
+    assert figure["48"]["inputs"]["destination"] == ["32", 0]
+    assert figure["48"]["inputs"]["source"] == ["46", 0]
+    assert figure["33"]["inputs"]["mask"] == ["48", 0]
+    assert figure["7"]["inputs"]["denoise"] == 0.7 and figure["33"]["inputs"]["expand"] == 40
+    # Every hand and foot (SAM 3.1 returns one match unless told how many).
+    assert [figure[str(70 + 4 * i)]["inputs"]["text"] for i in range(5)] == [
+        "face:2",
+        "head:2",
+        "hair:2",
+        "hands:4",
+        "feet:4",
+    ]
+    assert figure["77"]["inputs"] == {
+        "destination": ["72", 0],
+        "source": ["76", 0],
+        "x": 0,
+        "y": 0,
+        "operation": "add",
+    }
+    assert figure["47"]["inputs"]["source"] == ["89", 0]
+    # The clothing is redrawn at half strength (SAM 3.1 "clothing:4" × 0.5 taken out), so
+    # its shape can follow the figure while its colour stays.
+    assert figure["90"]["inputs"]["text"] == "clothing:4"
+    assert figure["92"]["inputs"]["value"] == 0.5
+    assert figure["93"]["inputs"]["operation"] == "multiply"
+    assert figure["94"]["inputs"]["destination"] == ["47", 0]
+    assert figure["94"]["inputs"]["source"] == ["93", 0]
+    assert figure["35"]["inputs"]["mask"] == ["94", 0]
+    assert any(n["class_type"] == "LoraLoaderModelOnly" for n in figure.values())
+    text = figure["4"]["inputs"]["text"]
+    assert text.startswith("lmx, lmxx2 woman, Preserve the exact original body position")
+    assert "buttock size" in text and "hair" not in text and "facial" not in text
+    # Then the hair with its colour, and the face last, in its enlarged crop, gently, with
+    # the LoRA and its own sentences.
     assert face["31"]["inputs"]["text"] == "face" and face["50"]["class_type"] == "ImageCrop"
     assert face["7"]["inputs"]["denoise"] == try3["7"]["inputs"]["denoise"] == 0.65
     assert len({face["7"]["inputs"]["seed"], try2["7"]["inputs"]["seed"]}) == 2
@@ -681,8 +734,8 @@ async def test_identity_tries_the_face_before_the_other_edits(
     assert "buttock" not in face["4"]["inputs"]["text"]
     # The mouth is redrawn with the face (kept at half strength it left the photo's lips on
     # the new face, 2026-11-06); a new tongue is caught by the measure instead.
-    assert all("70" not in g for g in (face, try2, try3, hair))
-    assert hair["31"]["inputs"]["text"] == "hair" and hair["41"]["inputs"]["blend_mode"] == (
+    assert all("70" not in g for g in (face, try2, try3))
+    assert hair["31"]["inputs"]["text"] == "hair:2" and hair["41"]["inputs"]["blend_mode"] == (
         "multiply"
     )
     # Every try starts from the same image (the one with the new hair); the result is the
@@ -697,9 +750,10 @@ async def test_identity_tries_the_face_before_the_other_edits(
             )
         }
     stage = {s["key"]: s for s in job["stages"]}
-    assert inputs["edit2"] == inputs["edit2-try2"] == inputs["edit2-try3"]
+    assert inputs["edit3"] == inputs["edit3-try2"] == inputs["edit3-try3"]
+    assert inputs["edit3"] == stage["edit2"]["image_id"]
     assert inputs["edit2"] == stage["edit1"]["image_id"]
-    assert job["result"]["image_id"] == stage["edit2-try3"]["image_id"]
+    assert job["result"]["image_id"] == stage["edit3-try3"]["image_id"]
     assert all(len(refs) == 2 for refs in measured)  # the LoRA's photos, not the original
     # The final check measures it; nothing is redrawn after it.
     (report,) = job["reports"]
@@ -736,49 +790,6 @@ def test_region_prompts_leave_out_what_to_keep():
     assert _region_text(wavy, "face") == face
     # Nothing but "keep" sentences: the request as written.
     assert _changes("Keep her pose.") == "Keep her pose."
-
-
-def test_small_photo_is_enlarged_to_the_edit_size():
-    # The owner's photos (2026-11-05): 548 × 640 at 2K needs 3.2× (SeedVR2's largest, 3×),
-    # 1016 × 1410 needs 1.45× (1.5×); one already big enough is not enlarged at all.
-    assert engine.prepare_upscale({"width": 548, "height": 640}, "2K") == 3.0
-    assert engine.prepare_upscale({"width": 1016, "height": 1410}, "2K") == 1.5
-    assert engine.prepare_upscale({"width": 800, "height": 1000}, "2K") == 3.0
-    assert engine.prepare_upscale({"width": 1000, "height": 1300}, "2K") == 2.0
-    assert engine.small_photo({"width": 1162, "height": 1593}, "2K") is False
-
-
-async def test_small_photo_without_enhance_models_is_only_resized(user: Api, tmp_path):
-    files = {k: list(v) for k, v in KREA_FILES.items()}
-    files.setdefault("checkpoints", []).append(enhance.SAM3.filename)  # SAM 3.1 only
-    fake = FakeComfy(files=files)
-    ComfyClient.transport = fake.transport()
-    engine.POLL = 0.01
-    comfy_runner.POLL_INITIAL = 0.01
-    comfy_runner.POLL_MAX = 0.02
-    try:
-        conn = await connect(user, tmp_path)
-        ref = await photo(user)
-        job = await run(
-            user,
-            {
-                "connection_id": conn["id"],
-                "mode": "edit",
-                "prompt": "dark brown hair",
-                "image": {"kind": "reference", "id": ref["id"]},
-                "analysis": False,
-                "targets": ["hair"],
-                "quality": False,
-                "corrections": 0,
-            },
-        )
-        assert job["status"] == "completed", job
-        prepare = job["stages"][1]
-        assert prepare["key"] == "prepare" and prepare["status"] == "skipped"
-        assert "not installed" in prepare["detail"]
-        assert len(fake.prompts) == 1  # only the hair edit ran
-    finally:
-        ComfyClient.transport = None
 
 
 # --- the checks before anything runs ------------------------------------------------------
@@ -1062,6 +1073,12 @@ def test_regions_from_the_text():
     assert detected_targets("a woman with platinum blonde hair on a beach") == ["hair"]
     assert detected_targets("Photorealistic, realistic proportions, sharp focus.") == []
     assert detected_targets("Zmeň jej farbu vlasov na tmavohnedú a zatvor jej ústa.") == ["hair"]
+    # A new background is asked in the text; keeping it is not a change.
+    assert detected_targets("Change the background to a sunny beach with palm trees.") == [
+        "background"
+    ]
+    assert detected_targets("Zmeň pozadie na pláž.") == ["background"]
+    assert detected_targets("Keep the room and the background.") == []
     # Without analysis the chosen "whole" stays first and the text's regions follow.
     spec = by_rules(mode="edit", prompt=OWNER_PROMPT, targets=["whole"])
     assert [e.target for e in spec.edits] == ["whole", "body", "face", "hair"]
@@ -1072,7 +1089,7 @@ def test_regions_from_the_text():
     ]
 
 
-def test_identity_plan_redraws_the_face_last():
+def test_identity_plan_redraws_the_figure_first_and_the_face_last():
     from app.advanced.compiler import Edit, Spec, by_rules, validate
 
     spec = validate(
@@ -1081,18 +1098,26 @@ def test_identity_plan_redraws_the_face_last():
         adult=False,
         identity=True,
     )
-    # "whole" and the person are not redrawn: the hair with its colour, then the face last.
-    assert [e.target for e in spec.edits] == ["hair", "face"]
-    assert [e.region for e in spec.edits] == ["hair", "face"]
-    assert spec.edits[0].color == "#281B14"
+    # "whole" is not redrawn: the figure with the LoRA, the hair with its colour, the face last.
+    assert [e.target for e in spec.edits] == ["body", "hair", "face"]
+    assert [e.region for e in spec.edits] == ["person", "hair", "face"]
+    assert spec.edits[1].color == "#281B14"
     # Each region with the request's own sentences about it (not the hair over the face).
-    hair, face = spec.edits
+    body, hair, face = spec.edits
     assert face.prompt.startswith("lmxx2 woman, fully transform the woman's facial identity")
     assert "hair" not in face.prompt and "buttock" not in face.prompt
     assert hair.prompt.startswith("very dark brown, almost black hair, one even natural colour")
     assert "lmxx2 woman, Change her hair to long" in hair.prompt
     assert "facial identity" not in hair.prompt
-    # A plan the user edited keeps its own face prompt; a body edit is not used then.
+    # The figure: the pose, outfit and proportions sentences, never the hair or the face.
+    assert body.prompt == (
+        "lmxx2 woman, Preserve the exact original body position, lying pose, arm placement, "
+        "camera angle, framing, outfit and indoor background. Match the body proportions and "
+        "buttock size to the trained LoRA identity, keeping natural and realistic anatomy. "
+        "Photorealistic, highly detailed, natural skin texture, realistic proportions, seamless "
+        "identity transformation"
+    )
+    # A plan the user edited keeps its own figure and face prompts, the figure first.
     edited = Spec(
         mode="edit",
         edits=[
@@ -1103,6 +1128,7 @@ def test_identity_plan_redraws_the_face_last():
     )
     spec = validate(edited, user_prompt="x", adult=False, identity=True)
     assert [(e.target, e.prompt.split(",")[0]) for e in spec.edits] == [
+        ("body", "my body prompt"),
         ("hair", "red hair"),
         ("face", "my face prompt"),
     ]
@@ -1114,3 +1140,132 @@ def test_identity_plan_redraws_the_face_last():
         "hair",
         "body",
     ]
+
+
+async def test_improve_background_redraws_all_but_the_person(user: Api, comfy, tmp_path):
+    from app.advanced.compiler import Spec, validate
+
+    # The plan: the figure first, then the background, sharper (0.5), with its own sentences.
+    spec = validate(
+        Spec(mode="edit", edits=[]),
+        user_prompt=OWNER_PROMPT,
+        adult=False,
+        identity=True,
+        improve_background=True,
+    )
+    assert [e.target for e in spec.edits] == ["body", "background", "face"]
+    background = spec.edits[1]
+    assert background.denoise == 0.5 and background.region == "background"
+    assert background.prompt == "the same place, sharp, detailed, natural light, photorealistic"
+    assert "lmxx2" not in background.prompt and "hair" not in background.prompt
+    # A new background asked in the text wins (redrawn fully), nothing is added.
+    asked = validate(
+        Spec(mode="edit", edits=[]),
+        user_prompt="Change the background to a sunny beach.",
+        adult=False,
+        improve_background=True,
+    )
+    assert [e.target for e in asked.edits] == ["background"]
+    # A job with only the switch: no LoRA, no trigger, the people kept by an inverted mask.
+    conn = await connect(user, tmp_path)
+    ref = await photo(user)
+    job = await run(
+        user,
+        {
+            "connection_id": conn["id"],
+            "mode": "edit",
+            "variant": "turbo",
+            "prompt": "a woman in a kitchen",
+            "image": {"kind": "reference", "id": ref["id"]},
+            "analysis": False,
+            "quality": False,
+            "corrections": 0,
+            "improve_background": True,
+        },
+    )
+    assert job["status"] == "completed", job
+    assert job["options"]["improve_background"] is True
+    assert [e["target"] for e in job["spec"]["edits"]] == ["background"]
+    graph = sent_graphs(comfy)[-1]
+    assert graph["31"]["inputs"]["text"] == "person"
+    assert graph["45"]["inputs"]["text"] == "reflection of a person"  # people in a mirror too
+    assert graph["43"]["inputs"] == {"mask": ["48", 0], "expand": 8, "tapered_corners": True}
+    assert graph["44"] == {"class_type": "InvertMask", "inputs": {"mask": ["43", 0]}}
+    assert graph["33"]["inputs"]["mask"] == ["44", 0] and graph["33"]["inputs"]["expand"] == 0
+    assert graph["7"]["inputs"]["denoise"] == 0.5
+    assert not any(n["class_type"] == "LoraLoaderModelOnly" for n in graph.values())
+
+
+async def test_text_to_image_with_a_lora_redraws_a_face_short_of_the_goal(
+    user: Api, comfy, tmp_path, face_engine, monkeypatch
+):
+    """A face far from the camera is a few latent pixels: when it is not yet as alike to the
+    LoRA's photos as the goal, it is redrawn in its crop like an edit's LoRA face, and the most
+    alike image — the generated one included — is the result."""
+    from app.advanced import quality
+
+    async def face_box(path: Path):
+        return (28.0, 30.0, 6.0, 8.0, 64, 80)
+
+    monkeypatch.setattr(crop, "face_box", face_box)
+    scores: list[float] = []
+
+    async def identity(result: Path, references: list[Path]):
+        return scores.pop(0), 0.6  # the goal is 0.85 × 0.6 = 0.51
+
+    monkeypatch.setattr(quality, "identity", identity)
+    lora = await imported_lora(user)
+    for i, colour in enumerate([(200, 40, 40), (201, 41, 40)]):
+        files = {"file": (f"t{i}.png", png_bytes(64, 64, colour), "image/png")}
+        r = await user.post(f"/api/loras/{lora['id']}/dataset/upload", files=files)
+        assert r.status_code == 201, r.text
+    conn = await connect(user, tmp_path)
+    body = {
+        "connection_id": conn["id"],
+        "mode": "text-to-image",
+        "variant": "turbo",
+        "prompt": "lmxx2 woman walking on a city street at night, full body",
+        "lora": {"version_id": lora["preferred_version_id"], "strength": 1.0},
+        "analysis": False,
+        "quality": False,
+        "corrections": 0,
+    }
+
+    def stage_image(job: dict, key: str) -> str:
+        return next(s["image_id"] for s in job["stages"] if s["key"] == key)
+
+    # Short of the goal, then closer, then a match: the third image is the result.
+    scores[:] = [0.40, 0.45, 0.55]
+    job = await run(user, body)
+    assert job["status"] == "completed", job
+    keys = [s["key"] for s in job["stages"]]
+    assert keys == ["plan", "generate", "edit1", "edit1-try2"]
+    face = sent_graphs(comfy)[-2]
+    assert face["31"]["inputs"]["text"] == "face" and face["50"]["class_type"] == "ImageCrop"
+    assert face["7"]["inputs"]["denoise"] == 0.65
+    assert face["4"]["inputs"]["text"].startswith("lmx, lmxx2 woman walking")
+    assert any(n["class_type"] == "LoraLoaderModelOnly" for n in face.values())
+    assert job["result"]["image_id"] == stage_image(job, "edit1-try2")
+    # Every try less alike than the generated face: the generated image stays the result.
+    scores[:] = [0.45, 0.30, 0.20, 0.25]
+    job = await run(user, body)
+    assert [s["key"] for s in job["stages"]][-3:] == ["edit1", "edit1-try2", "edit1-try3"]
+    assert job["result"]["image_id"] == stage_image(job, "generate")
+    # Already alike enough (or no face to measure): no face step.
+    scores[:] = [0.6]
+    job = await run(user, body)
+    assert [s["key"] for s in job["stages"]] == ["plan", "generate"]
+
+
+def test_the_main_face_is_the_largest_sure_one():
+    """YuNet rows (x, y, w, h, 10 landmark values, score): the lift photo's frontal face in
+    the mirror (0.93) wins over the larger cut-off profile at the edge (0.76); among faces
+    as sure as each other the largest wins."""
+
+    def row(w: float, h: float, score: float) -> list[float]:
+        return [0.0, 0.0, w, h, *([0.0] * 10), score]
+
+    mirror, profile = row(142, 173, 0.93), row(128, 246, 0.759)
+    assert faces.main_face([profile, mirror]) is mirror
+    big, small = row(200, 200, 0.9), row(100, 100, 0.95)
+    assert faces.main_face([small, big]) is big

@@ -121,11 +121,16 @@ hair or clothing, the new colour as a typical hex value of how it looks in a pho
 check for the head pose ("Is the head turned and tilted the same way as in the original?").
 Use target "whole" only when the change concerns the entire image.
 
-IDENTITY (the request says so): the studio itself redraws the face with the character LoRA
-and measures it against the LoRA's photos; the person's body is not redrawn (it keeps the
-pose). Add edits only for the other requested changes (hair, clothing, background, mouth …);
-no body edit, no preserve check about the original person's identity or face, no check about
-the character's likeness."""
+IDENTITY (the request says so): the studio itself redraws the figure (the person without
+face, hair, hands and feet) and then the face with the character LoRA, so body, proportions
+and face become the character's while pose, hands and feet stay; the face is measured
+against the LoRA's photos. Add one "body" edit (region "person") whose prompt describes the
+person as seen — pose, clothing, what she holds — without the original woman's body shape
+(e.g. "a woman sitting on the floor against a sofa, legs bent, wearing a white ribbed top
+and leggings"), and edits for the other requested changes (hair, clothing, background,
+mouth …); a background edit only when the user asks for a new background. No preserve check
+about the original person's identity, face or body proportions, no check about the
+character's likeness."""
 
 
 def _clean_mouth(text: str, closed: bool) -> str:
@@ -255,6 +260,7 @@ _KEEP = re.compile(
 _CHANGE = re.compile(
     r"\b(change|make|turn|transform|match|replace|give|switch|swap|new|different|dye|"
     r"recolou?r|bigger|larger|smaller|longer|shorter|slimmer|thinner|thicker|curvier|fuller|"
+    r"put|place|move|presuň\w*|presun\w*|prenes\w*|"
     r"zmeň\w*|zmen\w*|sprav\w*|daj|uprav\w*|prefarb\w*|nov\w*|väčš\w*|vacs\w*|menš\w*|"
     r"mens\w*|dlhš\w*|dlhs\w*|kratš\w*|krats\w*)\b",
     re.IGNORECASE,
@@ -264,6 +270,8 @@ _REGION_WORDS = {
     r"telo|tela|tele|telom|postav\w*|proporci\w*|zadok\w*|boky|bokov",
     "face": r"face|facial|tvár\w*|tvari|tvarou",
     "hair": r"hair\w*|ponytail|bangs|braids?|vlas\w*|účes\w*|uces\w*|vrkoč\w*|vrkoc\w*",
+    "background": r"background|backdrop|scene|setting|surroundings|environment|room|interior|"
+    r"location|pozad\w*|prostred\w*|miestnos\w*|izb\w*|interiér\w*|interier\w*",
 }
 
 
@@ -274,13 +282,29 @@ _FACE_WORDS = (
     r"face|facial|expression|eyes?|eyelids?|eyebrows?|gaze|mouth|lips|tongue|teeth|smile|"
     r"head|tvár\w*|tvar\w*|oči|oci|ústa|usta|pery|jazyk\w*|výraz\w*|vyraz\w*"
 )
+# The figure's prompt says what she wears and how she sits or lies (the LoRA gives the body),
+# never the hair or the face (they are not in its mask and would be drawn into it).
+_CLOTHING_WORDS = (
+    r"outfit|clothes|clothing|dress|top|shirt|t-shirt|blouse|tank|bra|bikini|lingerie|"
+    r"underwear|panties|shorts|leggings|jeans|pants|trousers|skirt|socks|jacket|hoodie|"
+    r"sweater|choker|necklace|oblečen\w*|šat\w*|tričk\w*|nohavic\w*|sukn\w*|podprsenk\w*"
+)
+_POSE_WORDS = (
+    r"pose|posture|position|sitting|seated|lying|standing|kneeling|leaning|arms?|legs?|"
+    r"hands?|phone|póz\w*|sed\w*|leží\w*|lezi\w*|stoj\w*|ruk\w*|noh\w*"
+)
+_NOT_BODY = (
+    rf"{_REGION_WORDS['hair']}|facial|expression|mouth|lips?|tongue|teeth|smile|eyes?|eyelids?|"
+    r"eyebrows?|brows?|gaze|tvár\w*|oči|oci|ústa|usta|pery|jazyk\w*|výraz\w*|vyraz\w*"
+)
 _SENTENCE_WORDS = {
     "face": (_FACE_WORDS, _REGION_WORDS["hair"]),
     "expression": (_FACE_WORDS, _REGION_WORDS["hair"]),
     "eyes": (_FACE_WORDS, _REGION_WORDS["hair"]),
     "mouth": (_FACE_WORDS, _REGION_WORDS["hair"]),
     "hair": (_REGION_WORDS["hair"], r"facial|identity|lora|body|figure|proportions?|buttocks?"),
-    "body": (_REGION_WORDS["body"], _REGION_WORDS["hair"]),
+    "body": (rf"{_REGION_WORDS['body']}|{_CLOTHING_WORDS}|{_POSE_WORDS}", _NOT_BODY),
+    "background": (_REGION_WORDS["background"], rf"{_NOT_BODY}|{_FACE_WORDS}"),
 }
 
 
@@ -303,23 +327,33 @@ def _region_text(text: str, target: str) -> str:
     return region_prompt(_changes(text) if face else text, target)
 
 
-def region_prompt(text: str, target: str) -> str:
+def region_prompt(text: str, target: str, *, fallback: str | None = None) -> str:
     """The request's sentences about this region (its first words — the trigger and "woman" —
-    kept in front); the whole request when none speaks of it."""
+    kept in front, except for the background, where they would draw a person); `fallback`,
+    else the whole request, when none speaks of it."""
     words = _SENTENCE_WORDS.get(target)
     if not words:
         return text
     about, other = words
     sentences = [s.strip() for s in re.split(r"[.;!?\n]+", text) if s.strip()]
-    said = [
-        s
-        for s in sentences
-        if re.search(rf"\b({about})\b", s, re.IGNORECASE)
-        and not re.search(rf"\b({other})\b", s, re.IGNORECASE)
-    ]
+    said = []
+    for sentence in sentences:
+        if target == "body":
+            # The figure keeps a sentence's clauses about clothing and pose and drops those
+            # about the face or hair ("…the pose, the finger touching her lips, the black
+            # dress…" lost the dress with the whole sentence, 2026-11-06).
+            sentence = ", ".join(
+                c.strip()
+                for c in sentence.split(",")
+                if not re.search(rf"\b({other})\b", c, re.IGNORECASE)
+            )
+        if re.search(rf"\b({about})\b", sentence, re.IGNORECASE) and not re.search(
+            rf"\b({other})\b", sentence, re.IGNORECASE
+        ):
+            said.append(sentence)
     if not said:
-        return text
-    lead = sentences[0].split(",")[0].strip() if sentences else ""
+        return text if fallback is None else fallback
+    lead = sentences[0].split(",")[0].strip() if sentences and target != "background" else ""
     body = ". ".join(said)
     return body if not lead or body.startswith(lead) else f"{lead}, {body}"
 
@@ -344,24 +378,67 @@ def _ordered(edits: list[Edit]) -> list[Edit]:
 
 
 def _with_identity(spec: Spec, text: str) -> None:
-    """The other changes first (hair …), then the face redrawn with the character LoRA as the
-    last step, so the face that is measured is the face delivered: on the owner's photos
-    (2026-11-06) the hair step after the face pulled its likeness from 47 % to 16–28 %; with
-    the face last it stayed at 58–66 %. The person is not redrawn (it changed poses and
-    clothing). The plan's own face edit is kept (the user may have edited it)."""
-    edits = [e for e in spec.edits if e.target not in ("whole", "body")]
-    face = next((e for e in edits if e.target == "face"), None) or Edit(
-        target="face", prompt=region_prompt(_changes(text), "face")
+    """The person becomes the LoRA's character: first the figure (body, proportions, skin)
+    with the LoRA, then the other changes (background, hair …), the face last, so the face
+    that is measured is the face delivered (on the owner's photos, 2026-11-06, a hair step
+    after the face pulled its likeness from 47 % to 16–28 %; with the face last it stayed at
+    58–66 %). The plan's own figure and face edits are kept (the user may have edited them)."""
+    edits = [e for e in spec.edits if e.target != "whole"]
+    body = next((e for e in edits if e.target == "body"), None) or Edit(
+        target="body", prompt=region_prompt(text, "body")
     )
-    rest = _ordered([e for e in edits if e.target != "face"])
-    spec.edits = [*rest[: MAX_EDITS - 1], face]
+    face = next((e for e in edits if e.target == "face"), None) or face_edit(text)
+    rest = _ordered([e for e in edits if e.target not in ("body", "face")])
+    spec.edits = [body, *rest[: MAX_EDITS - 2], face]
 
 
-def validate(spec: Spec, *, user_prompt: str, adult: bool, identity: bool = False) -> Spec:
+def face_edit(text: str) -> Edit:
+    """The LoRA character's face: the request's sentences about the face without the "keep"
+    ones (`_changes`), or the whole request when none speaks of it."""
+    return Edit(
+        target="face", region=graphs.REGIONS["face"], prompt=region_prompt(_changes(text), "face")
+    )
+
+
+# The background redrawn sharper (the switch "improve the background"): the request's
+# sentences about it, or the same place in a sharp photo. Never the LoRA (its studio
+# backdrops would turn the place grey) nor its trigger.
+SHARP = "sharp, detailed, natural light, photorealistic"
+
+
+def background_edit(text: str) -> Edit:
+    said = region_prompt(_changes(text), "background", fallback="")
+    prompt = f"{said}, {SHARP}" if said else f"the same place, {SHARP}"
+    return Edit(
+        target="background",
+        region=graphs.REGIONS["background"],
+        prompt=prompt,
+        denoise=graphs.DENOISE_BACKGROUND_SHARPER,
+    )
+
+
+def validate(
+    spec: Spec,
+    *,
+    user_prompt: str,
+    adult: bool,
+    identity: bool = False,
+    improve_background: bool = False,
+) -> Spec:
     """Prompts checked like every prompt; regions filled in; mouth contradictions removed.
-    `identity` (an edit with a character LoRA): the person and the face are redrawn with it."""
+    `identity` (an edit with a character LoRA): the figure and the face are redrawn with it.
+    `improve_background`: the background is redrawn sharper unless the plan changes it."""
+    text = " ".join(user_prompt.split())
+    if (
+        improve_background
+        and spec.mode == "edit"
+        and not any(e.target == "background" for e in spec.edits)
+    ):
+        first = sum(1 for e in spec.edits if e.target in ("whole", "body"))
+        spec.edits.insert(first, background_edit(text))
     if identity and spec.mode == "edit":
-        _with_identity(spec, " ".join(user_prompt.split()))
+        _with_identity(spec, text)
+    spec.edits = spec.edits[:MAX_EDITS]
     closed = _wants_closed_mouth(user_prompt) or any(
         _wants_closed_mouth(c.question) for c in spec.checks
     )
@@ -401,9 +478,12 @@ def validate(spec: Spec, *, user_prompt: str, adult: bool, identity: bool = Fals
     return spec
 
 
-def by_rules(*, mode: str, prompt: str, targets: list[str], negative: str = "") -> Spec:
+def by_rules(
+    *, mode: str, prompt: str, targets: list[str], negative: str = "", whole: bool = True
+) -> Spec:
     """Without analysis: the user's text as the prompt; for an edit, the regions they chose
-    plus those the text asks to change (body, face, hair), each redrawn with that text. No
+    plus those the text asks to change (body, face, hair, background), each redrawn with that
+    text; none = the whole photo (`whole`; off when only the background is improved). No
     AI checks — only the measured ones."""
     text = " ".join(prompt.split())
     if mode == "text-to-image":
@@ -416,7 +496,7 @@ def by_rules(*, mode: str, prompt: str, targets: list[str], negative: str = "") 
             region=graphs.REGIONS.get(t, ""),
             prompt=_region_text(text, t),
         )
-        for t in chosen or ["whole"]
+        for t in chosen or (["whole"] if whole else [])
     ]
     return Spec(mode="edit", modify=[text], edits=_ordered(edits)[:MAX_EDITS], source="rules")
 

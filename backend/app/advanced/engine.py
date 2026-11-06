@@ -1,5 +1,6 @@
-"""Runs an Advanced job: plan → Krea 2 generation or masked edits → checks → corrections →
-enhance (each only when needed or switched on).
+"""Runs an Advanced job: plan → Krea 2 generation or masked edits → checks → corrections
+(each only when needed or switched on). Krea 2 only: no upscaler (Enhance photo is a
+separate tool since the owner's request, 2026-11-06).
 
 Every GPU stage is an ordinary ComfyUI generation of the engine's own graph, run by the
 existing per-connection queue (services/worker.py + comfy/runner.py) exactly like any Krea 2
@@ -22,10 +23,10 @@ from sqlalchemy import select, update
 from sqlalchemy.orm import selectinload
 
 from app.advanced import crop, graphs, quality
-from app.advanced.compiler import Edit, Spec, by_ai, by_rules, validate
+from app.advanced.compiler import Edit, Spec, by_ai, by_rules, face_edit, validate
 from app.advanced.intelligence import IntelligenceError
 from app.advanced.quality import FACE_MATCH, evaluate, failed, rank
-from app.comfy import enhance, krea2
+from app.comfy import krea2
 from app.db import SessionLocal
 from app.models import (
     AdvancedJob,
@@ -325,18 +326,24 @@ async def _edit(
         source.get("width") or 1024, source.get("height") or 1024, options.get("resolution", "1K")
     )
     region = edit.region if edit.target != "whole" else None
-    exclude = graphs.EXCLUDE.get(edit.target) if region else None
+    exclude = graphs.EXCLUDE.get(edit.target, ()) if region else ()
+    # The LoRA character's face: in an edit with the switch on, and in text to image.
+    identity = bool(options.get("identity")) or (
+        job.mode == "text-to-image" and edit.target == "face" and bool(options.get("lora"))
+    )
     # A colour change starts from the tinted region, so it needs less redrawing.
     colour = edit.color if region and edit.target in graphs.COLOUR_TARGETS else None
     default = graphs.DENOISE[edit.target]
     if colour:
         default = graphs.DENOISE_COLOUR.get(edit.target, default)
-    elif edit.target == "face" and options.get("identity"):
+    elif edit.target == "face" and identity:
         default = graphs.DENOISE_IDENTITY_FACE
+    elif edit.target == "body" and identity:
+        default = graphs.DENOISE_IDENTITY_BODY
     base = edit.denoise or options.get("denoise") or default
     # A correction redraws stronger; the LoRA character's face again as gently (its pose and
     # expression stay; the passes add up).
-    gentle = edit.target == "face" and options.get("identity")
+    gentle = edit.target == "face" and identity
     denoise = float(base) if gentle else min(graphs.DENOISE_MAX, float(base) + 0.1 * attempt)
     # Face regions are redrawn in an enlarged square around the face.
     square = None
@@ -344,8 +351,13 @@ async def _edit(
         box = await crop.face_box(storage.absolute(source["file_path"]))
         square = crop.plan_crop(box, width, height)
     seed = _seed(job, attempt)
-    prompt = _with_trigger(job, edit.prompt)
+    # The background without the LoRA (its studio backdrops turned places grey) and its
+    # trigger, which would draw the character into it.
+    lora = None if edit.target == "background" else options.get("lora")
+    prompt = _with_trigger(job, edit.prompt) if lora else edit.prompt
     args = _krea_args(job)
+    if lora is None:
+        args["loras"] = []
     workflow = graphs.edit(
         **args,
         prompt=prompt,
@@ -356,6 +368,7 @@ async def _edit(
         denoise=denoise,
         region=region,
         exclude=exclude,
+        soften=graphs.SOFTEN.get(edit.target) if region else None,
         grow=graphs.GROW.get(edit.target, graphs.GROW_DEFAULT),
         colour=colour,
         attempt=attempt,
@@ -376,7 +389,7 @@ async def _edit(
             "cfg": args["cfg"],
             "denoise": denoise,
             "region": region or "whole photo",
-            **({"exclude": exclude} if exclude else {}),
+            **({"exclude": list(exclude)} if exclude else {}),
             **({"color": colour, "tint": list(graphs.tint(colour, attempt))} if colour else {}),
             **({"face_crop": list(square)} if square else {}),
             "engine": "advanced",
@@ -384,89 +397,13 @@ async def _edit(
         source=source,
         model_key=krea2.VARIANTS[job.variant].model_key,
         family=krea2.FAMILY,
-        lora=options.get("lora"),
-    )
-
-
-async def _enhance(
-    job: AdvancedJob,
-    source: dict[str, Any],
-    *,
-    key: str = "enhance",
-    strength: float | None = None,
-    upscale: float | None = None,
-) -> Image:
-    options = job.options or {}
-    seed = secrets.randbelow(krea2.SEED_MAX)
-    strength = strength or float(options.get("enhance_strength", enhance.DEFAULT_STRENGTH))
-    upscale = upscale or float(options.get("enhance_upscale", enhance.DEFAULT_UPSCALE))
-    workflow = enhance.build_workflow(
-        image=enhance.INPUT_PLACEHOLDER,
-        strength=strength,
-        face_only=False,
-        upscale=upscale,
-        seed=seed,
-    )
-    return await _gpu(
-        job,
-        key=key,
-        label=enhance.NAME,
-        workflow=workflow,
-        prompt=enhance.SKIN_PROMPT,
-        settings={"strength": strength, "upscale": upscale, "seed": seed, "engine": "advanced"},
-        source=source,
-        model_key=enhance.MODEL_KEY,
-        family=enhance.FAMILY,
-        lora=None,
+        lora=lora,
     )
 
 
 # Face corrections of a person turned into the LoRA's character when the user set fewer (each
 # is one face redraw in its crop, stronger, with a new seed; the most alike face is kept).
 IDENTITY_TRIES = 2
-
-# A photo the edit would enlarge more than this is first enlarged and sharpened with Enhance
-# photo (its gentlest skin fix, then SeedVR2 by the smallest of its factors that reaches the
-# edit's size), so the redraw — and every pixel kept from the photo, the background too —
-# starts sharp instead of stretched. The studio's values.
-PREPARE_GAIN = 1.3
-PREPARE_STRENGTH = enhance.STRENGTHS[0]
-
-
-def _gain(source: dict[str, Any], resolution: str) -> float:
-    sw, sh = int(source.get("width") or 0), int(source.get("height") or 0)
-    if sw <= 0 or sh <= 0:
-        return 1.0
-    width, height = krea2.size_for_source(sw, sh, resolution)
-    return max(width / sw, height / sh)
-
-
-def small_photo(source: dict[str, Any], resolution: str) -> bool:
-    return _gain(source, resolution) > PREPARE_GAIN
-
-
-def prepare_upscale(source: dict[str, Any], resolution: str) -> float:
-    gain = _gain(source, resolution)
-    return next((u for u in enhance.UPSCALES if u >= gain), enhance.UPSCALES[-1])
-
-
-async def _prepare_photo(job: AdvancedJob, source: dict[str, Any]) -> Image | None:
-    """Enlarges a small photo before the edits (options "prepare": "on"); without the
-    Enhance photo models ("missing") the step is shown as skipped and the photo is only
-    resized, as before."""
-    prepare = (job.options or {}).get("prepare")
-    if prepare == "missing":
-        await _stage(
-            job.id,
-            "prepare",
-            "prepare",
-            status="skipped",
-            detail=f"{enhance.NAME} is not installed: the small photo is only resized.",
-        )
-    if prepare != "on":
-        return None
-    upscale = prepare_upscale(source, (job.options or {}).get("resolution", "1K"))
-    return await _enhance(job, source, key="prepare", strength=PREPARE_STRENGTH, upscale=upscale)
 
 
 async def _lora_photos(job: AdvancedJob) -> list[Path]:
@@ -541,12 +478,18 @@ async def _plan(job: AdvancedJob, user: User) -> Spec:
                 identity=bool(options.get("identity")),
             )
     else:
-        spec = by_rules(mode=job.mode, prompt=job.prompt, targets=options.get("targets") or [])
+        spec = by_rules(
+            mode=job.mode,
+            prompt=job.prompt,
+            targets=options.get("targets") or [],
+            whole=not options.get("improve_background"),
+        )
     spec = validate(
         spec,
         user_prompt=job.prompt,
         adult=bool(options.get("adult")),
         identity=bool(options.get("identity")),
+        improve_background=bool(options.get("improve_background")),
     )
     await _update(job.id, spec=spec.model_dump())
     await _stage(job.id, "plan", "plan", status="completed", detail=spec.source)
@@ -571,12 +514,11 @@ async def _run(job_id: uuid.UUID) -> None:
         if job.mode == "text-to-image":
             image = await _generate(job, spec, "generate", 0)
             produced.append(image)
+            if options.get("lora"):
+                image = await _lora_face(job, spec, image, produced)
         else:
             current = job.source or {}
-            image = await _prepare_photo(job, current)
-            if image is not None:
-                produced.append(image)
-                current = _image_input(image)
+            image = None
             for index, edit in enumerate(spec.edits):
                 key = f"edit{index + 1}"
                 if job.mode == "edit" and options.get("identity") and edit.target == "face":
@@ -622,10 +564,6 @@ async def _run(job_id: uuid.UUID) -> None:
                 await _update(job_id, reports=reports)
             best = max(attempts, key=lambda a: rank(a["report"]) if a["report"] else (0, 0, 0.0))
             image = best["image"]
-        # 4. optional skin fix and upscale of the chosen image
-        if options.get("enhance"):
-            image = await _enhance(job, _image_input(image))
-            produced.append(image)
         await _finish(job_id, image, produced)
     except Cancelled:
         await _update(job_id, status="cancelled", finished_at=datetime.now(UTC))
@@ -651,6 +589,29 @@ async def _run(job_id: uuid.UUID) -> None:
         await _fail_open_stage(job_id)
 
 
+def _goal(baseline: float | None) -> float:
+    return max(faces.MATCH_THRESHOLD, quality.IDENTITY_SHARE * (baseline or 0.0))
+
+
+async def _lora_face(job: AdvancedJob, spec: Spec, image: Image, produced: list[Image]) -> Image:
+    """Text to image with a LoRA: a face short of the goal is redrawn like an edit's LoRA
+    face (in its enlarged crop: a face far from the camera is a few latent pixels, too few
+    for the LoRA's features; the owner's hard prompts, 2026-11-06, were 42–53 % alike). The
+    most alike face is kept, the generated one included. No face (seen from behind, too
+    small to measure) = the image as generated."""
+    refs = await _lora_photos(job)
+    try:
+        score, baseline = await quality.identity(storage.absolute(image.file_path), refs)
+    except faces.FaceError:
+        return image
+    if score is None or score >= _goal(baseline):
+        return image
+    edit = face_edit(spec.prompt or job.prompt)
+    return await _identity_face(
+        job, spec, edit, _image_input(image), "edit1", produced, start=(score, image)
+    )
+
+
 async def _identity_face(
     job: AdvancedJob,
     spec: Spec,
@@ -658,12 +619,13 @@ async def _identity_face(
     source: dict[str, Any],
     key: str,
     produced: list[Image],
+    start: tuple[float, Image] | None = None,
 ) -> Image:
     """The LoRA character's face, tried up to 1 + IDENTITY_TRIES times from the same photo
     with a new seed each, until one is as alike to the LoRA's photos as the goal; the most
-    alike try is kept. Measured on this Mac (SFace)."""
+    alike try (or `start`, the image it began from) is kept. Measured on this Mac (SFace)."""
     refs = await _lora_photos(job)
-    best: tuple[float, Image] | None = None
+    best = start
     for attempt in range(IDENTITY_TRIES + 1):
         image = await _edit(
             job, spec, edit, source, key if attempt == 0 else f"{key}-try{attempt + 1}", attempt
@@ -676,8 +638,7 @@ async def _identity_face(
         value = score if score is not None else -1.0
         if best is None or value > best[0]:
             best = (value, image)
-        goal = max(faces.MATCH_THRESHOLD, quality.IDENTITY_SHARE * (baseline or 0.0))
-        if score is None or score >= goal:
+        if score is None or score >= _goal(baseline):
             break
     assert best is not None
     return best[1]
