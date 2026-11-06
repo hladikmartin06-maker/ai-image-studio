@@ -21,7 +21,7 @@ from typing import Any
 from sqlalchemy import select, update
 from sqlalchemy.orm import selectinload
 
-from app.advanced import crop, graphs
+from app.advanced import crop, graphs, quality
 from app.advanced.compiler import Edit, Spec, by_ai, by_rules, validate
 from app.advanced.intelligence import IntelligenceError
 from app.advanced.quality import FACE_MATCH, evaluate, failed, rank
@@ -36,7 +36,7 @@ from app.models import (
     ReferenceImage,
     User,
 )
-from app.services import storage
+from app.services import faces, storage
 from app.services.safety import PromptRefused
 from app.services.worker import worker
 
@@ -579,8 +579,12 @@ async def _run(job_id: uuid.UUID) -> None:
                 produced.append(image)
                 current = _image_input(image)
             for index, edit in enumerate(spec.edits):
-                image = await _edit(job, spec, edit, current, f"edit{index + 1}", 0)
-                produced.append(image)
+                key = f"edit{index + 1}"
+                if job.mode == "edit" and options.get("identity") and edit.target == "face":
+                    image = await _identity_face(job, spec, edit, current, key, produced)
+                else:
+                    image = await _edit(job, spec, edit, current, key, 0)
+                    produced.append(image)
                 current = _image_input(image)
             assert image is not None
         attempts: list[dict[str, Any]] = [{"attempt": 0, "image": image, "report": None}]
@@ -597,7 +601,12 @@ async def _run(job_id: uuid.UUID) -> None:
             await _update(job_id, reports=[report])
             reports = [report]
             for attempt in range(1, corrections + 1):
-                bad = [c for c in failed(report) if c.get("kind") == "modify"]
+                # The LoRA character's face was already tried before the other edits.
+                bad = [
+                    c
+                    for c in failed(report)
+                    if c.get("kind") == "modify" and not (identity and c.get("id") == FACE_MATCH)
+                ]
                 if not bad:
                     break
                 # The LoRA character's face alone: every try starts again from the same image
@@ -641,6 +650,43 @@ async def _run(job_id: uuid.UUID) -> None:
             finished_at=datetime.now(UTC),
         )
         await _fail_open_stage(job_id)
+
+
+async def _identity_face(
+    job: AdvancedJob,
+    spec: Spec,
+    edit: Edit,
+    source: dict[str, Any],
+    key: str,
+    produced: list[Image],
+) -> Image:
+    """The LoRA character's face, tried up to 1 + IDENTITY_TRIES times from the same photo
+    with a new seed each: a try that draws a mouth or tongue the photo does not have is not
+    used (a LoRA whose photos include an open mouth draws one now and then), and of the rest
+    the one most alike to the LoRA's photos is kept. Measured on this Mac (YuNet, SFace)."""
+    refs = await _lora_photos(job)
+    original = storage.absolute(source["file_path"])
+    best: tuple[tuple[bool, float], Image] | None = None
+    for attempt in range(IDENTITY_TRIES + 1):
+        image = await _edit(
+            job, spec, edit, source, key if attempt == 0 else f"{key}-try{attempt + 1}", attempt
+        )
+        produced.append(image)
+        result = storage.absolute(image.file_path)
+        try:
+            mouth = await asyncio.to_thread(quality.new_mouth, original, result)
+            score, baseline = await quality.identity(result, refs)
+        except faces.FaceError:
+            mouth, score, baseline = None, None, None
+        kept = mouth is None or mouth <= quality.NEW_MOUTH
+        goal = max(faces.MATCH_THRESHOLD, quality.IDENTITY_SHARE * (baseline or 0.0))
+        rank_key = (kept, score if score is not None else -1.0)
+        if best is None or rank_key > best[0]:
+            best = (rank_key, image)
+        if kept and (score is None or score >= goal):
+            break
+    assert best is not None
+    return best[1]
 
 
 async def _correct(

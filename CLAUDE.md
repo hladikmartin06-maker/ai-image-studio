@@ -192,10 +192,11 @@ repositories.
   the hair with them ("keep the wavy hairstyle" keeps the waves). The face's mouth is
   redrawn at half the strength (`graphs.MOUTH_KEEP`, a soft mask: SAM 3.1 "mouth and
   lips" × `SolidMask` 0.5 subtracted), so it keeps the photo's shape on every seed.
-  The face is always measured against the LoRA's photos ("face_match", goal 0.85 × their
-  own likeness, `quality.IDENTITY_SHARE`) and redrawn up to twice more as gently, each try
-  from the same image with a new seed, the most alike kept (`engine.IDENTITY_TRIES`), even
-  with the checks off. Tuned on the owner's three photos on his A40 (2026-11-05).
+  The face is tried up to three times before the other edits, each from the same photo with
+  a new seed (`engine._identity_face`, `IDENTITY_TRIES`): a try that draws a mouth or tongue
+  the photo does not have (`quality.new_mouth`: red that appears below the lips) is not
+  used, of the rest the most alike to the LoRA's photos ("face_match", goal 0.85 × their own
+  likeness, `quality.IDENTITY_SHARE`) is kept — even with the checks off. Tuned on the owner's three photos on his A40 (2026-11-05).
   A photo the edit would enlarge more than 1.3× is first enlarged with Enhance photo
   (`options.prepare`, SeedVR2 by the smallest factor that reaches the edit's size;
   skipped and shown when its models are missing). Without analysis, the

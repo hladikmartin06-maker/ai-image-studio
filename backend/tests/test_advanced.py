@@ -619,7 +619,7 @@ async def imported_lora(api: Api, trigger: str = "lmx") -> dict:
     return r.json()
 
 
-async def test_identity_redraws_the_face_and_corrects_it_gently(
+async def test_identity_tries_the_face_before_the_other_edits(
     user: Api, comfy, tmp_path, face_engine, monkeypatch
 ):
     from app.advanced import quality
@@ -628,16 +628,20 @@ async def test_identity_redraws_the_face_and_corrects_it_gently(
         return (28.0, 30.0, 6.0, 8.0, 64, 80)  # a small face in a body shot
 
     monkeypatch.setattr(crop, "face_box", face_box)
-    # The face against the LoRA's photos (alike 60 % among themselves, so the goal is 51 %):
-    # no match, then above SFace's threshold but still short of the goal, then a match.
+    # Three tries of the face (the LoRA's photos are 60 % alike, so the goal is 51 %): the
+    # first draws a tongue the photo does not have (new red below the lips) although it is
+    # the most alike; the second is short of the goal; the third has both. The final check
+    # measures the chosen face once more.
     measured: list[list[Path]] = []
-    scores = [0.21, 0.45, 0.55]
+    scores = [0.58, 0.45, 0.55, 0.55]
+    mouths = [1.6, 0.0, 0.0]
 
     async def identity(result: Path, references: list[Path]):
         measured.append(references)
         return scores.pop(0), 0.6
 
     monkeypatch.setattr(quality, "identity", identity)
+    monkeypatch.setattr(quality, "new_mouth", lambda original, result: mouths.pop(0))
     lora = await imported_lora(user)
     for i, colour in enumerate([(200, 40, 40), (201, 41, 40)]):
         files = {"file": (f"t{i}.png", png_bytes(64, 64, colour), "image/png")}
@@ -665,32 +669,23 @@ async def test_identity_redraws_the_face_and_corrects_it_gently(
     assert job["status"] == "completed", job
     assert job["options"]["identity"] is True and job["options"]["prepare"] == "on"
     keys = [s["key"] for s in job["stages"]]
-    assert keys == [
-        "plan",
-        "prepare",
-        "edit1",
-        "edit2",
-        "check",
-        "fix1-face",
-        "check2",
-        "fix2-face",
-        "check3",
-    ]
-    face, hair, fix, fix2 = sent_graphs(comfy)[-4:]
+    assert keys == ["plan", "prepare", "edit1", "edit1-try2", "edit1-try3", "edit2", "check"]
+    face, try2, try3, hair = sent_graphs(comfy)[-4:]
     # The face first, in its enlarged crop, gently, with the LoRA and its own sentences; the
     # person is not redrawn (no SAM 3.1 "person"); the hair last with its colour.
     assert all(
         g.get("31", {}).get("inputs", {}).get("text") != "person" for g in sent_graphs(comfy)
     )
     assert face["31"]["inputs"]["text"] == "face" and face["50"]["class_type"] == "ImageCrop"
-    assert face["7"]["inputs"]["denoise"] == 0.65
+    assert face["7"]["inputs"]["denoise"] == try3["7"]["inputs"]["denoise"] == 0.65
+    assert len({face["7"]["inputs"]["seed"], try2["7"]["inputs"]["seed"]}) == 2
     lora_node = next(n for n in face.values() if n["class_type"] == "LoraLoaderModelOnly")
     assert lora_node["inputs"]["strength_model"] == 1.0
     assert face["4"]["inputs"]["text"].startswith("lmx, lmxx2 woman, fully transform")
     assert "buttock" not in face["4"]["inputs"]["text"]
     # Its mouth (SAM 3.1 "mouth and lips") is redrawn at half the strength, so the photo's
-    # mouth keeps its shape (closed stays closed, a tongue stays) — also in every try.
-    for graph in (face, fix, fix2):
+    # mouth keeps its shape — also in every try.
+    for graph in (face, try2, try3):
         assert graph["70"]["inputs"]["text"] == "mouth and lips"
         assert graph["73"]["inputs"]["value"] == 0.5
         assert graph["74"]["inputs"]["operation"] == "multiply"
@@ -700,7 +695,8 @@ async def test_identity_redraws_the_face_and_corrects_it_gently(
     assert hair["31"]["inputs"]["text"] == "hair" and hair["41"]["inputs"]["blend_mode"] == (
         "multiply"
     )
-    # Every face try starts from the same image (the one before the checks), not the last try.
+    # Every try starts from the same photo; the hair continues from the third try (the most
+    # alike was the first, but it drew a tongue).
     async with SessionLocal() as db:
         inputs = {
             g.comfy_meta["advanced"]["stage"]: (g.comfy_meta.get("input") or {}).get("id")
@@ -710,26 +706,43 @@ async def test_identity_redraws_the_face_and_corrects_it_gently(
                 )
             )
         }
-        finished = next(s for s in job["stages"] if s["key"] == "edit2")["image_id"]
-    assert inputs["fix1-face"] == inputs["fix2-face"] == finished
-    # The face did not match the LoRA (measured, even with the checks off): only the face
-    # again, as gently, from the last result, until it reaches the goal (at most twice when
-    # the user set fewer).
-    first, second, third = job["reports"]
-    match = next(c for c in first["checks"] if c["id"] == "face_match")
-    assert match["passed"] is False and match["kind"] == "modify"
-    assert match["note"] == "21 % / 51 %" and first["identity_goal"] == 0.51
-    assert next(c for c in second["checks"] if c["id"] == "face_match")["passed"] is False
-    assert first["identity_reference"] == "lora" and first["changed_area"] is not None
+    stage = {s["key"]: s for s in job["stages"]}
+    assert inputs["edit1"] == inputs["edit1-try2"] == inputs["edit1-try3"]
+    assert inputs["edit2"] == stage["edit1-try3"]["image_id"]
     assert all(len(refs) == 2 for refs in measured)  # the LoRA's photos, not the original
-    assert fix["31"]["inputs"]["text"] == fix2["31"]["inputs"]["text"] == "face"
-    assert fix["7"]["inputs"]["denoise"] == fix2["7"]["inputs"]["denoise"] == 0.65
-    assert next(c for c in third["checks"] if c["id"] == "face_match")["passed"] is True
-    assert first["ai"] is None  # no AI checks with the checks off
-    assert job["result"]["image_id"] == third["image_id"]
+    # The final check measures it; nothing is redrawn after it.
+    (report,) = job["reports"]
+    match = next(c for c in report["checks"] if c["id"] == "face_match")
+    assert match["passed"] is True and report["identity_goal"] == 0.51
+    assert report["ai"] is None  # no AI checks with the checks off
+    assert not scores and not mouths
     # Identity off: the LoRA only helps, and a region has to be chosen again.
     r = await user.post("/api/advanced/jobs", json={**body, "identity": False})
     assert r.status_code == 400
+
+
+def test_new_mouth_measures_red_below_the_lips(tmp_path, monkeypatch):
+    from PIL import Image as PILImage
+    from PIL import ImageDraw
+
+    from app.advanced import quality
+
+    # A face 200 px wide whose mouth corners are at y 300; a "tongue" drawn below them.
+    monkeypatch.setattr(
+        quality,
+        "_landmarks",
+        lambda path: ([100.0, 100.0, 200.0, 260.0, 0, 0, 0, 0, 0, 0, 160, 300, 240, 300], 400, 500),
+    )
+    before = PILImage.new("RGB", (400, 500), (200, 170, 150))
+    after = before.copy()
+    ImageDraw.Draw(after).rectangle((180, 310, 220, 380), fill=(230, 90, 110))
+    a, b = tmp_path / "a.png", tmp_path / "b.png"
+    before.save(a)
+    after.save(b)
+    assert quality.new_mouth(a, a) == 0.0
+    assert quality.new_mouth(a, b) > quality.NEW_MOUTH
+    monkeypatch.setattr(quality, "_landmarks", lambda path: None)
+    assert quality.new_mouth(a, b) is None
 
 
 def test_region_prompts_leave_out_what_to_keep():

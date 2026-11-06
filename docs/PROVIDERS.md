@@ -580,7 +580,16 @@ one click), optionally Enhance photo, SFace on this Mac and the user's own AI as
   half the strength: SAM 3.1 "mouth and lips" (grown 8 px) × `SolidMask` 0.5
   (`MaskComposite` "multiply") subtracted from the face's mask, which DifferentialDiffusion
   reads as a per-pixel strength. Three seeds each: the car's mouth stayed closed every time
-  (54–61 % alike), the selfie kept its tongue every time. The hair (redrawn at 0.85) keeps them: without
+  (54–61 % alike), the selfie kept its tongue every time.
+  Next morning (2026-11-06, five photos) one seed still drew a tongue hanging over the chin
+  even with the mouth left out entirely: Taila 2's dataset has one photo with the tongue
+  out, so the LoRA draws it now and then. The face is therefore tried up to three times
+  before the other edits, each from the same photo with a new seed; a try is not used when
+  the area below the original's lips (YuNet's mouth corners, 0.8 face widths wide, down to
+  0.45 face heights) turned clearly redder in more than 0.5 % of its pixels
+  (`quality.new_mouth`: red − mean(green, blue) up by more than 25). Measured on the car:
+  tries with a new tongue 1.1–2.1 %, tries with the closed mouth kept 0.0 % on six seeds.
+  Of the remaining tries the most alike to the LoRA's photos is kept. The hair (redrawn at 0.85) keeps them: without
   "preserve the exact original wavy hairstyle, bangs" the selfie's waves became straight. YuNet misplaces
   the face of an extreme expression (the selfie: the box beside the mouth), so its score is
   low whatever the face looks like; the gentle tries then still keep the expression.
