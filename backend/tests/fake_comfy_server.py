@@ -73,6 +73,10 @@ NODES = [
     "SeedVR2Conditioning",
     "VAEDecodeTiled",
     "SeedVR2PostProcessing",
+    # Advanced: Krea 2 AnyPaint (custom nodes, alexw5702-afk/krea2-anypaint).
+    "Krea2AnyPaintPrepare",
+    "Krea2AnyPaintEncode",
+    "Krea2AnyPaintModelPatch",
 ]
 # The Enhance photo (PGUpscaler) model files, by ComfyUI models folder.
 ENHANCE_FILES = {
@@ -131,6 +135,8 @@ class FakeComfy:
         self.require_token: str | None = None
         # Photos uploaded through POST /upload/image: name -> bytes.
         self.uploads: dict[str, bytes] = {}
+        # The node classes this ComfyUI has (tests take custom ones away).
+        self.nodes = list(NODES)
         self.lock = threading.Lock()
 
     def listed(self, folder: str) -> list[str]:
@@ -156,7 +162,7 @@ class FakeComfy:
         def combo(values):
             return [values]
 
-        info = {name: {"input": {"required": {}}, "python_module": "nodes"} for name in NODES}
+        info = {name: {"input": {"required": {}}, "python_module": "nodes"} for name in self.nodes}
         info["UNETLoader"]["input"]["required"] = {
             "unet_name": combo(self.listed("diffusion_models")),
             "weight_dtype": combo(["default", "fp8_e4m3fn"]),

@@ -24,7 +24,7 @@ from typing import Any
 
 from sqlalchemy import func, select
 
-from app.comfy import enhance, krea2
+from app.comfy import anypaint, custom_nodes, enhance, krea2
 from app.comfy.client import ComfyError
 from app.comfy.service import agent_for, assoc, client_for, inspect
 from app.db import SessionLocal
@@ -160,7 +160,12 @@ def image_plan(
 
 
 def spec_for(
-    conn: ComfyConnection, token: str, hf: str | None, image: str, cuda: list[str]
+    conn: ComfyConnection,
+    token: str,
+    hf: str | None,
+    image: str,
+    cuda: list[str],
+    nodes: str | None = None,
 ) -> WorkloadSpec:
     d = conn.deploy or {}
     provider = d["provider"]
@@ -170,6 +175,9 @@ def spec_for(
     # The agent finds ComfyUI in $STUDIO_WORKSPACE/runpod-slim/ComfyUI (COMFY_SUBDIR).
     env = agent_env(token, port=COMFY_AGENT_PORT)
     env.pop("STUDIO_AGENT_TOKEN")
+    if nodes:
+        # Custom ComfyUI nodes, unpacked before ComfyUI starts (comfy/custom_nodes.py).
+        env["STUDIO_NODES_CODE"] = nodes
     return WorkloadSpec(
         name=f"ais-comfyui-{str(conn.id)[:8]}",
         image=image,
@@ -230,8 +238,9 @@ async def _create(db, conn: ComfyConnection, token: str, hf: str | None):
             f"{cloud.title()} Cloud right now",
         )
     last: GPUError | None = None
+    nodes = await custom_nodes.packed()
     for image, cuda in plan:
-        spec = spec_for(conn, token, hf, image, cuda)
+        spec = spec_for(conn, token, hf, image, cuda, nodes)
         try:
             workload = await gpu_service.launch(db, conn.user_id, provider, spec, "comfyui")
             return workload, image, cuda
@@ -626,8 +635,9 @@ def model_progress(job: dict[str, Any], sizes_gb: list[float | None]) -> int:
 
 
 async def install_model(db, conn: ComfyConnection, variant: str, filename: str | None) -> None:
-    """Starts downloading a Krea 2 model (and its text encoder and VAE), or the Enhance photo
-    models ("pgupscaler"), on the GPU, straight from Hugging Face. Only once ComfyUI answers
+    """Starts downloading a Krea 2 model (and its text encoder and VAE), the Enhance photo
+    models ("pgupscaler") or Advanced's AnyPaint ("anypaint") on the GPU, straight from
+    Hugging Face. Only once ComfyUI answers
     (its first-start copy is done by then)."""
     if conn.auth_type != "agent" or conn.status != "ready":
         raise ComfyError("unsupported", "Connect the GPU first.")
@@ -638,6 +648,10 @@ async def install_model(db, conn: ComfyConnection, variant: str, filename: str |
         # Enhance photo: the six PGUpscaler files from its Hugging Face repository.
         files = enhance.downloads()
         sizes = {f.filename: f.size / 1e9 for f in enhance.FILES}
+    elif variant == anypaint.FAMILY:
+        # Advanced's region redraw: the Krea 2 AnyPaint LoRA (checked by SHA-256 on the GPU).
+        files = anypaint.downloads()
+        sizes = {f.filename: f.size / 1e9 for f in anypaint.FILES}
     else:
         spec = krea2.VARIANTS.get(variant)
         if spec is None or not spec.known_files:

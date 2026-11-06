@@ -854,7 +854,7 @@ export function useComfyPower() {
 }
 
 export function useInstallKrea2Model() {
-  return useComfyMutation(({ id, ...body }: { id: string; variant: "turbo" | "raw" | "pgupscaler"; filename?: string | null }) =>
+  return useComfyMutation(({ id, ...body }: { id: string; variant: "turbo" | "raw" | "pgupscaler" | "anypaint"; filename?: string | null }) =>
     api<ComfyConnection>(`/api/comfy/connections/${id}/models/install`, { body }),
   );
 }

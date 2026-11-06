@@ -16,7 +16,7 @@ from sqlalchemy import select
 from app.advanced import crop, engine
 from app.ai.providers.openai_compat import OpenAICompatibleProvider
 from app.ai.registry import AI_PROVIDERS, set_adapter
-from app.comfy import enhance, krea2
+from app.comfy import anypaint, enhance, krea2
 from app.comfy import runner as comfy_runner
 from app.comfy.client import ComfyClient
 from app.db import SessionLocal
@@ -50,6 +50,7 @@ class PlanningAI(FakeAI):
 def comfy(tmp_path: Path):
     (tmp_path / "ComfyUI" / "models" / "loras").mkdir(parents=True)
     files = {k: list(KREA_FILES.get(k, [])) + ENHANCE_FILES.get(k, []) for k in KREA_FILES}
+    files["loras"].append(anypaint.LORA.filename)  # installed with one click
     fake = FakeComfy(files=files, models_dir=str(tmp_path / "ComfyUI"))
     ComfyClient.transport = fake.transport()
     comfy_runner.POLL_INITIAL = 0.01
@@ -461,16 +462,43 @@ async def test_edit_hair_and_mouth_corrects_only_what_failed(
     graphs_sent = sent_graphs(comfy)
     hair, mouth, fix = graphs_sent[-3:]
     assert len(graphs_sent) == 3
-    # Only the region is redrawn and pasted back into the photo.
+    # Only the region is redrawn, with Krea 2 AnyPaint, and pasted back into the photo.
     for graph, region in ((hair, "hair:2"), (mouth, "mouth and lips"), (fix, "mouth and lips")):
         kinds = {n["class_type"] for n in graph.values()}
-        assert {"SAM3_Detect", "SetLatentNoiseMask", "ImageCompositeMasked", "LoadImage"} <= kinds
+        assert {
+            "SAM3_Detect",
+            "Krea2AnyPaintPrepare",
+            "Krea2AnyPaintEncode",
+            "Krea2AnyPaintModelPatch",
+            "ImageCompositeMasked",
+            "LoadImage",
+        } <= kinds
+        assert "DifferentialDiffusion" not in kinds and "SetLatentNoiseMask" not in kinds
         assert graph["31"]["inputs"]["text"] == region
+        # AnyPaint's LoRA first at its authors' 1.0, then the model patch (K/V cache on).
+        assert graph["20"]["inputs"]["lora_name"] == anypaint.LORA.filename
+        assert graph["20"]["inputs"]["strength_model"] == 1.0
+        assert graph["97"]["class_type"] == "Krea2AnyPaintModelPatch"
+        assert graph["97"]["inputs"]["kv_cache"] is True
+        assert graph["95"]["inputs"]["reference_max_edge"] == 384
+        assert graph["95"]["inputs"]["boundary_redraw_px"] == 32
+        assert graph["96"]["inputs"]["vlm_reference"] is True
+        assert graph["96"]["inputs"]["semantic_reference"] == ["95", 0]
+        assert graph["96"]["inputs"]["known_image"] == ["95", 1]
+        assert graph["96"]["inputs"]["keep_mask"] == ["95", 3]
+        sampler = graph["7"]["inputs"]
+        assert sampler["model"] == ["97", 0] and sampler["positive"] == ["96", 0]
+        assert sampler["latent_image"] == ["96", 1] and sampler["steps"] == 8
+        # Pasted back 40 px past the mask (AnyPaint's 32 px blend band and 8 more).
+        paste = graph[graph["38"]["inputs"]["mask"][0]]
+        image = graph[paste["inputs"]["image"][0]]
+        grown = graph[graph[image["inputs"]["image"][0]]["inputs"]["mask"][0]]
+        assert grown["class_type"] == "GrowMask" and grown["inputs"]["expand"] == 40
+        assert grown["inputs"]["mask"] == graph["95"]["inputs"]["generated_mask"]
     # Hair colour: the plan named "dark brown", so the hair is tinted with it first (only
-    # what SAM 3.1 found, multiplied so the strands keep their light) and redrawn less; the
-    # colour leads the prompt; a wider mask with a soft edge redrawn gradually. No extra
-    # blend towards the flat colour: on platinum hair it left a flat patch without strands
-    # (owner's test, 2026-11-05).
+    # what SAM 3.1 found, multiplied so the strands keep their light); the colour leads the
+    # prompt. No extra blend towards the flat colour: on platinum hair it left a flat patch
+    # without strands (owner's test, 2026-11-05).
     assert hair["40"]["class_type"] == "EmptyImage"
     assert hair["40"]["inputs"]["color"] == 0x281B14
     assert hair["41"]["inputs"] == {
@@ -481,7 +509,7 @@ async def test_edit_hair_and_mouth_corrects_only_what_failed(
     }
     assert "43" not in hair
     assert hair["42"]["inputs"]["source"] == ["41", 0]
-    assert hair["12"]["inputs"]["pixels"] == ["42", 0]
+    assert hair["95"]["inputs"]["source"] == ["42", 0]
     # The eyes and brows (SAM 3.1, grown 8 px) are taken out of the hair: out of the grown
     # mask that is redrawn and out of what is tinted, so the hair redraw leaves them alone.
     assert hair["70"]["inputs"]["text"] == "eyes and eyebrows:2"
@@ -495,10 +523,9 @@ async def test_edit_hair_and_mouth_corrects_only_what_failed(
     assert hair["64"]["inputs"]["source"] == ["56", 0]
     assert hair["65"]["inputs"]["destination"] == ["72", 0]
     assert hair["65"]["inputs"]["source"] == ["64", 0]
-    assert hair["35"]["inputs"]["mask"] == ["47", 0]
+    assert hair["95"]["inputs"]["generated_mask"] == ["47", 0]
     # Every head of hair of the photo's people (a woman and her reflection: two), only on
     # what "person" and "reflection of a person" found, grown 8 px.
-    assert hair["31"]["inputs"]["text"] == "hair:2"
     assert hair["53"]["inputs"]["text"] == "person"
     assert hair["45"]["inputs"]["text"] == "reflection of a person"
     assert hair["48"]["inputs"]["destination"] == ["54", 0]
@@ -520,21 +547,9 @@ async def test_edit_hair_and_mouth_corrects_only_what_failed(
         if n["class_type"] == "GrowMask" and n["inputs"]["mask"] == ["49", 0]
     )
     assert grown["inputs"]["expand"] == 8
-    assert "71" not in mouth and mouth["35"]["inputs"]["mask"] == ["33", 0]
+    assert "71" not in mouth and mouth["95"]["inputs"]["generated_mask"] == ["33", 0]
     assert hair["33"]["inputs"]["expand"] == 32 and mouth["33"]["inputs"]["expand"] == 16
-    for graph in (hair, mouth, fix):
-        assert graph["60"]["class_type"] == "DifferentialDiffusion"
-        assert graph["7"]["inputs"]["model"] == ["60", 0]
-    for graph in (mouth, fix):
-        assert graph["34"]["inputs"]["mask"] == ["37", 0] == graph["38"]["inputs"]["mask"]
-    # The hair with a ring around it (grown 72 px, at 0.45 of the strength), pasted back with
-    # it, so what lay under the old strands is drawn to match the new hair.
-    rings = [n for n in hair.values() if n["class_type"] == "GrowMask"]
-    assert any(n["inputs"]["expand"] == 72 for n in rings)
-    solids = sorted(n["inputs"]["value"] for n in hair.values() if n["class_type"] == "SolidMask")
-    assert solids == [0.45, 0.55]
-    assert hair["34"]["inputs"]["mask"] != hair["38"]["inputs"]["mask"]
-    assert hair["4"]["inputs"]["text"].startswith(
+    assert hair["96"]["inputs"]["prompt"].startswith(
         "very dark brown, almost black hair, one even natural colour from roots to ends"
     )
     assert hair["7"]["inputs"]["denoise"] == 0.85 and mouth["7"]["inputs"]["denoise"] == 0.7
@@ -548,10 +563,8 @@ async def test_edit_hair_and_mouth_corrects_only_what_failed(
     )
     assert mouth["50"]["class_type"] == "ImageCrop" and mouth["50"]["inputs"]["height"] == side
     assert mouth["51"]["inputs"]["width"] == 1024 and mouth["51"]["inputs"]["height"] == 1024
-    assert mouth["32"]["inputs"]["image"] == ["51", 0] and mouth["12"]["inputs"]["pixels"] == [
-        "51",
-        0,
-    ]
+    assert mouth["32"]["inputs"]["image"] == ["51", 0]
+    assert mouth["95"]["inputs"]["source"] == ["51", 0]
     assert mouth["52"]["inputs"]["width"] == side
     assert mouth["38"]["inputs"]["source"] == ["52", 0]
     assert (mouth["38"]["inputs"]["x"], mouth["38"]["inputs"]["y"]) == (left, top)
@@ -569,8 +582,8 @@ async def test_edit_hair_and_mouth_corrects_only_what_failed(
     assert fix["50"]["class_type"] == "ImageCrop"
     # Closed mouth: "tongue out" was removed from the plan before Krea 2 saw it, and the
     # closed mouth comes first (Turbo has no negative prompt).
-    assert "tongue" not in mouth["4"]["inputs"]["text"]
-    assert mouth["4"]["inputs"]["text"].startswith("closed mouth, lips gently together, ")
+    assert "tongue" not in mouth["96"]["inputs"]["prompt"]
+    assert mouth["96"]["inputs"]["prompt"].startswith("closed mouth, lips gently together, ")
     assert len(job["reports"]) == 2 and job["reports"][0]["checks"][1]["passed"] is False
     first = job["reports"][0]
     assert first["identity_reference"] == "original" and first["changed_area"] is not None
@@ -710,97 +723,62 @@ async def test_identity_redraws_the_figure_then_tries_the_face_last(
         "corrections": 0,
         "resolution": "2K",
     }
-    # The plan before anything runs shows the same steps.
+    # The plan before anything runs shows the same steps: the figure, the buttocks the text
+    # names, the hair, the face last.
     shown = (await user.post("/api/advanced/plan", json={**body, "targets": []})).json()
-    assert [e["target"] for e in shown["edits"]] == ["body", "hair", "face"]
+    assert [e["target"] for e in shown["edits"]] == ["body", "hips", "hair", "face"]
     # No region chosen: with a LoRA the person becomes its character anyway.
     job = await run(user, body)
     assert job["status"] == "completed", job
     assert job["options"]["identity"] is True and "prepare" not in job["options"]
     keys = [s["key"] for s in job["stages"]]
-    # The person (figure, skin, hair, clothing) in one redraw, then the face three times.
-    assert keys == ["plan", "edit1", "edit2", "edit2-try2", "edit2-try3", "check"]
-    person, face, try2, try3 = sent_graphs(comfy)[-4:]
-
-    def sam(graph: dict, text: str) -> str:
-        """The SAM3_Detect node that finds `text`."""
-        return next(
-            k
-            for k, n in graph.items()
-            if n["class_type"] == "SAM3_Detect"
-            and graph[n["inputs"]["conditioning"][0]]["inputs"]["text"] == text
-        )
-
-    def op(graph: dict, operation: str, *sources: str) -> dict:
-        return next(
-            n["inputs"]
-            for n in graph.values()
-            if n["class_type"] == "MaskComposite"
-            and n["inputs"]["operation"] == operation
-            and all(s in (n["inputs"]["destination"][0], n["inputs"]["source"][0]) for s in sources)
-        )
-
-    # The people: "person" and a person in a mirror (SAM 3.1's "person" leaves reflections
-    # out); the hair on them (every head of hair: "hair:2"); the face left for its own step
-    # except hair over it; every hand and foot ("hands:4" — one match unless told how many).
-    people = op(person, "add", sam(person, "person"), sam(person, "reflection of a person"))
-    assert people
-    hair_on_people = op(person, "and", sam(person, "hair:2"))
-    assert person[hair_on_people["source"][0]]["inputs"]["expand"] == 8
-    for text in ("clothing:4", "hands:4", "feet:4", "face:2"):
-        assert op(person, "multiply", sam(person, text))
-    # Strengths: the figure 0.82, the clothing, hands and feet 0.5 (0.32 taken off), the face
-    # 0.4 (0.42 off; its own step follows), the hair the request restyles fully (added,
-    # clamped at 1) — of 0.85.
-    solids = sorted(n["inputs"]["value"] for n in person.values() if n["class_type"] == "SolidMask")
-    # The request restyles the hair (a high ponytail): no ring around the face (it kept a
-    # bob from becoming a ponytail).
-    assert solids == [0.32, 0.32, 0.32, 0.42, 0.82]
-    assert not any(n["class_type"] == "InvertMask" for n in person.values())
-    hair_node = next(k for k, n in person.items() if n["inputs"] == hair_on_people)
-    reach = next(
-        k
-        for k, n in person.items()
-        if n["class_type"] == "GrowMask"
-        and n["inputs"]["mask"] == [hair_node, 0]
-        and n["inputs"]["expand"] == 24
-    )
-    assert any(
-        n["class_type"] == "MaskComposite"
-        and n["inputs"]["operation"] == "add"
-        and n["inputs"]["source"] == [reach, 0]
-        for n in person.values()
-    )
-    # The strengths blurred widely (a jump is a hard line), the paste-back's edge less.
-    blurs = sorted(
-        (n["inputs"]["blur_radius"], n["inputs"]["sigma"])
-        for n in person.values()
-        if n["class_type"] == "ImageBlur"
-    )
-    # ImageBlur takes a sigma of 0.1–10; the tint fades out over 12 px.
-    assert blurs == [(12, 6.0), (16, 8.0), (31, 10.0)]
-    assert person["7"]["inputs"]["denoise"] == 0.85
-    assert person["60"]["class_type"] == "DifferentialDiffusion"
-    assert person["7"]["inputs"]["model"] == ["60", 0]
-    # The hair is tinted with its colour first (multiply), only where SAM 3.1 found it.
-    blend = next(n for n in person.values() if n["class_type"] == "ImageBlend")
-    assert blend["inputs"]["blend_mode"] == "multiply"
-    assert any(n["class_type"] == "LoraLoaderModelOnly" for n in person.values())
-    text = person["4"]["inputs"]["text"]
-    assert text.startswith("lmx, very dark brown, almost black hair, one even natural colour")
+    assert keys == ["plan", "edit1", "edit2", "edit3", "edit4", "edit4-try2", "edit4-try3", "check"]
+    labels = [s["label"] for s in job["stages"] if s["key"].startswith("edit")]
+    # Every step says it ran on AnyPaint (never another method in its place).
+    assert labels[:3] == ["body · AnyPaint", "hips · AnyPaint", "hair · AnyPaint"]
+    figure, hips, hair, face, try2, try3 = sent_graphs(comfy)[-6:]
+    # The figure: SAM 3.1 "body", grown 48 px so a new shape can pass the old outline, the
+    # face, head, hair, hands and feet left alone (they pin the pose), redrawn by AnyPaint at
+    # 0.85 with the LoRA at 0.65 of its strength.
+    assert figure["31"]["inputs"]["text"] == "body"
+    assert figure["33"]["inputs"]["expand"] == 48
+    assert [figure[str(70 + 4 * i)]["inputs"]["text"] for i in range(5)] == [
+        "face:2",
+        "head:2",
+        "hair:2",
+        "hands:4",
+        "feet:4",
+    ]
+    assert figure["95"]["inputs"]["generated_mask"] == ["47", 0]
+    assert figure["7"]["inputs"]["denoise"] == 0.85
+    loras = [
+        (n["inputs"]["lora_name"], n["inputs"]["strength_model"])
+        for k, n in sorted(figure.items(), key=lambda kv: int(kv[0]))
+        if n["class_type"] == "LoraLoaderModelOnly"
+    ]
+    assert loras[0] == (anypaint.LORA.filename, 1.0) and loras[1][1] == 0.65
+    text = figure["96"]["inputs"]["prompt"]
+    assert text.startswith("lmx, lmxx2 woman, Preserve the exact original body position")
     assert "buttock size" in text and "facial" not in text
-    # The paste-back is the whole person area (not the strengths), so nothing ghosts.
-    paste = person["38"]["inputs"]["mask"][0]
-    noise = person["34"]["inputs"]["mask"][0]
-    assert paste != noise
+    # The buttocks: their own region and sentence, the hands left alone.
+    assert hips["31"]["inputs"]["text"] == "hips and buttocks"
+    assert hips["70"]["inputs"]["text"] == "hands:4" and hips["33"]["inputs"]["expand"] == 48
+    assert "buttock size" in hips["96"]["inputs"]["prompt"]
+    # The hair with its colour.
+    assert hair["31"]["inputs"]["text"] == "hair:2"
+    assert hair["41"]["inputs"]["blend_mode"] == "multiply"
     # Then the face last, in its enlarged crop, gently, with the LoRA and its own sentences.
     assert face["31"]["inputs"]["text"] == "face" and face["50"]["class_type"] == "ImageCrop"
     assert face["7"]["inputs"]["denoise"] == try3["7"]["inputs"]["denoise"] == 0.65
     assert len({face["7"]["inputs"]["seed"], try2["7"]["inputs"]["seed"]}) == 2
-    lora_node = next(n for n in face.values() if n["class_type"] == "LoraLoaderModelOnly")
-    assert lora_node["inputs"]["strength_model"] == 1.0
-    assert face["4"]["inputs"]["text"].startswith("lmx, lmxx2 woman, fully transform")
-    assert "buttock" not in face["4"]["inputs"]["text"]
+    face_loras = [
+        n["inputs"]["strength_model"]
+        for k, n in sorted(face.items(), key=lambda kv: int(kv[0]))
+        if n["class_type"] == "LoraLoaderModelOnly"
+    ]
+    assert face_loras == [1.0, 1.0]  # AnyPaint, then the character at its full strength
+    assert face["96"]["inputs"]["prompt"].startswith("lmx, lmxx2 woman, fully transform")
+    assert "buttock" not in face["96"]["inputs"]["prompt"]
     # The mouth is redrawn with the face (kept at half strength it left the photo's lips on
     # the new face, 2026-11-06).
     assert all("70" not in g for g in (face, try2, try3))
@@ -816,9 +794,9 @@ async def test_identity_redraws_the_figure_then_tries_the_face_last(
             )
         }
     stage = {s["key"]: s for s in job["stages"]}
-    assert inputs["edit2"] == inputs["edit2-try2"] == inputs["edit2-try3"]
-    assert inputs["edit2"] == stage["edit1"]["image_id"]
-    assert job["result"]["image_id"] == stage["edit2-try3"]["image_id"]
+    assert inputs["edit4"] == inputs["edit4-try2"] == inputs["edit4-try3"]
+    assert inputs["edit4"] == stage["edit3"]["image_id"]
+    assert job["result"]["image_id"] == stage["edit4-try3"]["image_id"]
     assert all(len(refs) == 2 for refs in measured)  # the LoRA's photos, not the original
     # The final check measures it; nothing is redrawn after it.
     (report,) = job["reports"]
@@ -1111,7 +1089,8 @@ def test_hair_tint_keeps_the_strands_and_grows_with_each_correction():
     whole = graphs.edit(**{**args, "region": None})
     assert "40" not in whole and whole["12"]["inputs"]["pixels"] == ["11", 0]
     assert "60" not in whole and whole["7"]["inputs"]["model"] == ["1", 0]
-    assert all(n["class_type"] in graphs.NODES_EDIT for n in first.values())
+    known = (*graphs.NODES_EDIT, *graphs.NODES_ANYPAINT)
+    assert all(n["class_type"] in known for n in first.values())
 
 
 # --- regions from the text and the LoRA identity (pure functions) --------------------------
@@ -1131,7 +1110,7 @@ OWNER_PROMPT = (
 def test_regions_from_the_text():
     from app.advanced.compiler import by_rules, detected_targets, validate
 
-    assert set(detected_targets(OWNER_PROMPT)) == {"face", "hair", "body"}
+    assert set(detected_targets(OWNER_PROMPT)) == {"face", "hair", "body", "hips"}
     # A sentence that keeps something changes nothing; a named hair colour is a change.
     assert detected_targets("Keep her hair and face exactly as they are.") == []
     assert detected_targets("Preserve the body position and the hair.") == []
@@ -1173,10 +1152,15 @@ def test_regions_from_the_text():
     ]
     assert detected_targets("Zmeň pozadie na pláž.") == ["background"]
     assert detected_targets("Keep the room and the background.") == []
-    # Without analysis the chosen "whole" stays first and the text's regions follow.
+    # Without analysis the chosen "whole" stays first and the text's regions follow, in the
+    # owner's order: the figure and its parts, the hair, the face last.
     spec = by_rules(mode="edit", prompt=OWNER_PROMPT, targets=["whole"])
-    assert [e.target for e in spec.edits] == ["whole", "body", "face", "hair"]
-    assert spec.edits[1].region == "person"
+    assert [e.target for e in spec.edits] == ["whole", "body", "hips", "hair", "face"]
+    # The figure's parts, in English and Slovak.
+    assert detected_targets("Make her breasts bigger and her hips wider.") == ["breasts", "hips"]
+    assert detected_targets("Zväčši jej zadok a prsia.") == ["breasts", "hips"]
+    assert detected_targets("Make her waist slimmer.") == ["body"]
+    assert spec.edits[1].region == "body"
     # Nothing chosen and nothing found: the whole photo, as before.
     assert [e.target for e in by_rules(mode="edit", prompt="a woman", targets=[]).edits] == [
         "whole"
@@ -1192,12 +1176,14 @@ def test_identity_plan_redraws_the_figure_first_and_the_face_last():
         adult=False,
         identity=True,
     )
-    # "whole" is not redrawn: the figure with the LoRA, the hair with its colour, the face last.
-    assert [e.target for e in spec.edits] == ["body", "hair", "face"]
-    assert [e.region for e in spec.edits] == ["person", "hair", "face"]
-    assert spec.edits[1].color == "#281B14"
+    # "whole" is not redrawn: the figure with the LoRA, the buttocks the text names, the hair
+    # with its colour, the face last.
+    assert [e.target for e in spec.edits] == ["body", "hips", "hair", "face"]
+    assert [e.region for e in spec.edits] == ["body", "hips and buttocks", "hair", "face"]
+    assert spec.edits[2].color == "#281B14"
     # Each region with the request's own sentences about it (not the hair over the face).
-    body, hair, face = spec.edits
+    body, hips, hair, face = spec.edits
+    assert hips.prompt.startswith("lmxx2 woman, Match the body proportions and buttock size")
     assert face.prompt.startswith("lmxx2 woman, fully transform the woman's facial identity")
     assert "hair" not in face.prompt and "buttock" not in face.prompt
     assert hair.prompt.startswith("very dark brown, almost black hair, one even natural colour")
@@ -1283,11 +1269,18 @@ async def test_improve_background_redraws_all_but_the_person(user: Api, comfy, t
     graph = sent_graphs(comfy)[-1]
     assert graph["31"]["inputs"]["text"] == "person"
     assert graph["45"]["inputs"]["text"] == "reflection of a person"  # people in a mirror too
-    assert graph["43"]["inputs"] == {"mask": ["48", 0], "expand": 8, "tapered_corners": True}
-    assert graph["44"] == {"class_type": "InvertMask", "inputs": {"mask": ["43", 0]}}
+    # Everything but the people (their exact outline), redrawn by AnyPaint without the
+    # character LoRA; the people pasted back as they were, pixel by pixel.
+    assert "43" not in graph
+    assert graph["44"] == {"class_type": "InvertMask", "inputs": {"mask": ["48", 0]}}
     assert graph["33"]["inputs"]["mask"] == ["44", 0] and graph["33"]["inputs"]["expand"] == 0
     assert graph["7"]["inputs"]["denoise"] == 0.5
-    assert not any(n["class_type"] == "LoraLoaderModelOnly" for n in graph.values())
+    loras = [n for n in graph.values() if n["class_type"] == "LoraLoaderModelOnly"]
+    assert [n["inputs"]["lora_name"] for n in loras] == [anypaint.LORA.filename]
+    paste = graph[graph["38"]["inputs"]["mask"][0]]
+    blur = graph[paste["inputs"]["image"][0]]
+    assert blur["inputs"]["blur_radius"] == 4
+    assert graph[blur["inputs"]["image"][0]]["inputs"]["mask"] == ["33", 0]
 
 
 async def test_text_to_image_with_a_lora_redraws_a_face_short_of_the_goal(
@@ -1376,40 +1369,117 @@ def test_the_main_face_is_the_largest_sure_one():
     assert faces.main_face([small, big]) is big
 
 
-def test_a_new_hair_colour_keeps_a_ring_around_the_face():
-    """Only a new colour: a ring 64 px around the face is set to 0.55 at most (strength ×
-    (1 − ring) + ring × 0.55; full strength there drew a second face into the hair beside a
-    turned face). A new style: no ring."""
-    from app.advanced import graphs
-    from app.advanced.compiler import restyles
+async def test_without_anypaint_nothing_runs_another_way(user: Api, comfy, tmp_path):
+    """Region redraws need Krea 2 AnyPaint: without its nodes or its LoRA the job is refused
+    with what is missing — never run with another method instead."""
+    conn = await connect(user, tmp_path)
+    ref = await photo(user)
+    body = {
+        "connection_id": conn["id"],
+        "mode": "edit",
+        "variant": "turbo",
+        "prompt": "Change her hair color to red.",
+        "image": {"kind": "reference", "id": ref["id"]},
+        "analysis": False,
+        "quality": False,
+        "corrections": 0,
+    }
+    comfy.files["loras"].remove(anypaint.LORA.filename)
+    await user.post(f"/api/comfy/connections/{conn['id']}/test")
+    caps = (await user.get(f"/api/advanced/capabilities?connection_id={conn['id']}")).json()
+    assert caps["anypaint"]["missing_files"] == [anypaint.LORA.filename]
+    assert caps["anypaint_file"]["size"] == 228_587_752
+    r = await user.post("/api/advanced/jobs", json=body)
+    assert r.status_code == 409 and r.json()["error"]["code"] == "missing_models"
+    assert "AnyPaint" in r.json()["error"]["message"]
+    comfy.files["loras"].append(anypaint.LORA.filename)
+    removed = [n for n in comfy.nodes if n.startswith("Krea2AnyPaint")]
+    for name in removed:
+        comfy.nodes.remove(name)
+    await user.post(f"/api/comfy/connections/{conn['id']}/test")
+    r = await user.post("/api/advanced/jobs", json=body)
+    assert r.status_code == 409 and r.json()["error"]["code"] == "missing_nodes"
+    assert "rent it again" in r.json()["error"]["message"]
+    comfy.nodes.extend(removed)
 
-    assert not restyles("Change her hair color to deep dark brown. Keep the long wavy hairstyle.")
-    assert restyles("Give her long dark brown hair in a high ponytail.")
-    assert restyles("Zmeň jej účes na krátke mikádo.")
 
-    def person(restyle: bool) -> dict:
-        return graphs.person(
-            variant="turbo",
-            unet="u",
-            text_encoder="t",
-            vae="v",
-            prompt="p",
-            negative="",
-            width=1024,
-            height=1024,
-            seed=1,
-            steps=8,
-            cfg=1.0,
-            loras=[],
-            hair=True,
-            restyle=restyle,
-            colour="#281B14",
-        )
-
-    ring = person(False)
-    assert any(n["class_type"] == "InvertMask" for n in ring.values())
-    assert any(
-        n["class_type"] == "SolidMask" and n["inputs"]["value"] == 0.55 for n in ring.values()
+async def test_breasts_bigger_and_light_unified_after_a_new_background(
+    user: Api, comfy, tmp_path, face_engine
+):
+    """The figure's parts: their own SAM 3.1 region, grown 48 px past the outline, the hands
+    left alone, the LoRA at 0.65 of its strength. "Unify the light" (off by default): after a
+    new background the whole photo once more at 0.2 (plain image to image, no AnyPaint)."""
+    lora = await imported_lora(user)
+    conn = await connect(user, tmp_path)
+    ref = await photo(user)
+    job = await run(
+        user,
+        {
+            "connection_id": conn["id"],
+            "mode": "edit",
+            "variant": "turbo",
+            "prompt": "Make her breasts bigger. Change the background to a sunny beach.",
+            "image": {"kind": "reference", "id": ref["id"]},
+            "lora": {"version_id": lora["preferred_version_id"], "strength": 1.0},
+            "identity": False,
+            "adult": True,
+            "analysis": False,
+            "quality": False,
+            "corrections": 0,
+            "unify_light": True,
+        },
     )
-    assert any(n["class_type"] == "GrowMask" and n["inputs"]["expand"] == 64 for n in ring.values())
-    assert not any(n["class_type"] == "InvertMask" for n in person(True).values())
+    assert job["status"] == "completed", job
+    assert [s["key"] for s in job["stages"]] == ["plan", "edit1", "edit2", "edit2-light"]
+    breasts, background, light = sent_graphs(comfy)[-3:]
+    assert breasts["31"]["inputs"]["text"] == "breasts"
+    assert breasts["33"]["inputs"]["expand"] == 48 and breasts["70"]["inputs"]["text"] == "hands:4"
+    strengths = [
+        n["inputs"]["strength_model"]
+        for k, n in sorted(breasts.items(), key=lambda kv: int(kv[0]))
+        if n["class_type"] == "LoraLoaderModelOnly"
+    ]
+    assert strengths == [1.0, 0.65]
+    assert breasts["7"]["inputs"]["denoise"] == 0.85
+    assert background["7"]["inputs"]["denoise"] == 1.0
+    # The light: the whole photo at 0.2, the character LoRA, no mask and no AnyPaint.
+    kinds = {n["class_type"] for n in light.values()}
+    assert "Krea2AnyPaintPrepare" not in kinds and "SAM3_Detect" not in kinds
+    assert light["7"]["inputs"]["denoise"] == 0.2
+    assert light["12"]["inputs"]["pixels"] == ["11", 0]
+    # Off by default: no light step.
+    job = await run(
+        user,
+        {
+            "connection_id": conn["id"],
+            "mode": "edit",
+            "variant": "turbo",
+            "prompt": "Change the background to a sunny beach.",
+            "image": {"kind": "reference", "id": ref["id"]},
+            "analysis": False,
+            "quality": False,
+            "corrections": 0,
+        },
+    )
+    assert [s["key"] for s in job["stages"]] == ["plan", "edit1"]
+
+
+def test_anypaint_download_is_pinned_and_detected():
+    """One click downloads AnyPaint's LoRA from its pinned Hugging Face revision; the GPU
+    agent renames it into place only when its SHA-256 matches."""
+    (item,) = anypaint.downloads()
+    assert item == {
+        "url": "https://huggingface.co/yijunwang2/krea2-anypaint/resolve/"
+        "1a9fb37a304c27523939c44fc2b770c11472451b/krea2_anypaint_rank32.safetensors",
+        "folder": "loras",
+        "filename": "krea2_anypaint_rank32.safetensors",
+        "sha256": "3a7d09f6b27f8ead160d340f2f59c11f4ee635c4a1ee87ffd8b1b9f9ba412f7a",
+    }
+    info = {
+        "LoraLoaderModelOnly": {"input": {"required": {"lora_name": [[item["filename"]]]}}},
+        **{n: {} for n in anypaint.NODES},
+    }
+    assert anypaint.detect(info)["ready"] is True
+    del info["Krea2AnyPaintEncode"]
+    state = anypaint.detect(info)
+    assert state["ready"] is False and state["missing_nodes"] == ["Krea2AnyPaintEncode"]

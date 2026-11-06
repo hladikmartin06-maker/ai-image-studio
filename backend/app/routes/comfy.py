@@ -455,8 +455,8 @@ async def download_model(
 
 
 class InstallBody(BaseModel):
-    # A Krea 2 variant, or "pgupscaler" for Enhance photo.
-    variant: Literal["turbo", "raw", "pgupscaler"]
+    # A Krea 2 variant, "pgupscaler" for Enhance photo or "anypaint" for Advanced.
+    variant: Literal["turbo", "raw", "pgupscaler", "anypaint"]
     # One of the variant's verified files (e.g. fp8 or int8); default the first.
     filename: str | None = Field(default=None, max_length=200)
 

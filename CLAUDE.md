@@ -164,11 +164,18 @@ repositories.
   optionally a photo and a LoRA) runs everything together — plan (the user's AI assistant
   writes a preserve/modify spec, shown and editable before the run; with analysis off, rules
   and the regions the user picks), Krea 2 RAW/Turbo text to image or masked edits (SAM 3.1
-  finds the region, only it is redrawn and composited back; every other pixel stays the
-  photo's), checks per requirement (AI vision, SFace identity against the original or the
+  finds the region, Krea 2 AnyPaint redraws only it, pasted back 40 px past it; every other
+  pixel stays the photo's), checks per requirement (AI vision, SFace identity against the original or the
   LoRA's photos, changed area — estimates, never guarantees), at most 3 corrections of only
   what failed, the best attempt by those checks. Krea 2 only: no upscaler in Advanced (Enhance
-  photo is a separate tool, the owner's request 2026-11-06). Only models already in the studio; every GPU step is an ordinary ComfyUI generation of the engine's own graph
+  photo is a separate tool, the owner's request 2026-11-06). Only models already in the studio,
+  plus Krea 2 AnyPaint (the owner's plan, approved 2026-11-06, phase 1: `comfy/anypaint.py`;
+  its LoRA installed with one click, checked by SHA-256 on the GPU; its custom nodes
+  alexw5702-afk/krea2-anypaint, an approved exception to "built-in nodes only", pinned to a
+  commit and checked file by file by SHA-256 on the Mac, unpacked into custom_nodes when a
+  rented GPU starts, `comfy/custom_nodes.py`). Without AnyPaint a region edit is refused
+  with what is missing — never run another way; every step's label names its method. No
+  Flux, no Qwen-Image / Qwen-Image-Edit. Every GPU step is an ordinary ComfyUI generation of the engine's own graph
   through the existing queue. It reads and never changes the Krea 2 workflow, Enhance photo,
   LoRA training, the worker/runner or existing tables (`test_advanced` pins the built-in
   graphs by hash); its data only in the additive migration 0007. A failed step fails the job
@@ -181,33 +188,29 @@ repositories.
   inside SAM's own mask, without the eyes and brows (`graphs.EXCLUDE`);
   palette `compiler.HAIR_COLOURS`, the colour after "to"/"na" wins); face regions (mouth, eyes, face,
   expression) are redrawn in an enlarged crop around the face found on the Mac
-  (`advanced/crop.py`, YuNet) and pasted back inside the mask only; masked edits use a soft
-  mask with DifferentialDiffusion. An edit with a LoRA turns the person into its character
-  (owner's request 2026-11-05; `options.identity`, switch on by default): first ONE redraw
-  of the whole person with the LoRA (`graphs.person`, the owner's request 2026-11-06: body,
-  breasts, waist, hips like the LoRA's, and no seams between separately drawn parts — a
-  separate figure and hair step left torn patches and a second hand): SAM 3.1 "person" plus
-  "reflection of a person" grown 40 px, pasted back whole; DifferentialDiffusion strengths
-  per part (`graphs.SHARE` of `PERSON_DENOISE` 0.85, blurred widely): figure 0.82, the hair
-  the text changes 1.0 (tinted first with a soft edge, "hair:2" on the people, reaching 24 px
-  past SAM), clothing, hands and feet 0.5 so their colour and shape stay, the face 0.4 and, when only
-  the hair's colour changes, a ring 64 px around it at most 0.55 (else a second face was
-  drawn into the hair beside a turned face; a new style needs it, `compiler.restyles`,
-  `graphs.FACE_RING`) (SAM 3.1 returns one match per text unless told
-  "hands:4"); then the other edits (background,
-  clothing: the garment named, its colour tinted and said first, 0.85; mouth, eyes and
-  expression go into the face step), the face last with the LoRA
-  (0.65, `graphs.DENOISE_IDENTITY_FACE`), so the face measured is the face delivered; no light
-  pass over the whole photo afterwards (Krea 2 Turbo at 0.3 drew hatching into hair and
-  cracks into skin). Without a LoRA the hair step redraws a ring around the hair gently and
-  leaves the face alone except bangs (`graphs.RING`, `graphs.BESIDE`, "hair:2" on the people,
-  `graphs.SEVERAL`). Text to image with a LoRA redraws a face short of the likeness goal the
+  (`advanced/crop.py`, YuNet) and pasted back. AnyPaint (`graphs.edit`): its LoRA first at
+  1.0, the character's after it, Krea2AnyPaintPrepare (the region white, 384 px reference,
+  32 px blend band) → Encode → ModelPatch (K/V cache) → KSampler (8 steps, CFG 1). An edit
+  with a LoRA turns the person into its character (owner's request 2026-11-05;
+  `options.identity`, switch on by default; the LoRA is always on, it carries face and
+  body). Order (the owner's plan): the whole photo, the figure — SAM 3.1 "body", "breasts",
+  "hips and buttocks" (`graphs.FIGURE`), grown 48 px past the outline, the face, head, hair,
+  hands and feet left alone, denoise 0.85, the LoRA at 0.65 of its strength
+  (`graphs.FIGURE_LORA`; estimates in his ranges) — then hair and clothing (the garment
+  named, its colour tinted and said first, 0.85), the background (everything but the people,
+  denoise 1.0, without the LoRA; the people pasted back pixel by pixel; the switch "Unify the
+  light", `options.unify_light`, off by default: then the whole photo at 0.2 — Turbo at 0.3
+  drew hatching and cracks), the face last with the LoRA (0.65,
+  `graphs.DENOISE_IDENTITY_FACE`; mouth, eyes and expression go into it), so the face
+  measured is the face delivered. The hair leaves the face alone except bangs
+  (`graphs.BESIDE`, "hair:2" on the people, `graphs.SEVERAL`). Text to image with a LoRA redraws a face short of the likeness goal the
   same way (crop, 0.65, up to three tries, the generated face kept when it is the most alike;
   `engine._lora_face`); its LoRA strength starts at 1.3 (edits 1.0). The face measured and
   cropped is the largest of those YuNet is sure of (`faces.main_face`). Node inputs stay
-  within ComfyUI's limits (ImageBlur sigma ≤ 10; `test_advanced.LIMITS` checks every graph). The background is everything but the people (SAM 3.1 "person" grown
-  8 px, `InvertMask`), redrawn without the LoRA or its trigger: a new one when the text asks
-  for it ("change the background to …", 0.9), or sharper, the same place, with the switch
+  within ComfyUI's limits (ImageBlur sigma ≤ 10; `test_advanced.LIMITS` checks every graph).
+  The background is everything but the people (SAM 3.1 "person" + "reflection of a person",
+  `InvertMask`), redrawn without the LoRA or its trigger: a new one when the text asks for
+  it ("change the background to …", 1.0), or sharper, the same place, with the switch
   "Improve the background" (`options.improve_background`, `DENOISE_BACKGROUND_SHARPER`). Without analysis each region gets the request's
   own sentences about it (`compiler.region_prompt`); the face regions without the
   "keep/preserve" sentences (`_changes`: "preserve the mouth shape" opened a closed mouth),
@@ -222,7 +225,7 @@ repositories.
   LoRA whose photos show an expression (Taila 2 has a tongue-out photo) may draw it now and
   then: that is fixed in its dataset, not here (a redness measure below the lips could not
   tell a tongue from the LoRA's fuller lips and was removed). Tuned on the owner's three photos on his A40 (2026-11-05).
-  Without analysis, the hair, face, body, background, clothing, mouth, eyes or expression the
+  Without analysis, the hair, face, body, breasts, hips, background, clothing, mouth, eyes or expression the
   text asks to change are added to the chosen regions (a text that names them needs no chosen
   region; a colour belongs to its own clause, "hair to dark brown and the dress to black")
   (`compiler.detected_targets`). Every number is the studio's estimate, tuned on the owner's

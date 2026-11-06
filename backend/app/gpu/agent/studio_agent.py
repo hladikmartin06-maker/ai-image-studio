@@ -26,10 +26,11 @@ API (JSON unless noted):
   GET    /files/<rel>                download; honours "Range: bytes=a-b"
   DELETE /files/<rel>
   POST   /jobs                       {id, kind: train|models|download, args}
-                                     models: {models: [{url, folder, filename}]}
+                                     models: {models: [{url, folder, filename, sha256?}]}
                                      download: {url, folder, filename}
                                      (downloads: https://huggingface.co only, into
-                                     ComfyUI/models/<folder>/, as .part until complete)
+                                     ComfyUI/models/<folder>/, as .part until complete;
+                                     with sha256 renamed only when it matches)
   GET    /jobs/<id>                  status, exit code, progress (step/total, files), loss
   GET    /jobs/<id>/logs?offset=<n>  plain text from that byte offset
   POST   /jobs/<id>/cancel
@@ -37,6 +38,7 @@ API (JSON unless noted):
 """
 
 import contextlib
+import hashlib
 import hmac
 import http.client
 import json
@@ -53,7 +55,7 @@ import urllib.parse
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-VERSION = "2"
+VERSION = "3"
 TOKEN = os.environ.get("STUDIO_AGENT_TOKEN", "")
 PORT = int(os.environ.get("STUDIO_AGENT_PORT", "8765"))
 WORKSPACE = os.path.realpath(os.environ.get("STUDIO_WORKSPACE", "/workspace"))
@@ -277,25 +279,40 @@ def _opener():
     return urllib.request.build_opener(_HFRedirect())
 
 
+SHA_RE = re.compile(r"[0-9a-f]{64}")
+
+
 def model_targets(models):
-    """[(url, absolute destination, name)] inside ComfyUI/models/<folder>/."""
+    """[(url, absolute destination, name, sha256 or None)] inside ComfyUI/models/<folder>/."""
     out = []
     for m in models:
         url = hf_url(m.get("url"))
         folder = str(m.get("folder", ""))
         name = str(m.get("filename", ""))
+        sha = m.get("sha256")
         if not FOLDER_RE.fullmatch(folder) or not NAME_RE.fullmatch(name) or name in (".", ".."):
             raise ValueError("bad model folder or file name")
-        out.append((url, os.path.join(COMFY_DIR, "models", folder, name), name))
+        if sha is not None and not SHA_RE.fullmatch(str(sha)):
+            raise ValueError("bad sha256")
+        out.append((url, os.path.join(COMFY_DIR, "models", folder, name), name, sha))
     if not out:
         raise ValueError("no files to download")
     return out
 
 
+def sha256_of(path):
+    digest = hashlib.sha256()
+    with open(path, "rb") as f:
+        for block in iter(lambda: f.read(CHUNK), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
 class DownloadJob:
     """Downloads files one after another in a thread: each is written as <name>.part
-    (resumed after a dropped connection) and renamed when complete. Files that are already
-    there are skipped. Progress per file is in json()["files"]."""
+    (resumed after a dropped connection) and renamed when complete — when the studio gave its
+    SHA-256, only if it matches (else the file is deleted and the job fails). Files that are
+    already there are skipped. Progress per file is in json()["files"]."""
 
     RETRIES = 5
     RETRY_PAUSE = 2.0  # seconds, times the attempt
@@ -314,7 +331,7 @@ class DownloadJob:
         self.targets = targets
         self.files = [
             {"name": name, "size": None, "done": 0, "status": "waiting"}
-            for _url, _dest, name in targets
+            for _url, _dest, name, _sha in targets
         ]
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._thread.start()
@@ -328,7 +345,7 @@ class DownloadJob:
             if not os.path.isdir(COMFY_DIR):
                 raise DownloadError("failed", "ComfyUI is not set up yet (" + COMFY_DIR + ")")
             total = len(self.targets)
-            for index, (url, dest, name) in enumerate(self.targets):
+            for index, (url, dest, name, sha) in enumerate(self.targets):
                 state = self.files[index]
                 self._log("[studio] file %d/%d %s" % (index + 1, total, name))
                 if os.path.isfile(dest) and os.path.getsize(dest) > 0:
@@ -337,7 +354,7 @@ class DownloadJob:
                     self._log("[studio] already there: " + name)
                     continue
                 state["status"] = "downloading"
-                self._fetch(url, dest, state)
+                self._fetch(url, dest, state, sha)
                 state["status"] = "done"
                 self._log("[studio] saved " + dest)
             with contextlib.suppress(AttributeError, OSError):
@@ -357,7 +374,7 @@ class DownloadJob:
             self._log("[studio] download failed: " + self.error["message"])
         self.ended_at = time.time()
 
-    def _fetch(self, url, dest, state):
+    def _fetch(self, url, dest, state, sha=None):
         os.makedirs(os.path.dirname(dest), exist_ok=True)
         part = dest + ".part"
         opener = _opener()
@@ -409,6 +426,9 @@ class DownloadJob:
             if state.get("size") is None or os.path.getsize(part) >= state["size"]:
                 break
             attempt = self._retry(attempt, "connection closed early")
+        if sha and sha256_of(part) != sha:
+            os.remove(part)
+            raise DownloadError("checksum", "the file does not match its SHA-256")
         os.replace(part, dest)
         state["done"] = os.path.getsize(dest)
         state["size"] = state["done"]

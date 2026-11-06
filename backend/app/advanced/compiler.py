@@ -20,7 +20,17 @@ from app.models import User
 from app.services.safety import ADULT_OFF, PromptRefused, check_prompt, is_explicit
 
 Target = Literal[
-    "hair", "mouth", "eyes", "face", "expression", "clothing", "background", "body", "whole"
+    "hair",
+    "mouth",
+    "eyes",
+    "face",
+    "expression",
+    "clothing",
+    "background",
+    "body",
+    "breasts",
+    "hips",
+    "whole",
 ]
 TARGETS: tuple[str, ...] = (
     "hair",
@@ -31,11 +41,27 @@ TARGETS: tuple[str, ...] = (
     "clothing",
     "background",
     "body",
+    "breasts",
+    "hips",
     "whole",
 )
-# The order edits run in (rules and the LoRA identity steps): the whole photo or the person
-# first, the face next, the hair last so its colour has the final say.
-ORDER = ("whole", "body", "background", "clothing", "face", "expression", "eyes", "mouth", "hair")
+# The order edits run in (the owner's plan, 2026-11-06): the whole photo, the figure and its
+# parts, the hair and clothing, the background, the face last (a hair step after the face
+# pulled its likeness from 47 % to 16–28 %, 2026-11-06).
+ORDER = (
+    "whole",
+    "body",
+    "breasts",
+    "hips",
+    "clothing",
+    "hair",
+    "background",
+    "face",
+    "expression",
+    "eyes",
+    "mouth",
+)
+FIGURE = ("body", "breasts", "hips")
 MAX_EDITS = 6
 FACE_PARTS = ("mouth", "eyes", "expression")
 
@@ -266,7 +292,8 @@ _CHANGE = re.compile(
     r"put|place|move|presuň\w*|presun\w*|prenes\w*|close|open|smile|wear|dress|"
     r"zatvor\w*|otvor\w*|usmej\w*|obleč\w*|oblec\w*|"
     r"zmeň\w*|zmen\w*|sprav\w*|daj|uprav\w*|prefarb\w*|nov\w*|väčš\w*|vacs\w*|menš\w*|"
-    r"mens\w*|dlhš\w*|dlhs\w*|kratš\w*|krats\w*)\b",
+    r"mens\w*|dlhš\w*|dlhs\w*|kratš\w*|krats\w*|zväčš\w*|zvacs\w*|zväcs\w*|zmenš\w*|"
+    r"zmens\w*|wider|narrower|rounder|plnš\w*|plns\w*|štíhl\w*|stihl\w*)\b",
     re.IGNORECASE,
 )
 _CLOTHING_WORDS = (
@@ -284,8 +311,10 @@ _EXPRESSION_WORDS = (
     r"smile|smiling|expression|frown\w*|laugh\w*|úsmev\w*|usmev\w*|usmiat\w*|výraz\w*|vyraz\w*"
 )
 _REGION_WORDS = {
-    "body": r"body|figure|proportions?|curves|buttocks?|butt|hips|waist|breasts?|"
-    r"telo|tela|tele|telom|postav\w*|proporci\w*|zadok\w*|boky|bokov",
+    "body": r"body|figure|proportions?|curves|waist|"
+    r"telo|tela|tele|telom|postav\w*|proporci\w*|pás|pas\b",
+    "breasts": r"breasts?|bust|boobs|chest|cleavage|prsia|prs\w*|hrud\w*|poprs\w*",
+    "hips": r"hips|buttocks?|butt|bum|booty|glutes|boky|bokov|zadok\w*|zadk\w*|zadoč\w*",
     "face": r"face|facial|tvár\w*|tvari|tvarou",
     "hair": r"hair\w*|ponytail|bangs|braids?|vlas\w*|účes\w*|uces\w*|vrkoč\w*|vrkoc\w*",
     "background": r"background|backdrop|scene|setting|surroundings|environment|room|interior|"
@@ -320,7 +349,14 @@ _SENTENCE_WORDS = {
     "eyes": (_FACE_WORDS, _REGION_WORDS["hair"]),
     "mouth": (_FACE_WORDS, _REGION_WORDS["hair"]),
     "hair": (_REGION_WORDS["hair"], r"facial|identity|lora|body|figure|proportions?|buttocks?"),
-    "body": (rf"{_REGION_WORDS['body']}|{_CLOTHING_WORDS}|{_POSE_WORDS}", _NOT_BODY),
+    "body": (
+        rf"{_REGION_WORDS['body']}|{_REGION_WORDS['breasts']}|{_REGION_WORDS['hips']}|"
+        rf"{_CLOTHING_WORDS}|{_POSE_WORDS}",
+        _NOT_BODY,
+    ),
+    # Each part only its own clauses ("her breasts bigger and her hips wider").
+    "breasts": (_REGION_WORDS["breasts"], rf"{_NOT_BODY}|{_REGION_WORDS['hips']}"),
+    "hips": (_REGION_WORDS["hips"], rf"{_NOT_BODY}|{_REGION_WORDS['breasts']}"),
     "background": (_REGION_WORDS["background"], rf"{_NOT_BODY}|{_FACE_WORDS}"),
     "clothing": (_CLOTHING_WORDS, _NOT_BODY),
 }
@@ -377,7 +413,7 @@ def region_prompt(text: str, target: str, *, fallback: str | None = None) -> str
             # The hair's sentence without its clauses about clothing ("… and her red dress to
             # a black dress").
             sentence = _without_clauses(sentence, _CLOTHING_WORDS)
-        if target in ("body", "clothing"):
+        if target in (*FIGURE, "clothing"):
             # The figure and the clothing keep a sentence's clauses about them and drop those
             # about the face or hair ("…the pose, the finger touching her lips, the black
             # dress…" lost the dress with the whole sentence; "her hair to dark brown and her
@@ -422,29 +458,14 @@ def _with_identity(spec: Spec, text: str) -> None:
     after the face pulled its likeness from 47 % to 16–28 %; with the face last it stayed at
     58–66 %). The plan's own figure and face edits are kept (the user may have edited them)."""
     edits = [e for e in spec.edits if e.target != "whole"]
-    body = next((e for e in edits if e.target == "body"), None) or Edit(
-        target="body", prompt=region_prompt(text, "body", fallback=subject(text))
-    )
+    figure = [e for e in edits if e.target in FIGURE]
+    if not figure:
+        figure = [Edit(target="body", prompt=region_prompt(text, "body", fallback=subject(text)))]
     face = next((e for e in edits if e.target == "face"), None) or face_edit(text)
     # The face step draws the mouth, eyes and expression too (its prompt has the request's
     # sentences about them): a separate step before it would only be redrawn again.
-    rest = _ordered([e for e in edits if e.target not in ("body", "face", *FACE_PARTS)])
-    spec.edits = [body, *rest[: MAX_EDITS - 2], face]
-
-
-_STYLE = re.compile(
-    r"\b(ponytail|bun|braids?|bangs|fringe|straight|curly|curls|wavy|waves|short|bob|pixie|"
-    r"updo|haircut|hairstyle|styled|cop\w*|vrkoč\w*|vrkoc\w*|ofin\w*|kučer\w*|kucer\w*|"
-    r"mikád\w*|mikad\w*|účes\w*|uces\w*|krátk\w*|kratk\w*)\b",
-    re.IGNORECASE,
-)
-
-
-def restyles(text: str) -> bool:
-    """Whether a request changes the hair's style, not only its colour: a style word in a
-    sentence that does not keep something ("in a high ponytail"; not "keep the wavy
-    hairstyle")."""
-    return any(_STYLE.search(x) and not _KEEP.search(x) for x in re.split(r"[.;!?\n]+", text))
+    rest = [e for e in edits if e.target not in (*FIGURE, "face", *FACE_PARTS)]
+    spec.edits = _ordered([*figure, *rest])[: MAX_EDITS - 1] + [face]
 
 
 def _lead(text: str) -> str:

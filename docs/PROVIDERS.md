@@ -490,12 +490,62 @@ the image): the same graph in API format, on the same ComfyUI connection as Krea
 # Advanced generation (Krea 2 + SAM 3.1 + checks)
 
 Generate › "Pokročilé" (`backend/app/advanced/`, since 2026-11-04, the owner's request). It
-adds **no new model**: Krea 2 RAW / Turbo (the files, loaders and sampler settings of
-`krea2.VARIANTS`, read only), SAM 3.1 (`checkpoints/sam3.1_multiplex_fp16.safetensors`, the
-Enhance photo file from `huggingface.co/AIPRIVATEGROUP/pgupscaler`, installable alone with
-one click), SFace on this Mac and the user's own AI assistant. No upscaler (since
-2026-11-06, the owner's request: Enhance photo is a separate tool).
+uses Krea 2 RAW / Turbo (the files, loaders and sampler settings of `krea2.VARIANTS`, read
+only), SAM 3.1 (`checkpoints/sam3.1_multiplex_fp16.safetensors`, the Enhance photo file from
+`huggingface.co/AIPRIVATEGROUP/pgupscaler`, installable alone with one click), since
+2026-11-06 Krea 2 AnyPaint (below), SFace on this Mac and the user's own AI assistant. No
+upscaler (since 2026-11-06, the owner's request: Enhance photo is a separate tool). No Flux,
+no Qwen-Image / Qwen-Image-Edit.
 
+- **Krea 2 AnyPaint** (the owner's plan, phase 1, approved 2026-11-06; `comfy/anypaint.py`,
+  `comfy/custom_nodes.py`): every region edit (hair, mouth, eyes, face, expression, clothing,
+  background, body, breasts, hips) is drawn by it instead of the masked redraw with
+  DifferentialDiffusion described below.
+  - Model card `huggingface.co/yijunwang2/krea2-anypaint`, revision `1a9fb37a`: a functional
+    adapter for arbitrary-mask inpainting, outpainting and editing, rank/alpha 32/32, trained
+    against Krea 2 Raw and intended for Krea 2 Turbo; recommended 8 steps, guidance 0, LoRA
+    scale 1.0, 384 px reference with VLM encoding, K/V cache, a 32 px boundary band redrawn
+    to blend; known pixels kept at every flow step; "no hidden post-generation source
+    composite". White mask pixels are redrawn, black kept. Weights: Krea 2 Community License;
+    pipeline code Apache 2.0. Its responsible-use text forbids non-consensual intimate
+    imagery and impersonation; adult content is neither allowed nor forbidden by it in so
+    many words (Krea 2's own acceptable use policy was not read).
+  - File `krea2_anypaint_rank32.safetensors`, 228,587,752 bytes, SHA-256
+    `3a7d09f6b27f8ead160d340f2f59c11f4ee635c4a1ee87ffd8b1b9f9ba412f7a` (Hugging Face's LFS
+    hash), into `models/loras` with one click; the GPU agent renames a download into place
+    only when its SHA-256 matches (agent version 3; a mismatch deletes it and the job fails
+    with "checksum").
+  - ComfyUI nodes `github.com/alexw5702-afk/krea2-anypaint` (MIT, v0.1.0, commit
+    `675be5a91eadbf8b8997b21c0e8e1848310b9571` of 2026-08-04; files and SHA-256:
+    `__init__.py` `4c0f96b0…`, `nodes.py` `08559583…`, `anypaint_helpers.py` `b1ed902f…`,
+    `krea2_registered_core.py` `0da66ac8…`, full hashes in `comfy/custom_nodes.py`). They
+    import einops, numpy and Pillow (ComfyUI v0.35.0's own requirements) and ComfyUI
+    internals that v0.35.0 has (`comfy/text_encoders/krea2.py` KREA2_TEMPLATE,
+    `optimized_attention_masked`, `apply_rope`, `timestep_embedding`, `node_helpers`;
+    checked in its source). Krea2AnyPaintPrepare (source, left/top/right/bottom, 
+    reference_max_edge, boundary_redraw_px, generated_mask → semantic_reference, known_image,
+    generated_mask, keep_mask, canvas size), Krea2AnyPaintEncode (clip, prompt, vae, the
+    three images/masks, vlm_reference → positive, latent with its noise mask),
+    Krea2AnyPaintModelPatch (model, kv_cache). The Mac downloads the pinned files from
+    `raw.githubusercontent.com`, checks each by SHA-256 (a file that does not match is never
+    sent) and passes them, gzipped, with the GPU's start command, which unpacks them into
+    `/opt/comfyui-baked/custom_nodes` and the volume's `ComfyUI/custom_nodes` before ComfyUI
+    starts (RunPod's start script copies the baked folder onto the volume on the first start;
+    Modal runs ComfyUI from it). Nothing is installed with pip. An exception to "built-in
+    nodes only", approved by the owner. Without them a region edit is refused ("rent the GPU
+    again") — never run another way; every step's label names its method.
+  - Graph: UNETLoader → LoraLoaderModelOnly (AnyPaint 1.0) → LoraLoaderModelOnly (the
+    character) → ModelPatch → KSampler (8 steps, CFG 1, euler, simple); positive and latent
+    from Encode, negative the Turbo zero-out. The result is pasted back 40 px past the mask
+    (AnyPaint's band plus 8), so every pixel further away is the photo's own; the
+    background's around the people's exact outline (feather 4), so they stay pixel by pixel.
+  - The owner's numbers, **estimates** (not from AnyPaint's authors, who validated a full
+    redraw, denoise 1.0, and AnyPaint alone): the figure (SAM 3.1 "body", "breasts", "hips
+    and buttocks") denoise 0.85, the character LoRA at 0.65 of its strength, the mask grown
+    48 px past the outline; the background denoise 1.0; "Unify the light" (off by default)
+    0.2 over the whole photo afterwards (Turbo at 0.3 drew hatching and cracks, 2026-11-05;
+    it also changes the person); the face in its crop at 0.65 with the LoRA at 1.0. Not yet
+    run on a GPU.
 - **Nodes** (built in, checked in ComfyUI v0.35.0's `nodes.py` and `comfy_extras`, the
   pinned rented image): text to image = UNETLoader, CLIPLoader (`krea2`),
   LoraLoaderModelOnly, CLIPTextEncode, ConditioningZeroOut (Turbo) or a negative (RAW),
@@ -606,7 +656,8 @@ one click), SFace on this Mac and the user's own AI assistant. No upscaler (sinc
   "preserve the exact original wavy hairstyle, bangs" the selfie's waves became straight. YuNet misplaces
   the face of an extreme expression (the selfie: the box beside the mouth), so its score is
   low whatever the face looks like; the gentle tries then still keep the expression.
-- **The person in one redraw** (since 2026-11-06, the owner's request: breasts, waist, hips
+- **The person in one redraw** (2026-11-06, replaced the same day by AnyPaint steps; kept as
+  a record — the owner's request: breasts, waist, hips
   like the LoRA's, the whole photo consistent; tried the same day on his A40 with his six
   photos — a car, a bed, a tongue-out selfie, a mirror selfie, a woman on the floor, a lift
   with a mirror — and five new ones made for the test). First a figure step and a hair step

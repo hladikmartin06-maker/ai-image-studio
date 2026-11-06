@@ -94,15 +94,17 @@ Integrations and Settings.
     and the best attempt is kept. Advanced uses Krea 2 only: to enlarge or sharpen the result,
     use "Enhance photo" afterwards. Without the assistant, switch the analysis off and pick
     the parts to change yourself (hair, face, body, clothing, mouth, eyes, expression or a new
-    background that your text asks for are added by themselves). **A photo with a LoRA** turns
-    the person into the LoRA's character: first the whole person is redrawn with the LoRA at
-    once (body, breasts, waist, hips, skin and the hair your text changes, a reflection in a
-    mirror too) while the clothing, hands and feet change only gently and keep their colour and
-    shape, then the other changes, the face last; the face is always compared with the LoRA's photos and tried up to three times, the
-    most alike is kept (switch "Turn the person into the LoRA character" off when the photo
-    already shows the character). **The background** stays as it is, unless your text asks for
+    background that your text asks for are added by themselves). **A photo with a LoRA** (the LoRA is always on: it carries the face and the body) turns
+    the person into the LoRA's character step by step, each region drawn by **Krea 2
+    AnyPaint** (installed once per GPU with one click; its nodes come with a GPU the studio
+    rents): the figure (body, breasts, hips and buttocks — "make her breasts bigger" works,
+    with 18+ on), the hair and clothing, the background, the face last; the face is always
+    compared with the LoRA's photos and tried up to three times (switch "Turn the person into
+    the LoRA character" off when the photo already shows the character). Every step shows
+    that it ran on AnyPaint; without AnyPaint nothing runs another way. **The background** stays as it is, unless your text asks for
     a new one ("change the background to a beach") or you switch on "Improve the background"
-    (the same place, redrawn sharper). For a **new hair colour** the hair is first
+    (the same place, redrawn sharper); the person stays exactly as in the photo. "Unify the
+    light" (off by default) then redraws the whole photo very gently once more. For a **new hair colour** the hair is first
     tinted with the colour (keeping its light and shadow; shown in the plan, where you can
     change or remove it), so Krea 2 starts from it; the **mouth, eyes and expression** are
     redrawn in an enlarged crop of the face (found on this Mac), so small details come out

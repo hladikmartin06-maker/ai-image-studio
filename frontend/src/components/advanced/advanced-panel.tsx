@@ -40,6 +40,7 @@ import {
   useCancelAdvanced,
   useComfyConnections,
   useComfyModelDownload,
+  useInstallKrea2Model,
   useLoras,
   usePlanAdvanced,
   useSettings,
@@ -49,7 +50,7 @@ import {
 import type { AdvancedJob, AdvancedReport, AdvancedSpec, AdvancedStage, AdvancedTarget } from "@/lib/types";
 
 type Mode = "text-to-image" | "edit";
-const TARGETS: AdvancedTarget[] = ["hair", "mouth", "eyes", "face", "expression", "clothing", "background", "body", "whole"];
+const TARGETS: AdvancedTarget[] = ["hair", "mouth", "eyes", "face", "expression", "clothing", "background", "body", "breasts", "hips", "whole"];
 const RATIOS = ["1:1", "4:5", "3:4", "2:3", "9:16", "5:4", "4:3", "3:2", "16:9"];
 
 function pct(v: number | null | undefined) {
@@ -64,7 +65,13 @@ function stageLabel(stage: AdvancedStage, t: (k: MessageKey, v?: Record<string, 
   if (stage.key === "generate") return t("adv.stage.generate");
   if (stage.key === "enhance") return t("adv.stage.enhance");
   if (stage.key.startsWith("check")) return t("adv.stage.check");
-  if (stage.key.startsWith("edit")) return t("adv.stage.edit", { target: target(stage.label.split(" ")[0]) });
+  if (stage.key.endsWith("-light")) return t("adv.stage.light");
+  if (stage.key.startsWith("edit")) {
+    // The engine names the method it used ("body · AnyPaint"); it never switches silently.
+    const method = stage.label.includes("AnyPaint") ? "AnyPaint" : "";
+    const name = target(stage.label.split(" ")[0]);
+    return method ? t("adv.stage.editMethod", { target: name, method }) : t("adv.stage.edit", { target: name });
+  }
   if (stage.key.startsWith("fix")) {
     const name = stage.key.split("-")[1];
     return name ? t("adv.stage.fixRegion", { target: target(name) }) : t("adv.stage.fixAll");
@@ -312,6 +319,7 @@ export function AdvancedPanel({ header }: { header: React.ReactNode }) {
   const start = useStartAdvanced();
   const plan = usePlanAdvanced();
   const download = useComfyModelDownload();
+  const install = useInstallKrea2Model();
   const testConn = useTestComfy();
   const submitting = useRef(false);
   const [connectionId, setConnectionId] = useState("");
@@ -328,6 +336,7 @@ export function AdvancedPanel({ header }: { header: React.ReactNode }) {
   const [quality, setQuality] = useState(true);
   const [corrections, setCorrections] = useState(1);
   const [improveBackground, setImproveBackground] = useState(false);
+  const [unifyLight, setUnifyLight] = useState(false);
   const [targets, setTargets] = useState<AdvancedTarget[]>([]);
   const [identity, setIdentity] = useState(true);
   const [more, setMore] = useState(false);
@@ -390,6 +399,7 @@ export function AdvancedPanel({ header }: { header: React.ReactNode }) {
     setQuality(o.quality ?? true);
     setCorrections(o.corrections ?? 1);
     setImproveBackground(Boolean(o.improve_background));
+    setUnifyLight(Boolean(o.unify_light));
     setAdult(Boolean(o.adult));
     setDraft(!older && j.spec && (j.spec.prompt || j.spec.edits.length) ? { ...j.spec } : null);
     setMore(true);
@@ -408,6 +418,10 @@ export function AdvancedPanel({ header }: { header: React.ReactNode }) {
   if (mode === "edit" && !photo) problems.push(t("adv.photoFirst"));
   if (mode === "edit" && c && !c.sam3 && (analysis || identityOn || improveBackground || targets.some((x) => x !== "whole"))) problems.push(t("adv.sam3Missing"));
   if (mode === "edit" && !analysis && !identityOn && !improveBackground && !targets.length && !draft) problems.push(t("adv.chooseRegion"));
+  // Region redraws (and a LoRA face in text to image) run on Krea 2 AnyPaint, never without it.
+  const needsAnypaint = mode === "edit" || Boolean(loraVersion);
+  if (needsAnypaint && c && !c.anypaint.ready)
+    problems.push(t(c.anypaint.missing_nodes.length ? "adv.anypaintNodes" : "adv.anypaintMissing"));
   if (analysis && c && !c.ai) problems.push(t("adv.aiMissing"));
   if (!prompt.trim()) problems.push(t("adv.promptFirst"));
   if (chosenLora?.disabled) problems.push(t("adv.loraIncompatible"));
@@ -426,6 +440,7 @@ export function AdvancedPanel({ header }: { header: React.ReactNode }) {
     targets,
     identity: identityOn,
     improve_background: mode === "edit" && improveBackground,
+    unify_light: mode === "edit" && unifyLight,
     denoise,
     analysis,
     quality,
@@ -467,6 +482,7 @@ export function AdvancedPanel({ header }: { header: React.ReactNode }) {
           targets,
           identity: identityOn,
           improve_background: mode === "edit" && improveBackground,
+          unify_light: mode === "edit" && unifyLight,
           adult,
         }),
       );
@@ -480,6 +496,16 @@ export function AdvancedPanel({ header }: { header: React.ReactNode }) {
     try {
       await download.mutateAsync({ id: conn.id, ...c.sam3_file });
       toast.success(t("adv.sam3Downloading"));
+    } catch (e) {
+      toast.error(e instanceof ApiError ? e.message : t("errors.generic"));
+    }
+  };
+
+  const installAnypaint = async () => {
+    if (!conn) return;
+    try {
+      await install.mutateAsync({ id: conn.id, variant: "anypaint" });
+      toast.success(t("adv.anypaintDownloading"));
     } catch (e) {
       toast.error(e instanceof ApiError ? e.message : t("errors.generic"));
     }
@@ -554,6 +580,27 @@ export function AdvancedPanel({ header }: { header: React.ReactNode }) {
               {mode === "edit" ? (
                 <>
                   <PhotoPicker title={t("adv.photo")} value={photo} onChange={(p) => { setPhoto(p); setDraft(null); }} />
+                  {c && !c.anypaint.ready ? (
+                    <Notice tone="warning">
+                      {c.anypaint.missing_nodes.length ? (
+                        <div>{t("adv.anypaintNodes")}</div>
+                      ) : (
+                        <div>{t("adv.anypaintNeed", { size: formatBytes(c.anypaint_file.size, locale) })}</div>
+                      )}
+                      <div className="row wrap" style={{ gap: 8, marginTop: 8 }}>
+                        {!c.anypaint.missing_nodes.length && c.file_capability === "agent" ? (
+                          <Button size="sm" icon={<Download />} loading={install.isPending} onClick={installAnypaint}>
+                            {t("adv.anypaintInstall")}
+                          </Button>
+                        ) : !c.anypaint.missing_nodes.length ? (
+                          <span className="tiny mono">models/loras/{c.anypaint_file.filename}</span>
+                        ) : null}
+                        <Button size="sm" variant="ghost" icon={<RefreshCw />} loading={testConn.isPending} onClick={recheck}>
+                          {t("adv.recheck")}
+                        </Button>
+                      </div>
+                    </Notice>
+                  ) : null}
                   {c && !c.sam3 ? (
                     <Notice tone="warning">
                       <div>{t("adv.sam3Need", { size: formatBytes(c.sam3_file.size, locale) })}</div>
@@ -646,6 +693,15 @@ export function AdvancedPanel({ header }: { header: React.ReactNode }) {
                     <div>
                       <div className="small">{t("adv.improveBackground")}</div>
                       <div className="hint">{t("adv.improveBackgroundHint")}</div>
+                    </div>
+                  </label>
+                ) : null}
+                {mode === "edit" ? (
+                  <label className="row" style={{ gap: 10, alignItems: "flex-start" }}>
+                    <Switch checked={unifyLight} onChange={setUnifyLight} label={t("adv.unifyLight")} />
+                    <div>
+                      <div className="small">{t("adv.unifyLight")}</div>
+                      <div className="hint">{t("adv.unifyLightHint")}</div>
                     </div>
                   </label>
                 ) : null}

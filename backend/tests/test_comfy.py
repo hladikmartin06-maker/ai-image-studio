@@ -4,6 +4,7 @@ cancel and recovery, LoRA placement, deployment on RunPod through the real agent
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import re
 import uuid
@@ -641,21 +642,35 @@ def test_agent_downloads_only_from_hugging_face(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(agent.DownloadJob, "RETRY_PAUSE", 0)
     url = f"http://127.0.0.1:{server.server_address[1]}/file"
     dest = comfy / "models" / "diffusion_models" / "model.safetensors"
+    good = hashlib.sha256(payload).hexdigest()
+    other = comfy / "models" / "loras" / "other.safetensors"
     try:
         job = agent.DownloadJob(
             "models-t",
             "models",
             [
-                (url, str(comfy / "models" / "vae" / "have.safetensors"), "have.safetensors"),
-                (url, str(dest), "model.safetensors"),
+                (url, str(comfy / "models" / "vae" / "have.safetensors"), "have.safetensors", None),
+                (url, str(dest), "model.safetensors", good),
             ],
         )
         for _ in range(200):
             if job.status != "running":
                 break
             time.sleep(0.02)
+        # A file whose SHA-256 does not match is deleted, never renamed into place.
+        bad = agent.DownloadJob("models-u", "models", [(url, str(other), "other", "0" * 64)])
+        for _ in range(200):
+            if bad.status != "running":
+                break
+            time.sleep(0.02)
     finally:
         server.shutdown()
+    assert bad.status == "failed" and bad.error["code"] == "checksum"
+    assert not other.exists() and not Path(str(other) + ".part").exists()
+    with pytest.raises(ValueError):
+        agent.model_targets(
+            [{"url": "https://huggingface.co/a/b", "folder": "vae", "filename": "a", "sha256": "x"}]
+        )
     info = job.json()
     assert info["status"] == "completed", (info, Path(job.log_path).read_text())
     assert dest.read_bytes() == payload and not Path(str(dest) + ".part").exists()
@@ -668,7 +683,7 @@ def test_agent_downloads_only_from_hugging_face(tmp_path: Path, monkeypatch):
     }
     assert info["bytes_done"] == info["bytes_total"] == len(payload) + 10
     # The plain-HTTP test server is not huggingface.co: the token was never sent to it.
-    assert state["auth"] == [None, None]
+    assert set(state["auth"]) == {None}
     assert "retrying" in Path(job.log_path).read_text()
 
 
@@ -1443,3 +1458,69 @@ async def test_enhance_needs_its_models(user: Api, comfy):
     assert r.status_code == 409 and r.json()["error"]["code"] == "missing_models"
     assert "z_image_turbo_int8_convrot.safetensors" in r.json()["error"]["message"]
     assert comfy.prompts == {}
+
+
+async def test_custom_nodes_are_pinned_checked_and_unpacked_before_comfyui(tmp_path: Path):
+    """Krea 2 AnyPaint's nodes reach a rented GPU only as the files of their pinned commit,
+    each checked by SHA-256 on the Mac; the start command unpacks them into ComfyUI's
+    custom_nodes (the image's copy and the volume's) before ComfyUI starts."""
+    import base64
+    import io
+    import subprocess
+    import tarfile
+
+    import httpx
+
+    from app.comfy import custom_nodes
+    from app.gpu.agent import _NODES
+
+    assert custom_nodes.ANYPAINT.repo == "alexw5702-afk/krea2-anypaint"
+    assert custom_nodes.ANYPAINT.commit == "675be5a91eadbf8b8997b21c0e8e1848310b9571"
+    assert [p for p, _ in custom_nodes.ANYPAINT.files] == [
+        "__init__.py",
+        "nodes.py",
+        "anypaint_helpers.py",
+        "krea2_registered_core.py",
+    ]
+    data = b"NODE_CLASS_MAPPINGS = {}\n"
+    node = custom_nodes.CustomNode(
+        folder="demo-node",
+        repo="someone/demo",
+        commit="abc123",
+        files=(("__init__.py", hashlib.sha256(data).hexdigest()),),
+    )
+    asked: list[str] = []
+
+    def serve(body: bytes):
+        def handler(request: httpx.Request) -> httpx.Response:
+            asked.append(str(request.url))
+            return httpx.Response(200, content=body)
+
+        return httpx.MockTransport(handler)
+
+    original = custom_nodes.NODES
+    custom_nodes.NODES = (node,)
+    try:
+        custom_nodes.transport = serve(b"tampered")
+        assert await custom_nodes.packed() is None  # a file that does not match is never sent
+        custom_nodes.transport = serve(data)
+        packed = await custom_nodes.packed()
+    finally:
+        custom_nodes.NODES = original
+    assert asked[-1] == "https://raw.githubusercontent.com/someone/demo/abc123/__init__.py"
+    with tarfile.open(fileobj=io.BytesIO(base64.b64decode(packed)), mode="r:gz") as tar:
+        assert tar.getnames() == ["demo-node/__init__.py"]
+    # The start command's step: both ComfyUI copies get the node; without it nothing changes.
+    baked = tmp_path / "opt-comfyui-baked"
+    volume = tmp_path / "ws" / "runpod-slim" / "ComfyUI"
+    baked.mkdir()
+    volume.mkdir(parents=True)
+    env = {
+        "PATH": "/usr/bin:/bin",
+        "W": str(tmp_path / "ws"),
+        "STUDIO_COMFY_BAKED": str(baked),
+        "STUDIO_NODES_CODE": packed,
+    }
+    await asyncio.to_thread(subprocess.run, ["bash", "-c", _NODES], env=env, check=True)
+    for root in (baked, volume):
+        assert (root / "custom_nodes" / "demo-node" / "__init__.py").read_bytes() == data

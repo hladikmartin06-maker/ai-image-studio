@@ -23,10 +23,10 @@ from sqlalchemy import select, update
 from sqlalchemy.orm import selectinload
 
 from app.advanced import crop, graphs, quality
-from app.advanced.compiler import Edit, Spec, by_ai, by_rules, face_edit, restyles, validate
+from app.advanced.compiler import Edit, Spec, by_ai, by_rules, face_edit, validate
 from app.advanced.intelligence import IntelligenceError
 from app.advanced.quality import FACE_MATCH, evaluate, failed, rank
-from app.comfy import krea2
+from app.comfy import anypaint, krea2
 from app.db import SessionLocal
 from app.models import (
     AdvancedJob,
@@ -338,17 +338,14 @@ async def _edit(
         default = graphs.DENOISE_COLOUR.get(edit.target, default)
     elif edit.target == "face" and identity:
         default = graphs.DENOISE_IDENTITY_FACE
-    # The person turned into the LoRA's character: one redraw of the whole person with the
-    # hair the request asks for (graphs.person), not a figure step and a hair step.
-    person = edit.target == "body" and identity and job.mode == "edit"
-    hair = next((e for e in spec.edits if e.target == "hair"), None) if person else None
-    if person:
-        default = graphs.PERSON_DENOISE
     base = edit.denoise or options.get("denoise") or default
     # A correction redraws stronger; the LoRA character's face again as gently (its pose and
     # expression stay; the passes add up).
     gentle = edit.target == "face" and identity
-    denoise = float(base) if gentle else min(graphs.DENOISE_MAX, float(base) + 0.1 * attempt)
+    if attempt == 0 or gentle:
+        denoise = float(base)
+    else:
+        denoise = min(max(graphs.DENOISE_MAX, float(base)), float(base) + 0.1 * attempt)
     # Face regions are redrawn in an enlarged square around the face.
     square = None
     if region and edit.target in crop.FACE_TARGETS and source.get("file_path"):
@@ -357,49 +354,40 @@ async def _edit(
     seed = _seed(job, attempt)
     # The background without the LoRA (its studio backdrops turned places grey) and its
     # trigger, which would draw the character into it.
+    # The background without the LoRA (its studio backdrops turned places grey) and its
+    # trigger, which would draw the character into it. The figure's parts with the LoRA at
+    # FIGURE_LORA of its strength (the new shape comes from the prompt).
     lora = None if edit.target == "background" else options.get("lora")
-    text = f"{hair.prompt}. {edit.prompt}" if hair else edit.prompt
-    prompt = _with_trigger(job, text) if lora else text
+    prompt = _with_trigger(job, edit.prompt) if lora else edit.prompt
     args = _krea_args(job)
     if lora is None:
         args["loras"] = []
-    if person:
-        colour = hair.color if hair and hair.color else None
-        exclude = ()
-        workflow = graphs.person(
-            **args,
-            prompt=prompt,
-            negative=_negative(job, spec, edit.target),
-            width=width,
-            height=height,
-            seed=seed,
-            denoise=denoise,
-            hair=hair is not None,
-            restyle=hair is not None and restyles(hair.prompt),
-            colour=colour,
-        )
-    else:
-        workflow = graphs.edit(
-            **args,
-            prompt=prompt,
-            negative=_negative(job, spec, edit.target),
-            width=width,
-            height=height,
-            seed=seed,
-            denoise=denoise,
-            region=region,
-            exclude=exclude,
-            soften=graphs.SOFTEN.get(edit.target) if region else None,
-            grow=graphs.GROW.get(edit.target, graphs.GROW_DEFAULT),
-            colour=colour,
-            attempt=attempt,
-            crop=square,
-            crop_size=crop.CROP_SIZE,
-        )
+    elif edit.target in graphs.FIGURE:
+        args["loras"] = [(name, round(s * graphs.FIGURE_LORA, 2)) for name, s in args["loras"]]
+    # Every region on Krea 2 AnyPaint: its LoRA first, at its authors' strength.
+    if region:
+        args["loras"] = [(anypaint.LORA.filename, anypaint.STRENGTH), *args["loras"]]
+    workflow = graphs.edit(
+        **args,
+        prompt=prompt,
+        negative=_negative(job, spec, edit.target),
+        width=width,
+        height=height,
+        seed=seed,
+        denoise=denoise,
+        region=region,
+        exclude=exclude,
+        grow=graphs.GROW.get(edit.target, graphs.GROW_DEFAULT),
+        colour=colour,
+        attempt=attempt,
+        crop=square,
+        crop_size=crop.CROP_SIZE,
+    )
+    method = "AnyPaint" if region else "image to image"
     return await _gpu(
         job,
         key=key,
-        label=f"{edit.target}" + (f" · attempt {attempt + 1}" if attempt else ""),
+        label=f"{edit.target} · {method}" + (f" · attempt {attempt + 1}" if attempt else ""),
         workflow=workflow,
         prompt=prompt,
         settings={
@@ -410,6 +398,7 @@ async def _edit(
             "cfg": args["cfg"],
             "denoise": denoise,
             "region": region or "whole photo",
+            "method": method,
             **({"exclude": list(exclude)} if exclude else {}),
             **({"color": colour, "tint": list(graphs.tint(colour, attempt))} if colour else {}),
             **({"face_crop": list(square)} if square else {}),
@@ -542,10 +531,7 @@ async def _run(job_id: uuid.UUID) -> None:
             current = job.source or {}
             image = None
             identity_edit = job.mode == "edit" and bool(options.get("identity"))
-            # With the LoRA's character the hair is drawn in the person's one redraw.
-            together = identity_edit and any(e.target == "body" for e in spec.edits)
-            steps = [e for e in spec.edits if not (together and e.target == "hair")]
-            for index, edit in enumerate(steps):
+            for index, edit in enumerate(spec.edits):
                 key = f"edit{index + 1}"
                 if identity_edit and edit.target == "face":
                     image = await _identity_face(job, spec, edit, current, key, produced)
@@ -553,6 +539,17 @@ async def _run(job_id: uuid.UUID) -> None:
                     image = await _edit(job, spec, edit, current, key, 0)
                     produced.append(image)
                 current = _image_input(image)
+                if edit.target == "background" and options.get("unify_light"):
+                    # "Unify the light" (the owner's switch, off by default): the whole photo
+                    # once more, gently, so the person and the new place share one light.
+                    light = Edit(
+                        target="whole",
+                        prompt=f"{edit.prompt}, one coherent natural light over the whole photo",
+                        denoise=graphs.UNIFY_DENOISE,
+                    )
+                    image = await _edit(job, spec, light, current, f"{key}-light", 0)
+                    produced.append(image)
+                    current = _image_input(image)
             assert image is not None
         attempts: list[dict[str, Any]] = [{"attempt": 0, "image": image, "report": None}]
         # 2. check, 3. correct what failed (at most N times; never endless). A person turned

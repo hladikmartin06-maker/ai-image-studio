@@ -18,8 +18,8 @@ from sqlalchemy.orm import selectinload
 
 from app.advanced import compiler, engine, graphs
 from app.advanced.intelligence import IntelligenceError
+from app.comfy import anypaint, krea2
 from app.comfy import enhance as pgupscaler
-from app.comfy import krea2
 from app.comfy.generation import LoraUse, SourceImage, resolve_lora, source_input
 from app.comfy.service import file_capability, lora_filename, owned
 from app.db import get_db
@@ -53,6 +53,8 @@ class AdvancedBody(BaseModel):
     identity: bool = True
     # Edit: the background redrawn sharper, the same place (a new one is asked in the text).
     improve_background: bool = False
+    # Edit: after a new background the whole photo once more, gently (off by default).
+    unify_light: bool = False
     # Edit strength for every region (None = per region: hair 0.85, mouth 0.7, …).
     denoise: float | None = Field(default=None, ge=graphs.DENOISE_MIN, le=graphs.DENOISE_MAX)
     # Stages the user switched on.
@@ -83,6 +85,26 @@ def _sam3_installed(conn: ComfyConnection) -> bool:
     return any(f.get("filename") == graphs.SAM3_FILE and f.get("installed") for f in files)
 
 
+def _need_anypaint(caps: dict[str, Any], conn: ComfyConnection) -> None:
+    """Region redraws need Krea 2 AnyPaint; without it the job is refused, never run another
+    way."""
+    state = caps["anypaint"]
+    if state.get("missing_nodes"):
+        raise api_error(
+            409,
+            "missing_nodes",
+            f"Krea 2 AnyPaint's nodes are missing on {conn.name}. A GPU rented by the studio "
+            "gets them when it starts: rent it again. On your own ComfyUI install "
+            "alexw5702-afk/krea2-anypaint into custom_nodes.",
+        )
+    if state.get("missing_files"):
+        raise api_error(
+            409,
+            "missing_models",
+            f"Krea 2 AnyPaint is not installed on {conn.name}: install it in Advanced (229 MB).",
+        )
+
+
 def capabilities(conn: ComfyConnection, ai: bool) -> dict[str, Any]:
     """What this connection can do for Advanced, and what is missing (shown in the UI)."""
     info = conn.info or {}
@@ -107,6 +129,19 @@ def capabilities(conn: ComfyConnection, ai: bool) -> dict[str, Any]:
         "missing_nodes_text": missing_t2i,
         "missing_nodes_edit": missing_edit,
         "sam3": _sam3_installed(conn),
+        # Region redraws run on Krea 2 AnyPaint (its nodes come with a rented GPU's start, its
+        # LoRA with one click); never another method in its place.
+        "anypaint": info.get("anypaint")
+        or {
+            "ready": False,
+            "missing_nodes": list(anypaint.NODES),
+            "missing_files": [f.filename for f in anypaint.FILES],
+            "files": [],
+        },
+        "anypaint_file": {
+            "filename": anypaint.LORA.filename,
+            "size": anypaint.LORA.size,
+        },
         "sam3_file": {
             "url": pgupscaler.SAM3.url,
             "folder": pgupscaler.SAM3.folder,
@@ -190,6 +225,11 @@ async def _prepare(
                 "missing_models",
                 f"SAM 3.1 (finds hair, mouth, background …) is not installed on {conn.name}.",
             )
+        if regions:
+            _need_anypaint(caps, conn)
+    elif body.lora is not None:
+        # Text to image with a LoRA: a face short of the goal is redrawn with AnyPaint.
+        _need_anypaint(caps, conn)
     if body.analysis and not ai:
         raise api_error(
             409,
@@ -251,6 +291,7 @@ async def _prepare(
         "targets": targets,
         "identity": body.mode == "edit" and body.identity and lora_meta is not None,
         "improve_background": body.mode == "edit" and body.improve_background,
+        "unify_light": body.mode == "edit" and body.unify_light,
         "denoise": body.denoise,
         "analysis": body.analysis,
         "quality": body.quality,
