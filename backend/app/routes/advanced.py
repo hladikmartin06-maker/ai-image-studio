@@ -18,7 +18,7 @@ from sqlalchemy.orm import selectinload
 
 from app.advanced import compiler, engine, graphs
 from app.advanced.intelligence import IntelligenceError
-from app.comfy import anypaint, krea2
+from app.comfy import anypaint, krea2, pose_control
 from app.comfy import enhance as pgupscaler
 from app.comfy.generation import LoraUse, SourceImage, resolve_lora, source_input
 from app.comfy.service import file_capability, lora_filename, owned
@@ -55,6 +55,9 @@ class AdvancedBody(BaseModel):
     improve_background: bool = False
     # Edit: after a new background the whole photo once more, gently (off by default).
     unify_light: bool = False
+    # Edit: a pose from another photo (phase 2): the whole photo anew in it, or only the head.
+    pose_image: SourceImage | None = None
+    pose_part: Literal["body", "head"] = "body"
     # Edit strength for every region (None = per region: hair 0.85, mouth 0.7, …).
     denoise: float | None = Field(default=None, ge=graphs.DENOISE_MIN, le=graphs.DENOISE_MAX)
     # Stages the user switched on.
@@ -105,6 +108,35 @@ def _need_anypaint(caps: dict[str, Any], conn: ComfyConnection) -> None:
         )
 
 
+async def _pose_source(
+    db: AsyncSession, user: User, body: AdvancedBody, caps: dict[str, Any], conn: ComfyConnection
+) -> dict[str, Any]:
+    """A pose from another photo: Krea 2 Turbo (the pose LoRA's), its nodes and file, and
+    AnyPaint for the head's edge — refused with what is missing, never run another way."""
+    if body.variant != "turbo":
+        raise api_error(400, "invalid_parameter", "A pose from a photo runs on Krea 2 Turbo.")
+    state = caps["pose"]
+    if state.get("missing_nodes"):
+        raise api_error(
+            409,
+            "missing_nodes",
+            f"The pose nodes (Krea2 Ostris Edit) are missing on {conn.name}. A GPU rented by "
+            "the studio gets them when it starts: rent it again.",
+        )
+    if state.get("missing_files"):
+        raise api_error(
+            409,
+            "missing_models",
+            f"The pose LoRA is not installed on {conn.name}: install it in Advanced (229 MB).",
+        )
+    if body.pose_part == "head":
+        _need_anypaint(caps, conn)
+    try:
+        return await source_input(db, user, body.pose_image)
+    except GenerationRejected as exc:
+        raise _reject(exc) from exc
+
+
 def capabilities(conn: ComfyConnection, ai: bool) -> dict[str, Any]:
     """What this connection can do for Advanced, and what is missing (shown in the UI)."""
     info = conn.info or {}
@@ -138,6 +170,15 @@ def capabilities(conn: ComfyConnection, ai: bool) -> dict[str, Any]:
             "missing_files": [f.filename for f in anypaint.FILES],
             "files": [],
         },
+        # A pose from another photo (phase 2): the pose LoRA and the Krea2 Ostris Edit nodes.
+        "pose": info.get("pose")
+        or {
+            "ready": False,
+            "missing_nodes": list(pose_control.NODES),
+            "missing_files": [f.filename for f in pose_control.FILES],
+            "files": [],
+        },
+        "pose_file": {"filename": pose_control.LORA.filename, "size": pose_control.LORA.size},
         "anypaint_file": {
             "filename": anypaint.LORA.filename,
             "size": anypaint.LORA.size,
@@ -201,6 +242,7 @@ async def _prepare(
         raise api_error(400, "invalid_parameter", "Unsupported aspect ratio.")
     targets = [t for t in body.targets if t in compiler.TARGETS]
     source: dict[str, Any] | None = None
+    pose_source: dict[str, Any] | None = None
     if body.mode == "edit":
         if body.image is None:
             raise api_error(400, "invalid_parameter", "Add the photo to edit.")
@@ -214,10 +256,12 @@ async def _prepare(
             or identity
             or body.improve_background
             or any(t != "whole" for t in targets)
-            or bool(compiler.detected_targets(body.prompt))
+            # A body pose draws the whole photo from the text: what it names is not redrawn.
+            or (body.pose_part != "body" or body.pose_image is None)
+            and bool(compiler.detected_targets(body.prompt))
             or bool(body.spec)
         )
-        if not body.analysis and not regions and not body.spec:
+        if not body.analysis and not regions and not body.spec and body.pose_image is None:
             raise api_error(400, "invalid_parameter", "Choose what to change, or turn on analysis.")
         if regions and not caps["sam3"]:
             raise api_error(
@@ -227,6 +271,10 @@ async def _prepare(
             )
         if regions:
             _need_anypaint(caps, conn)
+        if body.pose_image is not None:
+            pose_source = await _pose_source(db, user, body, caps, conn)
+    elif body.pose_image is not None:
+        raise api_error(400, "invalid_parameter", "A pose from a photo needs a photo to edit.")
     elif body.lora is not None:
         # Text to image with a LoRA: a face short of the goal is redrawn with AnyPaint.
         _need_anypaint(caps, conn)
@@ -292,6 +340,7 @@ async def _prepare(
         "identity": body.mode == "edit" and body.identity and lora_meta is not None,
         "improve_background": body.mode == "edit" and body.improve_background,
         "unify_light": body.mode == "edit" and body.unify_light,
+        "pose": {"source": pose_source, "part": body.pose_part} if pose_source else None,
         "denoise": body.denoise,
         "analysis": body.analysis,
         "quality": body.quality,
@@ -311,7 +360,46 @@ class PlanBody(BaseModel):
     targets: list[str] = Field(default_factory=list, max_length=4)
     identity: bool = True
     improve_background: bool = False
+    pose_image: SourceImage | None = None
+    pose_part: Literal["body", "head"] = "body"
     adult: bool = False
+
+
+class PosePreviewBody(BaseModel):
+    image: SourceImage
+    part: Literal["body", "head"] = "body"
+
+
+@router.post("/pose-preview")
+async def pose_preview(
+    body: PosePreviewBody, user: User = Depends(current_user), db: AsyncSession = Depends(get_db)
+):
+    """The skeleton found in a pose photo (on this Mac, nothing sent anywhere), as the step
+    will use it: the whole body, or only the head and neck. The first call downloads the
+    pose models (about 350 MB)."""
+    import base64
+
+    from app.services import pose
+
+    try:
+        ref = await source_input(db, user, body.image)
+    except GenerationRejected as exc:
+        raise _reject(exc) from exc
+    path = storage.absolute(ref["file_path"])
+    try:
+        person = await pose.main_person(path)
+    except pose.PoseError as exc:
+        raise api_error(400, "pose_failed", exc.message) from exc
+    width, height = pose.size(path)
+    # A preview: at most 768 px on the long side.
+    factor = min(1.0, 768 / max(width, height))
+    w, h = max(1, round(width * factor)), max(1, round(height * factor))
+    png = pose.render(pose.scaled(person, w / width, h / height), w, h, body.part)
+    return {
+        "image": "data:image/png;base64," + base64.b64encode(png).decode(),
+        "width": w,
+        "height": h,
+    }
 
 
 @router.post("/plan")
@@ -351,11 +439,13 @@ async def plan(
                 identity=identity,
             )
         else:
+            body_pose = body.mode == "edit" and body.pose_image and body.pose_part == "body"
             spec = compiler.by_rules(
                 mode=body.mode,
                 prompt=prompt,
                 targets=body.targets,
-                whole=not body.improve_background,
+                whole=not body.improve_background and not body.pose_image,
+                detect=not body_pose,
             )
         spec = compiler.validate(
             spec,
@@ -363,6 +453,7 @@ async def plan(
             adult=body.adult,
             identity=identity,
             improve_background=body.mode == "edit" and body.improve_background,
+            pose=body.pose_part if body.mode == "edit" and body.pose_image else None,
         )
     except (GenerationRejected, PromptRefused, IntelligenceError) as exc:
         raise _reject(exc) from exc
@@ -402,6 +493,10 @@ def job_json(
     options = dict(job.options or {})
     for key in ("unet", "text_encoder", "vae"):
         options.pop(key, None)
+    shown = ("kind", "id", "thumb_url", "url", "width", "height")
+    if options.get("pose"):
+        source = options["pose"].get("source") or {}
+        options["pose"] = {**options["pose"], "source": {k: source.get(k) for k in shown}}
     started = job.started_at
     ended = job.finished_at
     return {
@@ -409,12 +504,7 @@ def job_json(
         "mode": job.mode,
         "variant": job.variant,
         "prompt": job.prompt,
-        "source": {
-            k: (job.source or {}).get(k)
-            for k in ("kind", "id", "thumb_url", "url", "width", "height")
-        }
-        if job.source
-        else None,
+        "source": {k: (job.source or {}).get(k) for k in shown} if job.source else None,
         "lora": options.get("lora"),
         "options": options,
         "spec": job.spec or None,
@@ -487,6 +577,7 @@ async def create_job(
                 adult=options["adult"],
                 identity=options["identity"],
                 improve_background=options["improve_background"],
+                pose=(options.get("pose") or {}).get("part"),
             )
         except ValidationError as exc:
             raise api_error(400, "invalid_parameter", "The plan is not valid.") from exc

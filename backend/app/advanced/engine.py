@@ -23,10 +23,18 @@ from sqlalchemy import select, update
 from sqlalchemy.orm import selectinload
 
 from app.advanced import crop, graphs, quality
-from app.advanced.compiler import Edit, Spec, by_ai, by_rules, face_edit, validate
+from app.advanced.compiler import (
+    POSE_TARGETS,
+    Edit,
+    Spec,
+    by_ai,
+    by_rules,
+    face_edit,
+    validate,
+)
 from app.advanced.intelligence import IntelligenceError
 from app.advanced.quality import FACE_MATCH, evaluate, failed, rank
-from app.comfy import anypaint, krea2
+from app.comfy import anypaint, krea2, pose_control
 from app.db import SessionLocal
 from app.models import (
     AdvancedJob,
@@ -37,7 +45,7 @@ from app.models import (
     ReferenceImage,
     User,
 )
-from app.services import faces, storage
+from app.services import faces, pose, storage
 from app.services.safety import PromptRefused
 from app.services.worker import worker
 
@@ -411,6 +419,181 @@ async def _edit(
     )
 
 
+# --- phase 2: a pose from another photo ---------------------------------------------------
+
+
+def _pose_file(job: AdvancedJob, key: str, data: bytes) -> dict[str, Any]:
+    """A file made on this Mac for one step (the skeleton, or the photo beside it), stored
+    with the request; the runner uploads it like a photo."""
+    from PIL import Image as PILImage
+
+    relative = f"{job.user_id}/advanced/{job.id}/{key}.png"
+    path = storage.root() / relative
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(data)
+    with PILImage.open(path) as im:
+        width, height = im.size
+    return {
+        "kind": "pose",
+        "id": f"{job.id}-{key}",
+        "file_path": relative,
+        "mime_type": "image/png",
+        "width": width,
+        "height": height,
+    }
+
+
+async def _pose_step(
+    job: AdvancedJob,
+    spec: Spec,
+    edit: Edit,
+    source: dict[str, Any],
+    key: str,
+    produced: list[Image],
+) -> Image:
+    """The pose of the reference photo (skeleton on this Mac, DWPose): the whole photo drawn
+    anew in it with the pose LoRA, or only the head with its neck, redrawn in its square and
+    blended in by AnyPaint. A missing person or head fails the step with its message."""
+    options = job.options or {}
+    reference = storage.absolute(options["pose"]["source"]["file_path"])
+    try:
+        ref = await pose.main_person(reference)
+    except pose.PoseError as exc:
+        raise StageFailed("pose_failed", exc.message) from exc
+    lora = options.get("lora")
+    args = _krea_args(job)
+    loras = [(pose_control.LORA.filename, pose_control.STRENGTH), *args["loras"]]
+    prompt = _with_trigger(job, edit.prompt) if lora else edit.prompt
+    seed = _seed(job, 0)
+    common = {"steps": pose_control.STEPS, "cfg": 1.0, "seed": seed, "engine": "advanced"}
+    if edit.target == "pose":
+        ref_w, ref_h = pose.size(reference)
+        # About 1 megapixel like the authors' example, in the reference's shape.
+        width, height = krea2.size_for_source(ref_w, ref_h, "1K")
+        skeleton = pose.render(pose.scaled(ref, width / ref_w, height / ref_h), width, height)
+        workflow = graphs.pose(
+            unet=args["unet"],
+            text_encoder=args["text_encoder"],
+            vae=args["vae"],
+            prompt=prompt,
+            width=width,
+            height=height,
+            seed=seed,
+            loras=loras,
+        )
+        image = await _gpu(
+            job,
+            key=key,
+            label="pose · Pose LoRA",
+            workflow=workflow,
+            prompt=prompt,
+            settings={"width": width, "height": height, "method": "Pose LoRA", **common},
+            source=_pose_file(job, f"{key}-skeleton", skeleton),
+            model_key=krea2.VARIANTS[job.variant].model_key,
+            family=krea2.FAMILY,
+            lora=lora,
+        )
+        produced.append(image)
+        return image
+    # Only the head: the reference's head pose put onto this photo's neck.
+    photo = storage.absolute(source["file_path"])
+    try:
+        target = await pose.main_person(photo, "the photo to edit")
+        head = pose.head_onto(ref, target)
+    except pose.PoseError as exc:
+        raise StageFailed("pose_failed", exc.message) from exc
+    w0, h0 = pose.size(photo)
+    width, height = krea2.size_for_source(w0, h0, options.get("resolution", "1K"))
+    skeleton = pose.render(head, w0, h0, "head")
+    sheet = pose.sheet(await asyncio.to_thread(photo.read_bytes), skeleton)
+    # The square holds the photo's own head (redrawn away) and the new one (drawn in).
+    squares = [
+        pose.head_square(pose.scaled(p, width / w0, height / h0), width, height, graphs.HEAD_FACTOR)
+        for p in (target, head)
+    ]
+    left, top = min(q[0] for q in squares), min(q[1] for q in squares)
+    side = min(
+        max(max(q[0] + q[2] for q in squares) - left, max(q[1] + q[2] for q in squares) - top),
+        width,
+        height,
+    )
+    square = (min(left, width - side), min(top, height - side), side)
+    workflow = graphs.head_pose(
+        unet=args["unet"],
+        text_encoder=args["text_encoder"],
+        vae=args["vae"],
+        prompt=prompt,
+        width=width,
+        height=height,
+        sheet_width=2 * w0,
+        sheet_height=h0,
+        seed=seed,
+        loras=loras,
+        crop=square,
+        crop_size=crop.CROP_SIZE,
+    )
+    image = await _gpu(
+        job,
+        key=key,
+        label="head_pose · Pose LoRA",
+        workflow=workflow,
+        prompt=prompt,
+        settings={
+            "width": width,
+            "height": height,
+            "method": "Pose LoRA",
+            "denoise": graphs.HEAD_DENOISE,
+            "head_square": list(square),
+            **common,
+        },
+        source=_pose_file(job, f"{key}-sheet", sheet),
+        model_key=krea2.VARIANTS[job.variant].model_key,
+        family=krea2.FAMILY,
+        lora=lora,
+    )
+    produced.append(image)
+    # The square's edge blended in by AnyPaint; everything else stays.
+    turbo = krea2.VARIANTS[job.variant]
+    seam = graphs.seam(
+        variant=job.variant,
+        unet=args["unet"],
+        text_encoder=args["text_encoder"],
+        vae=args["vae"],
+        prompt=prompt,
+        negative="",
+        width=width,
+        height=height,
+        seed=seed,
+        steps=args["steps"],
+        cfg=args["cfg"],
+        loras=[(anypaint.LORA.filename, anypaint.STRENGTH), *args["loras"]],
+        square=square,
+    )
+    blended = await _gpu(
+        job,
+        key=f"{key}-seam",
+        label="seam · AnyPaint",
+        workflow=seam,
+        prompt=prompt,
+        settings={
+            "width": width,
+            "height": height,
+            "method": "AnyPaint",
+            "seam_band": graphs.SEAM_BAND,
+            "seed": seed,
+            "steps": args["steps"],
+            "cfg": args["cfg"],
+            "engine": "advanced",
+        },
+        source=_image_input(image),
+        model_key=turbo.model_key,
+        family=krea2.FAMILY,
+        lora=lora,
+    )
+    produced.append(blended)
+    return blended
+
+
 # Face corrections of a person turned into the LoRA's character when the user set fewer (each
 # is one face redraw in its crop, stronger, with a new seed; the most alike face is kept).
 IDENTITY_TRIES = 2
@@ -493,7 +676,10 @@ async def _plan(job: AdvancedJob, user: User) -> Spec:
             mode=job.mode,
             prompt=job.prompt,
             targets=options.get("targets") or [],
-            whole=not options.get("improve_background"),
+            # A pose step or a better background is a change of its own: no whole-photo
+            # redraw is added when nothing else is asked.
+            whole=not options.get("improve_background") and not options.get("pose"),
+            detect=(options.get("pose") or {}).get("part") != "body",
         )
     spec = validate(
         spec,
@@ -501,6 +687,7 @@ async def _plan(job: AdvancedJob, user: User) -> Spec:
         adult=bool(options.get("adult")),
         identity=bool(options.get("identity")),
         improve_background=bool(options.get("improve_background")),
+        pose=(options.get("pose") or {}).get("part"),
     )
     await _update(job.id, spec=spec.model_dump())
     await _stage(job.id, "plan", "plan", status="completed", detail=spec.source)
@@ -533,7 +720,9 @@ async def _run(job_id: uuid.UUID) -> None:
             identity_edit = job.mode == "edit" and bool(options.get("identity"))
             for index, edit in enumerate(spec.edits):
                 key = f"edit{index + 1}"
-                if identity_edit and edit.target == "face":
+                if edit.target in POSE_TARGETS:
+                    image = await _pose_step(job, spec, edit, current, key, produced)
+                elif identity_edit and edit.target == "face":
                     image = await _identity_face(job, spec, edit, current, key, produced)
                 else:
                     image = await _edit(job, spec, edit, current, key, 0)

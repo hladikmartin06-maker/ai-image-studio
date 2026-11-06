@@ -104,7 +104,13 @@ Integrations and Settings.
     that it ran on AnyPaint; without AnyPaint nothing runs another way. **The background** stays as it is, unless your text asks for
     a new one ("change the background to a beach") or you switch on "Improve the background"
     (the same place, redrawn sharper); the person stays exactly as in the photo. "Unify the
-    light" (off by default) then redraws the whole photo very gently once more. For a **new hair colour** the hair is first
+    light" (off by default) then redraws the whole photo very gently once more. **A pose from
+    a photo** (Krea 2 Turbo): add a second photo of anyone in the pose you want and choose
+    "Whole body" (the photo is drawn anew in that pose from your text, then the LoRA brings
+    back the face and body) or "Head only" (only the head and neck turn; the rest stays).
+    "Show the skeleton" shows what was found; the skeleton is found on this Mac (the first
+    time downloads about 350 MB) and only it goes to the GPU. The pose LoRA is installed
+    once per GPU with one click. For a **new hair colour** the hair is first
     tinted with the colour (keeping its light and shadow; shown in the plan, where you can
     change or remove it), so Krea 2 starts from it; the **mouth, eyes and expression** are
     redrawn in an enlarged crop of the face (found on this Mac), so small details come out

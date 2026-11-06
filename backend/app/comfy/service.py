@@ -16,7 +16,7 @@ from urllib.parse import urlsplit
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.comfy import anypaint, enhance, krea2
+from app.comfy import anypaint, enhance, krea2, pose_control
 from app.comfy.client import ComfyClient, ComfyError
 from app.gpu.agent_client import AgentClient, AgentError
 from app.models import ComfyConnection, Lora, LoraVersion
@@ -132,6 +132,7 @@ async def inspect(conn: ComfyConnection) -> dict[str, Any]:
         "krea2": krea2.detect(info),
         "enhance": enhance.detect(info),
         "anypaint": anypaint.detect(info),
+        "pose": pose_control.detect(info),
         "file_capability": file_capability(conn),
         "checked_at": datetime.now(UTC).isoformat(),
     }

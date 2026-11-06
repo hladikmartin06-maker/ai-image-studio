@@ -174,7 +174,14 @@ repositories.
   alexw5702-afk/krea2-anypaint, an approved exception to "built-in nodes only", pinned to a
   commit and checked file by file by SHA-256 on the Mac, unpacked into custom_nodes when a
   rented GPU starts, `comfy/custom_nodes.py`). Without AnyPaint a region edit is refused
-  with what is missing — never run another way; every step's label names its method. No
+  with what is missing — never run another way; every step's label names its method. A pose
+  from another photo (phase 2, approved 2026-11-06; Turbo only): the skeleton found on the
+  Mac (DWPose ONNX on OpenCV, files pinned by SHA-256, `services/pose.py`), the pose LoRA
+  thedeoxen/Krea-2-pose-controlnet (`comfy/pose_control.py`, one click, SHA-256) on the
+  Krea2 Ostris Edit nodes (ostris/ComfyUI-Krea2-Ostris-Edit, pinned like AnyPaint's), the
+  character LoRA after it; the whole body drawn anew from the text in that pose, or only
+  the head and neck (a square redrawn, its edge blended by AnyPaint); the pose step first,
+  then figure, background, face. No
   Flux, no Qwen-Image / Qwen-Image-Edit. Every GPU step is an ordinary ComfyUI generation of the engine's own graph
   through the existing queue. It reads and never changes the Krea 2 workflow, Enhance photo,
   LoRA training, the worker/runner or existing tables (`test_advanced` pins the built-in

@@ -546,6 +546,46 @@ no Qwen-Image / Qwen-Image-Edit.
     0.2 over the whole photo afterwards (Turbo at 0.3 drew hatching and cracks, 2026-11-05;
     it also changes the person); the face in its crop at 0.65 with the LoRA at 1.0. Not yet
     run on a GPU.
+- **A pose from another photo** (the owner's plan, phase 2, approved 2026-11-06;
+  `comfy/pose_control.py`, `services/pose.py`, `advanced/graphs.pose / head_pose / seam`).
+  Krea 2 Turbo only; the character LoRA always after the pose LoRA. Not yet run on a GPU.
+  - Model card `huggingface.co/thedeoxen/Krea-2-pose-controlnet`, revision `1da9762c`
+    (Apache 2.0): an OpenPose ControlNet-style LoRA for Krea 2 Turbo, "not a reference + pose
+    fusion model" — the pose map is image 1 of the Krea2 Ostris Edit text encoder, look,
+    clothing, light and place come from the prompt; weight 0.8–1.0. Its example workflow
+    (`krea2_controlnet_pose.json`): UNETLoader → Krea2OstrisEditModelPatch (kv_cache on) →
+    LoraLoaderModelOnly (1.0) → KSampler (10 steps, CFG 1, euler, simple, denoise 1.0) on an
+    empty latent of the map's size; positive and negative (empty prompt) from
+    TextEncodeKrea2OstrisEdit (clip, prompt, vae, image1) through
+    FluxKontextMultiReferenceLatentMethod "index_timestep_zero" (built into ComfyUI,
+    `comfy_extras/nodes_flux.py`; only its name says Flux, no Flux model is used). NSFW is
+    not mentioned by the card.
+  - File `krea2_turbo_openpose_controlnet.safetensors`, 228,587,504 bytes, SHA-256
+    `0ddc3aafce4abdf7af3309b2f00c1bacdf15df1f2b4fb7adc9ff71795da90ecf` (Hugging Face's LFS
+    hash), into `models/loras` with one click, checked by SHA-256 on the GPU like AnyPaint's.
+  - ComfyUI nodes `github.com/ostris/ComfyUI-Krea2-Ostris-Edit` (MIT, v1.0.1, commit
+    `7756566160c4a1b24bb1bd9f0ff3ced1a83d7547`; `__init__.py` `4c0f96b0…`, `nodes.py`
+    `63952781…`, full hashes in `comfy/custom_nodes.py`): TextEncodeKrea2OstrisEdit (clip,
+    prompt; optional vae, image1–3), Krea2OstrisEditModelPatch (model, kv_cache). No extra
+    packages. Delivered with the GPU's start command exactly like AnyPaint's (an approved
+    exception to "built-in nodes only"). Without them, or without the LoRA, a pose request is
+    refused with what is missing.
+  - The skeleton is found on this Mac with DWPose (`huggingface.co/yzd-v/DWPose`, commit
+    `1a714410`, Apache 2.0): `yolox_l.onnx` (216,746,733 bytes, SHA-256 `7860ae79…`) finds
+    the people, `dw-ll_ucoco_384.onnx` (134,399,116 bytes, SHA-256 `724f4ff2…`) their 133
+    keypoints; run with OpenCV's DNN (no new package), pre- and post-processing as in
+    DWPose's own ONNX code, downloaded once into `storage/models/pose` and checked like the
+    face models; drawn in OpenPose's colours (body, hands, face points) on black. 0.4 s per
+    photo on the owner's Mac. Nothing is sent anywhere; only the drawn map goes to the GPU.
+  - Whole body: the photo is drawn anew from the request's text in the pose (about 1 MP in
+    the pose photo's shape, the authors' size); the LoRA steps after it (figure, face) bring
+    the character back. Regions the text names are not redrawn again after it.
+  - Only the head: the pose photo's head is moved onto this photo's neck (its size from the
+    eyes, ears and shoulders); the photo and that head skeleton go as one side-by-side image
+    that the graph cuts in two; a square around the head and neck (2.2 × its size) is
+    redrawn at 1024 px with denoise 0.9, pasted back with a soft edge, and AnyPaint redraws
+    a 48 px band either side of the square's edge. **Estimates** (2.2, 0.9, 48 px and the
+    31 px edge are the studio's, not the authors', who validated a full redraw only).
 - **Nodes** (built in, checked in ComfyUI v0.35.0's `nodes.py` and `comfy_extras`, the
   pinned rented image): text to image = UNETLoader, CLIPLoader (`krea2`),
   LoraLoaderModelOnly, CLIPTextEncode, ConditioningZeroOut (Turbo) or a negative (RAW),

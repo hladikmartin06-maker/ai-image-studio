@@ -24,7 +24,7 @@ from typing import Any
 
 from sqlalchemy import func, select
 
-from app.comfy import anypaint, custom_nodes, enhance, krea2
+from app.comfy import anypaint, custom_nodes, enhance, krea2, pose_control
 from app.comfy.client import ComfyError
 from app.comfy.service import agent_for, assoc, client_for, inspect
 from app.db import SessionLocal
@@ -648,6 +648,10 @@ async def install_model(db, conn: ComfyConnection, variant: str, filename: str |
         # Enhance photo: the six PGUpscaler files from its Hugging Face repository.
         files = enhance.downloads()
         sizes = {f.filename: f.size / 1e9 for f in enhance.FILES}
+    elif variant == pose_control.FAMILY:
+        # Advanced's pose step: the Krea 2 pose LoRA (checked by SHA-256 on the GPU).
+        files = pose_control.downloads()
+        sizes = {f.filename: f.size / 1e9 for f in pose_control.FILES}
     elif variant == anypaint.FAMILY:
         # Advanced's region redraw: the Krea 2 AnyPaint LoRA (checked by SHA-256 on the GPU).
         files = anypaint.downloads()

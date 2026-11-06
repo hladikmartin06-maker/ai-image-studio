@@ -53,7 +53,17 @@ ANYPAINT = CustomNode(
         ),
     ),
 )
-NODES = (ANYPAINT,)
+# v1.0.1 of 2026-07-17 ("Version bump"), MIT, checked 2026-11-06 (phase 2: the pose LoRA).
+OSTRIS_EDIT = CustomNode(
+    folder="ComfyUI-Krea2-Ostris-Edit",
+    repo="ostris/ComfyUI-Krea2-Ostris-Edit",
+    commit="7756566160c4a1b24bb1bd9f0ff3ced1a83d7547",
+    files=(
+        ("__init__.py", "4c0f96b0f0006df5a559d09d44b8d521a32d7992383223310b5ba2a3f88e3e42"),
+        ("nodes.py", "63952781029bcd455c8855cbba3f3ff0696f9ed2fa9220c7033a215b04cc7d99"),
+    ),
+)
+NODES = (ANYPAINT, OSTRIS_EDIT)
 _lock = asyncio.Lock()
 transport: httpx.AsyncBaseTransport | None = None  # tests answer GitHub themselves
 

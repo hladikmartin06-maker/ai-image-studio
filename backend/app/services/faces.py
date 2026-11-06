@@ -110,7 +110,7 @@ async def ensure_models() -> tuple[Path, Path]:
         return paths[0], paths[1]
 
 
-async def _download(model: FaceModel, path: Path) -> None:
+async def _download(model: FaceModel, path: Path, what: str = "The face model") -> None:
     part = path.with_suffix(".part")
     last = "no source answered"
     async with httpx.AsyncClient(
@@ -133,7 +133,7 @@ async def _download(model: FaceModel, path: Path) -> None:
                 return
             last = "the file did not match its checksum"
     part.unlink(missing_ok=True)
-    raise FaceError(f"The face model could not be downloaded ({last}). Check the internet.")
+    raise FaceError(f"{what} could not be downloaded ({last}). Check the internet.")
 
 
 class _Engine:

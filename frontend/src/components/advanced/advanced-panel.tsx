@@ -43,6 +43,7 @@ import {
   useInstallKrea2Model,
   useLoras,
   usePlanAdvanced,
+  usePosePreview,
   useSettings,
   useStartAdvanced,
   useTestComfy,
@@ -58,8 +59,11 @@ function pct(v: number | null | undefined) {
 }
 
 /** The engine's stage keys as people read them. */
+// Steps that are not regions to choose: the pose, the head's pose and its blended edge.
+const STEP_NAMES = [...TARGETS, "pose", "head_pose", "seam"];
+
 function stageLabel(stage: AdvancedStage, t: (k: MessageKey, v?: Record<string, string | number>) => string) {
-  const target = (name: string) => (TARGETS.includes(name as AdvancedTarget) ? t(`adv.target.${name}` as MessageKey) : name);
+  const target = (name: string) => (STEP_NAMES.includes(name) ? t(`adv.target.${name}` as MessageKey) : name);
   if (stage.key === "plan") return t("adv.stage.plan");
   if (stage.key === "prepare") return t(stage.status === "skipped" ? "adv.stage.prepareMissing" : "adv.stage.prepare");
   if (stage.key === "generate") return t("adv.stage.generate");
@@ -67,8 +71,9 @@ function stageLabel(stage: AdvancedStage, t: (k: MessageKey, v?: Record<string, 
   if (stage.key.startsWith("check")) return t("adv.stage.check");
   if (stage.key.endsWith("-light")) return t("adv.stage.light");
   if (stage.key.startsWith("edit")) {
-    // The engine names the method it used ("body · AnyPaint"); it never switches silently.
-    const method = stage.label.includes("AnyPaint") ? "AnyPaint" : "";
+    // The engine names the method it used ("body · AnyPaint", "pose · Pose LoRA"); it never
+    // switches silently.
+    const method = stage.label.split(" · ")[1] ?? "";
     const name = target(stage.label.split(" ")[0]);
     return method ? t("adv.stage.editMethod", { target: name, method }) : t("adv.stage.edit", { target: name });
   }
@@ -326,6 +331,10 @@ export function AdvancedPanel({ header }: { header: React.ReactNode }) {
   const [mode, setMode] = useState<Mode>("text-to-image");
   const [variant, setVariant] = useState<"turbo" | "raw">("turbo");
   const [photo, setPhoto] = useState<PickedPhoto | null>(null);
+  const [posePhoto, setPosePhoto] = useState<PickedPhoto | null>(null);
+  const [posePart, setPosePart] = useState<"body" | "head">("body");
+  const [skeleton, setSkeleton] = useState<string | null>(null);
+  const posePreview = usePosePreview();
   const [loraVersion, setLoraVersion] = useState("");
   // null = the default for the mode: text to image draws the LoRA's face and figure closer
   // at 1.3 (the owner's hard prompts, 2026-11-06: 42–53 % → 44–69 % alike, no artifacts).
@@ -380,6 +389,10 @@ export function AdvancedPanel({ header }: { header: React.ReactNode }) {
     setVariant(j.variant);
     setPrompt(j.prompt);
     setPhoto(j.mode === "edit" && j.source ? { kind: j.source.kind as "reference" | "image", id: j.source.id, thumb_url: j.source.thumb_url } : null);
+    const ps = o.pose?.source;
+    setPosePhoto(ps ? { kind: ps.kind as "reference" | "image", id: ps.id, thumb_url: ps.thumb_url ?? "" } : null);
+    setPosePart(o.pose?.part ?? "body");
+    setSkeleton(null);
     const loraId = o.lora?.version_id ?? "";
     const loraExists = Boolean(loraId) && (loras.data?.items ?? []).some((l) => l.usable_versions.some((v) => v.id === loraId));
     setLoraVersion(loraExists ? loraId : "");
@@ -417,11 +430,15 @@ export function AdvancedPanel({ header }: { header: React.ReactNode }) {
     problems.push(t("adv.nodesMissing", { nodes: (mode === "edit" ? c.missing_nodes_edit : c.missing_nodes_text).join(", ") }));
   if (mode === "edit" && !photo) problems.push(t("adv.photoFirst"));
   if (mode === "edit" && c && !c.sam3 && (analysis || identityOn || improveBackground || targets.some((x) => x !== "whole"))) problems.push(t("adv.sam3Missing"));
-  if (mode === "edit" && !analysis && !identityOn && !improveBackground && !targets.length && !draft) problems.push(t("adv.chooseRegion"));
+  if (mode === "edit" && !analysis && !identityOn && !improveBackground && !posePhoto && !targets.length && !draft) problems.push(t("adv.chooseRegion"));
   // Region redraws (and a LoRA face in text to image) run on Krea 2 AnyPaint, never without it.
   const needsAnypaint = mode === "edit" || Boolean(loraVersion);
   if (needsAnypaint && c && !c.anypaint.ready)
     problems.push(t(c.anypaint.missing_nodes.length ? "adv.anypaintNodes" : "adv.anypaintMissing"));
+  // A pose from a photo: Krea 2 Turbo with the pose LoRA and its nodes, never another way.
+  const withPose = mode === "edit" && Boolean(posePhoto);
+  if (withPose && variant !== "turbo") problems.push(t("adv.poseTurbo"));
+  if (withPose && c && !c.pose.ready) problems.push(t(c.pose.missing_nodes.length ? "adv.poseNodes" : "adv.poseMissing"));
   if (analysis && c && !c.ai) problems.push(t("adv.aiMissing"));
   if (!prompt.trim()) problems.push(t("adv.promptFirst"));
   if (chosenLora?.disabled) problems.push(t("adv.loraIncompatible"));
@@ -441,6 +458,8 @@ export function AdvancedPanel({ header }: { header: React.ReactNode }) {
     identity: identityOn,
     improve_background: mode === "edit" && improveBackground,
     unify_light: mode === "edit" && unifyLight,
+    pose_image: mode === "edit" && posePhoto ? { kind: posePhoto.kind, id: posePhoto.id } : null,
+    pose_part: posePart,
     denoise,
     analysis,
     quality,
@@ -483,6 +502,8 @@ export function AdvancedPanel({ header }: { header: React.ReactNode }) {
           identity: identityOn,
           improve_background: mode === "edit" && improveBackground,
           unify_light: mode === "edit" && unifyLight,
+          pose_image: mode === "edit" && posePhoto ? { kind: posePhoto.kind, id: posePhoto.id } : null,
+          pose_part: posePart,
           adult,
         }),
       );
@@ -506,6 +527,26 @@ export function AdvancedPanel({ header }: { header: React.ReactNode }) {
     try {
       await install.mutateAsync({ id: conn.id, variant: "anypaint" });
       toast.success(t("adv.anypaintDownloading"));
+    } catch (e) {
+      toast.error(e instanceof ApiError ? e.message : t("errors.generic"));
+    }
+  };
+
+  const installPose = async () => {
+    if (!conn) return;
+    try {
+      await install.mutateAsync({ id: conn.id, variant: "pose" });
+      toast.success(t("adv.poseDownloading"));
+    } catch (e) {
+      toast.error(e instanceof ApiError ? e.message : t("errors.generic"));
+    }
+  };
+
+  const showSkeleton = async () => {
+    if (!posePhoto) return;
+    try {
+      const r = await posePreview.mutateAsync({ image: { kind: posePhoto.kind, id: posePhoto.id }, part: posePart });
+      setSkeleton(r.image);
     } catch (e) {
       toast.error(e instanceof ApiError ? e.message : t("errors.generic"));
     }
@@ -617,6 +658,66 @@ export function AdvancedPanel({ header }: { header: React.ReactNode }) {
                         </Button>
                       </div>
                     </Notice>
+                  ) : null}
+                  <PhotoPicker
+                    title={t("adv.posePhoto")}
+                    value={posePhoto}
+                    onChange={(p) => {
+                      setPosePhoto(p);
+                      setSkeleton(null);
+                      setDraft(null);
+                    }}
+                  />
+                  {posePhoto ? (
+                    <>
+                      <div className="hint">{t("adv.poseHint")}</div>
+                      <Field label={t("adv.posePart")} hint={t(posePart === "head" ? "adv.poseHeadHint" : "adv.poseBodyHint")}>
+                        <Segmented
+                          label={t("adv.posePart")}
+                          value={posePart}
+                          block
+                          onChange={(v) => {
+                            setPosePart(v);
+                            setSkeleton(null);
+                            setDraft(null);
+                          }}
+                          options={[
+                            { value: "body", label: t("adv.poseBody") },
+                            { value: "head", label: t("adv.poseHead") },
+                          ]}
+                        />
+                      </Field>
+                      <div className="row wrap" style={{ gap: 8, alignItems: "center" }}>
+                        <Button size="sm" variant="ghost" loading={posePreview.isPending} onClick={showSkeleton}>
+                          {t("adv.poseShow")}
+                        </Button>
+                        {posePreview.isPending ? <span className="tiny subtle">{t("adv.poseFirstRun")}</span> : null}
+                      </div>
+                      {skeleton ? (
+                        <img src={skeleton} alt={t("adv.posePreview")} style={{ maxWidth: "100%", maxHeight: 320, borderRadius: 8, alignSelf: "flex-start" }} />
+                      ) : null}
+                      {c && !c.pose.ready ? (
+                        <Notice tone="warning">
+                          {c.pose.missing_nodes.length ? (
+                            <div>{t("adv.poseNodes")}</div>
+                          ) : (
+                            <div>{t("adv.poseNeed", { size: formatBytes(c.pose_file.size, locale) })}</div>
+                          )}
+                          <div className="row wrap" style={{ gap: 8, marginTop: 8 }}>
+                            {!c.pose.missing_nodes.length && c.file_capability === "agent" ? (
+                              <Button size="sm" icon={<Download />} loading={install.isPending} onClick={installPose}>
+                                {t("adv.poseInstall")}
+                              </Button>
+                            ) : !c.pose.missing_nodes.length ? (
+                              <span className="tiny mono">models/loras/{c.pose_file.filename}</span>
+                            ) : null}
+                            <Button size="sm" variant="ghost" icon={<RefreshCw />} loading={testConn.isPending} onClick={recheck}>
+                              {t("adv.recheck")}
+                            </Button>
+                          </div>
+                        </Notice>
+                      ) : null}
+                    </>
                   ) : null}
                 </>
               ) : null}

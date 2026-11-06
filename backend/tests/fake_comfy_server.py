@@ -77,6 +77,11 @@ NODES = [
     "Krea2AnyPaintPrepare",
     "Krea2AnyPaintEncode",
     "Krea2AnyPaintModelPatch",
+    # Advanced: a pose from a photo (custom nodes ostris/ComfyUI-Krea2-Ostris-Edit; the
+    # reference-latent node is built into ComfyUI).
+    "TextEncodeKrea2OstrisEdit",
+    "Krea2OstrisEditModelPatch",
+    "FluxKontextMultiReferenceLatentMethod",
 ]
 # The Enhance photo (PGUpscaler) model files, by ComfyUI models folder.
 ENHANCE_FILES = {

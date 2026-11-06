@@ -854,7 +854,7 @@ export function useComfyPower() {
 }
 
 export function useInstallKrea2Model() {
-  return useComfyMutation(({ id, ...body }: { id: string; variant: "turbo" | "raw" | "pgupscaler" | "anypaint"; filename?: string | null }) =>
+  return useComfyMutation(({ id, ...body }: { id: string; variant: "turbo" | "raw" | "pgupscaler" | "anypaint" | "pose"; filename?: string | null }) =>
     api<ComfyConnection>(`/api/comfy/connections/${id}/models/install`, { body }),
   );
 }
@@ -1318,6 +1318,13 @@ export function useStartAdvanced() {
       void qc.invalidateQueries({ queryKey: advancedKeys.jobs });
       void qc.invalidateQueries({ queryKey: ["generations"] });
     },
+  });
+}
+
+export function usePosePreview() {
+  return useMutation({
+    mutationFn: (body: { image: { kind: string; id: string }; part: "body" | "head" }) =>
+      api<{ image: string; width: number; height: number }>("/api/advanced/pose-preview", { body }),
   });
 }
 

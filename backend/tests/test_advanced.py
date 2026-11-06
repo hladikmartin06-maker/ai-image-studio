@@ -4,24 +4,28 @@ training are only read; a snapshot proves their graphs did not change."""
 
 from __future__ import annotations
 
+import base64
 import hashlib
+import io
 import json
 import uuid
 from pathlib import Path
 
 import httpx
+import numpy as np
 import pytest
+from PIL import Image as PILImage
 from sqlalchemy import select
 
-from app.advanced import crop, engine
+from app.advanced import compiler, crop, engine, graphs
 from app.ai.providers.openai_compat import OpenAICompatibleProvider
 from app.ai.registry import AI_PROVIDERS, set_adapter
-from app.comfy import anypaint, enhance, krea2
+from app.comfy import anypaint, enhance, krea2, pose_control
 from app.comfy import runner as comfy_runner
 from app.comfy.client import ComfyClient
 from app.db import SessionLocal
 from app.models import AdvancedJob, Generation, Image
-from app.services import faces
+from app.services import faces, pose
 from tests.ai_fakes import AI_KEY, FakeAI
 from tests.conftest import Api, make_user
 from tests.fake_comfy_server import ENHANCE_FILES, KREA_FILES, FakeComfy
@@ -51,6 +55,7 @@ def comfy(tmp_path: Path):
     (tmp_path / "ComfyUI" / "models" / "loras").mkdir(parents=True)
     files = {k: list(KREA_FILES.get(k, [])) + ENHANCE_FILES.get(k, []) for k in KREA_FILES}
     files["loras"].append(anypaint.LORA.filename)  # installed with one click
+    files["loras"].append(pose_control.LORA.filename)
     fake = FakeComfy(files=files, models_dir=str(tmp_path / "ComfyUI"))
     ComfyClient.transport = fake.transport()
     comfy_runner.POLL_INITIAL = 0.01
@@ -1483,3 +1488,259 @@ def test_anypaint_download_is_pinned_and_detected():
     del info["Krea2AnyPaintEncode"]
     state = anypaint.detect(info)
     assert state["ready"] is False and state["missing_nodes"] == ["Krea2AnyPaintEncode"]
+
+
+# --- phase 2: a pose from another photo (the skeleton on the Mac, the pose LoRA on the GPU) ---
+# The pose models are not run here: `pose.main_person` is replaced by a drawn person.
+
+
+def person(w: int, h: int, *, turn: float = 0.0, size: float = 1.0) -> pose.Person:
+    """A standing person filling a w × h photo (COCO-WholeBody points); `turn` moves the face
+    sideways (a head turn), `size` scales the person around the photo's centre."""
+    u = h / 10 * size
+    cx, top = w / 2, h / 2 - 5 * u
+    body = {
+        0: (turn, 1.0), 1: (turn - 0.3, 0.8), 2: (turn + 0.3, 0.8), 3: (-0.6, 0.9),
+        4: (0.6, 0.9), 5: (-1.2, 2), 6: (1.2, 2), 7: (-1.5, 3.5), 8: (1.5, 3.5),
+        9: (-1.6, 5), 10: (1.6, 5), 11: (-0.8, 5), 12: (0.8, 5), 13: (-0.8, 7),
+        14: (0.8, 7), 15: (-0.8, 9), 16: (0.8, 9),
+    }  # fmt: skip
+    pts, conf = np.zeros((133, 2)), np.zeros(133)
+    for k, (x, y) in body.items():
+        pts[k] = (cx + x * u, top + y * u)
+        conf[k] = 0.9
+    return pose.Person(pts, conf, (cx - 2 * u, top + 0.5 * u, cx + 2 * u, top + 9.5 * u))
+
+
+def drawn_rows(png: bytes) -> np.ndarray:
+    pixels = np.asarray(PILImage.open(io.BytesIO(png)).convert("L"))
+    return np.nonzero(pixels.max(1))[0]
+
+
+def test_skeleton_maps_and_head_geometry():
+    """The whole body or only the head and neck, at the size asked; the reference's head
+    moved onto the target's neck; the head's square inside the photo; the sheet side by
+    side."""
+    p = pose.scaled(person(64, 80), 10, 10)  # 640 × 800, the neck at y 160
+    body = pose.render(p, 640, 800)
+    head = pose.render(p, 640, 800, "head")
+    assert PILImage.open(io.BytesIO(body)).size == (640, 800)
+    assert drawn_rows(body).max() > 700  # down to the ankles
+    assert drawn_rows(head).max() < 170 and drawn_rows(head).min() >= 55
+    # The reference (smaller, turned) onto the target's neck, at the target's head size.
+    reference = person(64, 80, turn=0.5, size=0.5)
+    target = pose.scaled(person(64, 80), 10, 10)
+    moved = pose.head_onto(reference, target)
+    neck = (moved.points[5] + moved.points[6]) / 2
+    assert np.allclose(neck, (target.points[5] + target.points[6]) / 2)
+    assert moved.points[0][0] > target.points[0][0]  # the face turned like the reference
+    left, top, side = pose.head_square(moved, 640, 800, graphs.HEAD_FACTOR)
+    assert left >= 0 and top >= 0 and left + side <= 640 and top + side <= 800
+    assert left <= moved.points[0][0] <= left + side and top <= moved.points[0][1] <= top + side
+    # No neck in one photo: refused with a message, never guessed.
+    hidden = person(64, 80)
+    hidden.conf[5] = 0
+    with pytest.raises(pose.PoseError):
+        pose.head_onto(reference, hidden)
+    buf = io.BytesIO()
+    PILImage.new("RGB", (30, 40), (200, 0, 0)).save(buf, "PNG")
+    sheet = PILImage.open(io.BytesIO(pose.sheet(buf.getvalue(), head)))
+    assert sheet.size == (60, 40) and sheet.getpixel((5, 5)) == (200, 0, 0)
+
+
+def test_pose_lora_download_is_pinned_and_detected():
+    (item,) = pose_control.downloads()
+    assert item["url"].startswith("https://huggingface.co/thedeoxen/Krea-2-pose-controlnet/")
+    assert pose_control.REVISION in item["url"] and len(item["sha256"]) == 64
+    info = {
+        "LoraLoaderModelOnly": {"input": {"required": {"lora_name": [[item["filename"]]]}}},
+        **{n: {} for n in (*pose_control.NODES, "FluxKontextMultiReferenceLatentMethod")},
+    }
+    assert pose_control.detect(info)["ready"] is True
+    # The reference-latent node is built into ComfyUI, but an older one lacks it.
+    del info["FluxKontextMultiReferenceLatentMethod"]
+    state = pose_control.detect(info)
+    assert not state["ready"] and state["missing_nodes"] == [
+        "FluxKontextMultiReferenceLatentMethod"
+    ]
+
+
+def test_plan_keeps_only_the_pose_step_asked_for():
+    """A pose step only with a pose photo and of the part chosen: an edited plan cannot add
+    one or change it; it is the first step."""
+    text = "Turn her head to the left. Change her hair to red."
+    spec = compiler.by_rules(mode="edit", prompt=text, targets=[])
+    plain = compiler.validate(spec.model_copy(deep=True), user_prompt=text, adult=False)
+    assert all(e.target not in compiler.POSE_TARGETS for e in plain.edits)
+    head = compiler.validate(spec.model_copy(deep=True), user_prompt=text, adult=False, pose="head")
+    assert head.edits[0].target == "head_pose" and head.edits[0].region == ""
+    assert "red" not in head.edits[0].prompt  # only the head's own sentences
+    sneaked = head.model_copy(deep=True)
+    assert compiler.validate(sneaked, user_prompt=text, adult=False).edits[0].target == "hair"
+    head.checks = [compiler.Check(id="turned", question="Is the head turned?", target="head_pose")]
+    body = compiler.validate(head.model_copy(deep=True), user_prompt=text, adult=False, pose="body")
+    assert body.checks[0].target is None  # a pose is never redrawn as a correction
+    assert [e.target for e in body.edits].count("pose") == 1
+    assert "head_pose" not in [e.target for e in body.edits] and body.edits[0].target == "pose"
+
+
+@pytest.fixture
+def found(monkeypatch):
+    """The person `pose.main_person` finds in each photo (by what the step asks for)."""
+    seen: list[str] = []
+
+    async def main_person(path, what: str = "the pose photo"):
+        seen.append(what)
+        if what == "the pose photo":
+            return person(64, 80, turn=0.5)
+        return person(64, 80)
+
+    monkeypatch.setattr(pose, "main_person", main_person)
+    return seen
+
+
+def _edit(conn: dict, ref: dict, pose_ref: dict, part: str, prompt: str, **extra) -> dict:
+    return {
+        "connection_id": conn["id"],
+        "mode": "edit",
+        "variant": "turbo",
+        "prompt": prompt,
+        "image": {"kind": "reference", "id": ref["id"]},
+        "pose_image": {"kind": "reference", "id": pose_ref["id"]},
+        "pose_part": part,
+        "analysis": False,
+        "quality": False,
+        "corrections": 0,
+        **extra,
+    }
+
+
+async def test_body_pose_draws_the_photo_anew_in_the_reference_pose(
+    user: Api, comfy, tmp_path, found
+):
+    """The whole body: the skeleton (from the pose photo, on this Mac) is the pose LoRA's
+    image 1, the photo drawn anew from the text at 1K on Turbo — as the authors' example
+    (Ostris Edit patch, the pose LoRA at 1.0, 10 steps, CFG 1). Nothing else is added."""
+    conn = await connect(user, tmp_path)
+    ref, pose_ref = await photo(user), await photo(user)
+    job = await run(user, _edit(conn, ref, pose_ref, "body", "A woman in a red dress in a park."))
+    assert job["status"] == "completed", job
+    assert [s["key"] for s in job["stages"]] == ["plan", "edit1"]
+    assert job["stages"][1]["label"] == "pose · Pose LoRA"
+    assert job["options"]["pose"] == {
+        "part": "body",
+        "source": {
+            k: job["options"]["pose"]["source"][k]
+            for k in ("kind", "id", "thumb_url", "url", "width", "height")
+        },
+    }
+    assert "file_path" not in job["options"]["pose"]["source"]
+    (graph,) = sent_graphs(comfy)
+    assert graph["19"]["class_type"] == "Krea2OstrisEditModelPatch"
+    assert graph["19"]["inputs"]["kv_cache"] is True
+    assert graph["20"]["inputs"]["lora_name"] == pose_control.LORA.filename
+    assert graph["20"]["inputs"]["strength_model"] == 1.0
+    assert graph["4"]["class_type"] == "TextEncodeKrea2OstrisEdit"
+    assert graph["4"]["inputs"]["image1"] == ["10", 0]
+    assert graph["13"]["inputs"]["reference_latents_method"] == "index_timestep_zero"
+    sampler = graph["7"]["inputs"]
+    assert (sampler["steps"], sampler["cfg"], sampler["denoise"]) == (10, 1.0, 1.0)
+    assert sampler["latent_image"] == ["6", 0] and sampler["positive"] == ["13", 0]
+    size = (graph["6"]["inputs"]["width"], graph["6"]["inputs"]["height"])
+    assert size == krea2.size_for_source(64, 80, "1K")  # about 1 MP in the pose photo's shape
+    assert "Krea2AnyPaintPrepare" not in {n["class_type"] for n in graph.values()}
+
+
+async def test_head_pose_redraws_only_the_head_and_blends_its_edge(
+    user: Api, comfy, tmp_path, face_engine, found
+):
+    """Only the head: the reference's head put on this photo's neck, the photo and that
+    skeleton sent as one sheet; the head's square redrawn with the pose LoRA and the
+    character LoRA after it, then its edge blended by AnyPaint. The face is redrawn last with
+    the LoRA (identity)."""
+    lora = await imported_lora(user)
+    conn = await connect(user, tmp_path)
+    ref, pose_ref = await photo(user), await photo(user)
+    job = await run(
+        user,
+        _edit(
+            conn,
+            ref,
+            pose_ref,
+            "head",
+            "lmx woman looking over her shoulder",
+            lora={"version_id": lora["preferred_version_id"], "strength": 1.0},
+            identity=True,
+        ),
+    )
+    assert job["status"] == "completed", job
+    keys = [s["key"] for s in job["stages"]]
+    assert keys[:4] == ["plan", "edit1", "edit1-seam", "edit2"]
+    assert found == ["the pose photo", "the photo to edit"]
+    labels = {s["key"]: s["label"] for s in job["stages"]}
+    assert labels["edit1"] == "head_pose · Pose LoRA" and labels["edit1-seam"] == "seam · AnyPaint"
+    head, seam = sent_graphs(comfy)[:2]
+    loras = [head[k]["inputs"] for k in ("20", "21")]
+    assert loras[0]["lora_name"] == pose_control.LORA.filename and loras[1]["strength_model"] == 1.0
+    # The sheet is cut in two: the photo, then the skeleton beside it.
+    assert (
+        head["15"]["inputs"]["x"] == 0
+        and head["16"]["inputs"]["x"] == head["15"]["inputs"]["width"]
+    )
+    assert head["4"]["inputs"]["image1"] == ["57", 0]
+    assert head["7"]["inputs"]["denoise"] == graphs.HEAD_DENOISE
+    assert head["7"]["inputs"]["latent_image"] == ["12", 0]
+    left, top, side = (head["50"]["inputs"][k] for k in ("x", "y", "width"))
+    assert head["38"]["inputs"]["x"] == left and head["38"]["inputs"]["y"] == top
+    width, height = head["11"]["inputs"]["width"], head["11"]["inputs"]["height"]
+    assert left + side <= width and top + side <= height
+    assert "Krea2AnyPaintPrepare" in {n["class_type"] for n in seam.values()}
+
+
+async def test_pose_refusals_say_what_is_missing(user: Api, comfy, tmp_path, found):
+    """Turbo only; the pose LoRA and its nodes must be there; text to image has no pose —
+    each refused with what is missing, never run another way."""
+    conn = await connect(user, tmp_path)
+    ref, pose_ref = await photo(user), await photo(user)
+    body = _edit(conn, ref, pose_ref, "body", "A woman in a park.")
+    r = await user.post("/api/advanced/jobs", json={**body, "variant": "raw"})
+    assert r.status_code == 400 and "Turbo" in r.json()["error"]["message"]
+    r = await user.post("/api/advanced/jobs", json={**body, "mode": "text-to-image"})
+    assert r.status_code == 400
+    comfy.files["loras"].remove(pose_control.LORA.filename)
+    await user.post(f"/api/comfy/connections/{conn['id']}/test")
+    caps = (await user.get(f"/api/advanced/capabilities?connection_id={conn['id']}")).json()
+    assert caps["pose"]["missing_files"] == [pose_control.LORA.filename]
+    assert caps["pose_file"]["size"] == 228_587_504
+    r = await user.post("/api/advanced/jobs", json=body)
+    assert r.status_code == 409 and r.json()["error"]["code"] == "missing_models"
+    comfy.files["loras"].append(pose_control.LORA.filename)
+    comfy.nodes.remove("TextEncodeKrea2OstrisEdit")
+    await user.post(f"/api/comfy/connections/{conn['id']}/test")
+    r = await user.post("/api/advanced/jobs", json=body)
+    assert r.status_code == 409 and r.json()["error"]["code"] == "missing_nodes"
+    comfy.nodes.append("TextEncodeKrea2OstrisEdit")
+
+
+async def test_pose_preview_and_a_photo_without_a_person(user: Api, monkeypatch, found):
+    pose_ref = await photo(user)
+    r = await user.post(
+        "/api/advanced/pose-preview",
+        json={"image": {"kind": "reference", "id": pose_ref["id"]}, "part": "head"},
+    )
+    assert r.status_code == 200, r.text
+    data = r.json()["image"]
+    assert data.startswith("data:image/png;base64,")
+    png = base64.b64decode(data.split(",", 1)[1])
+    assert (
+        PILImage.open(io.BytesIO(png)).size == (64, 80) == (r.json()["width"], r.json()["height"])
+    )
+
+    async def nobody(path, what: str = "the pose photo"):
+        raise pose.PoseError(f"No person was found in {what}.")
+
+    monkeypatch.setattr(pose, "main_person", nobody)
+    r = await user.post(
+        "/api/advanced/pose-preview", json={"image": {"kind": "reference", "id": pose_ref["id"]}}
+    )
+    assert r.status_code == 400 and r.json()["error"]["code"] == "pose_failed"

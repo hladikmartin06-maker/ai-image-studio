@@ -31,6 +31,8 @@ Target = Literal[
     "breasts",
     "hips",
     "whole",
+    "pose",
+    "head_pose",
 ]
 TARGETS: tuple[str, ...] = (
     "hair",
@@ -50,6 +52,8 @@ TARGETS: tuple[str, ...] = (
 # pulled its likeness from 47 % to 16–28 %, 2026-11-06).
 ORDER = (
     "whole",
+    "pose",
+    "head_pose",
     "body",
     "breasts",
     "hips",
@@ -62,6 +66,8 @@ ORDER = (
     "mouth",
 )
 FIGURE = ("body", "breasts", "hips")
+# A pose from another photo (phase 2): the whole photo anew in its pose, or only the head.
+POSE_TARGETS = ("pose", "head_pose")
 MAX_EDITS = 6
 FACE_PARTS = ("mouth", "eyes", "expression")
 
@@ -518,6 +524,7 @@ def validate(
     adult: bool,
     identity: bool = False,
     improve_background: bool = False,
+    pose: str | None = None,
 ) -> Spec:
     """Prompts checked like every prompt; regions filled in; mouth contradictions removed.
     `identity` (an edit with a character LoRA): the figure and the face are redrawn with it.
@@ -530,6 +537,22 @@ def validate(
     ):
         first = sum(1 for e in spec.edits if e.target in ("whole", "body"))
         spec.edits.insert(first, background_edit(text))
+    # A pose step only with its reference photo and of the part asked for (an edited plan
+    # cannot add one or change it).
+    wanted = None if not pose or spec.mode != "edit" else POSE_TARGETS[pose == "head"]
+    spec.edits = [e for e in spec.edits if e.target not in POSE_TARGETS or e.target == wanted]
+    for check in spec.checks:
+        if check.target in POSE_TARGETS:
+            # A pose is never redrawn as a correction (that would be another method).
+            check.target = None
+    if wanted and not any(e.target == wanted for e in spec.edits):
+        # The whole photo in the reference's pose (its prompt says what to draw: the pose
+        # LoRA takes the look from the text), or only the head (its own sentences).
+        if pose == "head":
+            head = region_prompt(_changes(text), "face", fallback=subject(text))
+            spec.edits.insert(0, Edit(target="head_pose", prompt=head))
+        else:
+            spec.edits.insert(0, Edit(target="pose", prompt=text))
     if identity and spec.mode == "edit":
         _with_identity(spec, text)
     spec.edits = spec.edits[:MAX_EDITS]
@@ -544,7 +567,7 @@ def validate(
             edit.prompt = f"closed mouth, lips gently together, {edit.prompt}"
         if edit.target != "whole" and not edit.region.strip():
             edit.region = graphs.REGIONS.get(edit.target, edit.target)
-        if edit.target == "whole":
+        if edit.target in ("whole", *POSE_TARGETS):
             edit.region = ""
         if edit.target not in graphs.COLOUR_TARGETS:
             edit.color = None
@@ -596,17 +619,24 @@ def validate(
 
 
 def by_rules(
-    *, mode: str, prompt: str, targets: list[str], negative: str = "", whole: bool = True
+    *,
+    mode: str,
+    prompt: str,
+    targets: list[str],
+    negative: str = "",
+    whole: bool = True,
+    detect: bool = True,
 ) -> Spec:
     """Without analysis: the user's text as the prompt; for an edit, the regions they chose
     plus those the text asks to change (body, face, hair, background), each redrawn with that
     text; none = the whole photo (`whole`; off when only the background is improved). No
-    AI checks — only the measured ones."""
+    AI checks — only the measured ones. `detect` off (a body pose: the whole photo is drawn
+    from the text already): only the chosen regions."""
     text = " ".join(prompt.split())
     if mode == "text-to-image":
         return Spec(mode="text-to-image", prompt=text, negative=negative, source="rules")
     chosen = [t for t in targets if t in TARGETS]
-    chosen += [t for t in detected_targets(text) if t not in chosen]
+    chosen += [t for t in detected_targets(text) if t not in chosen] if detect else []
     edits = [
         Edit(
             target=t,  # type: ignore[arg-type]

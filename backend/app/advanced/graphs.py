@@ -29,7 +29,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from app.comfy import anypaint, enhance, krea2
+from app.comfy import anypaint, enhance, krea2, pose_control
 
 INPUT = krea2.INPUT_PLACEHOLDER  # the runner puts the uploaded photo's name here
 SAM3_FILE = enhance.SAM3.filename
@@ -599,6 +599,335 @@ def edit(
         }
         out = ["38", 0]
     wf["9"] = {"class_type": "SaveImage", "inputs": {"images": out, "filename_prefix": prefix}}
+    return wf
+
+
+# --- phase 2: a pose from another photo (the owner's plan, approved 2026-11-06) -------------
+# The pose LoRA (comfy/pose_control.py) wired as its authors' example; the head's square is
+# this many times the head with its neck (an estimate), redrawn from the photo's own crop at
+# HEAD_DENOISE (an estimate: from an empty latent, as the authors do, the place around the
+# head would be new) and pasted back with a soft edge; then AnyPaint redraws a band around
+# the square (SEAM_BAND px each way, an estimate) so no edge shows.
+HEAD_FACTOR = 2.2
+HEAD_DENOISE = 0.9
+SEAM_BAND = 48
+SQUARE_FEATHER = 31
+
+
+def _pose_model(wf: dict[str, Any], unet: str, loras: list[tuple[str, float]]) -> list[Any]:
+    """UNETLoader → Krea2OstrisEditModelPatch (K/V cache, as the authors' example) → LoRAs."""
+    wf["1"] = {"class_type": "UNETLoader", "inputs": {"unet_name": unet, "weight_dtype": "default"}}
+    wf["19"] = {
+        "class_type": "Krea2OstrisEditModelPatch",
+        "inputs": {"model": ["1", 0], "kv_cache": True},
+    }
+    model: list[Any] = ["19", 0]
+    for index, (name, strength) in enumerate(loras):
+        node = str(20 + index)
+        wf[node] = {
+            "class_type": "LoraLoaderModelOnly",
+            "inputs": {"model": model, "lora_name": name, "strength_model": strength},
+        }
+        model = [node, 0]
+    return model
+
+
+def _pose_conditioning(wf: dict[str, Any], prompt: str, skeleton: list[Any]) -> None:
+    """ "4"/"5": the prompt (and an empty one) with the skeleton as image 1; "13"/"14": the
+    reference method the authors use."""
+    for node, method, text in (("4", "13", prompt), ("5", "14", "")):
+        wf[node] = {
+            "class_type": "TextEncodeKrea2OstrisEdit",
+            "inputs": {"clip": ["2", 0], "prompt": text, "vae": ["3", 0], "image1": skeleton},
+        }
+        wf[method] = {
+            "class_type": "FluxKontextMultiReferenceLatentMethod",
+            "inputs": {
+                "conditioning": [node, 0],
+                "reference_latents_method": pose_control.REFERENCE_METHOD,
+            },
+        }
+
+
+def _pose_sampler(model: list[Any], latent: list[Any], seed: int, denoise: float) -> dict:
+    return {
+        "class_type": "KSampler",
+        "inputs": {
+            "model": model,
+            "seed": seed,
+            "steps": pose_control.STEPS,
+            "cfg": 1.0,
+            "sampler_name": "euler",
+            "scheduler": "simple",
+            "positive": ["13", 0],
+            "negative": ["14", 0],
+            "latent_image": latent,
+            "denoise": denoise,
+        },
+    }
+
+
+def pose(
+    *,
+    unet: str,
+    text_encoder: str,
+    vae: str,
+    prompt: str,
+    width: int,
+    height: int,
+    seed: int,
+    loras: list[tuple[str, float]],
+    prefix: str = "advanced",
+) -> dict[str, Any]:
+    """A new photo in the pose of the skeleton map (the input image, width × height): the
+    pose LoRA first in `loras`, then the character's. Everything else comes from the prompt."""
+    wf: dict[str, Any] = {}
+    model = _pose_model(wf, unet, loras)
+    wf["2"] = {
+        "class_type": "CLIPLoader",
+        "inputs": {"clip_name": text_encoder, "type": krea2.FAMILY, "device": "default"},
+    }
+    wf["3"] = {"class_type": "VAELoader", "inputs": {"vae_name": vae}}
+    wf["10"] = {"class_type": "LoadImage", "inputs": {"image": INPUT}}
+    _pose_conditioning(wf, prompt, ["10", 0])
+    wf["6"] = {
+        "class_type": "EmptyLatentImage",
+        "inputs": {"width": width, "height": height, "batch_size": 1},
+    }
+    wf["7"] = _pose_sampler(model, ["6", 0], seed, 1.0)
+    wf["8"] = {"class_type": "VAEDecode", "inputs": {"samples": ["7", 0], "vae": ["3", 0]}}
+    wf["9"] = {"class_type": "SaveImage", "inputs": {"images": ["8", 0], "filename_prefix": prefix}}
+    return wf
+
+
+def head_pose(
+    *,
+    unet: str,
+    text_encoder: str,
+    vae: str,
+    prompt: str,
+    width: int,
+    height: int,
+    sheet_width: int,
+    sheet_height: int,
+    seed: int,
+    loras: list[tuple[str, float]],
+    crop: tuple[int, int, int],
+    crop_size: int = 1024,
+    denoise: float = HEAD_DENOISE,
+    prefix: str = "advanced",
+) -> dict[str, Any]:
+    """The head (with its neck) turned like the skeleton: the input is the photo and its head
+    skeleton side by side (`sheet_width` = both); both are scaled to width × height, the square
+    `crop` (left, top, side) is redrawn at `crop_size` with the pose LoRA and pasted back with
+    a soft edge."""
+    left, top, side = crop
+    half = sheet_width // 2
+    wf: dict[str, Any] = {}
+    model = _pose_model(wf, unet, loras)
+    wf["2"] = {
+        "class_type": "CLIPLoader",
+        "inputs": {"clip_name": text_encoder, "type": krea2.FAMILY, "device": "default"},
+    }
+    wf["3"] = {"class_type": "VAELoader", "inputs": {"vae_name": vae}}
+    wf["10"] = {"class_type": "LoadImage", "inputs": {"image": INPUT}}
+    for node, x in (("15", 0), ("16", half)):
+        wf[node] = {
+            "class_type": "ImageCrop",
+            "inputs": {"image": ["10", 0], "width": half, "height": sheet_height, "x": x, "y": 0},
+        }
+    for node, image in (("11", ["15", 0]), ("17", ["16", 0])):
+        wf[node] = {
+            "class_type": "ImageScale",
+            "inputs": {
+                "image": image,
+                "upscale_method": "lanczos",
+                "width": width,
+                "height": height,
+                "crop": "disabled",
+            },
+        }
+    for crop_node, scale_node, image in (("50", "51", ["11", 0]), ("56", "57", ["17", 0])):
+        wf[crop_node] = {
+            "class_type": "ImageCrop",
+            "inputs": {"image": image, "width": side, "height": side, "x": left, "y": top},
+        }
+        wf[scale_node] = {
+            "class_type": "ImageScale",
+            "inputs": {
+                "image": [crop_node, 0],
+                "upscale_method": "lanczos",
+                "width": crop_size,
+                "height": crop_size,
+                "crop": "disabled",
+            },
+        }
+    _pose_conditioning(wf, prompt, ["57", 0])
+    wf["12"] = {"class_type": "VAEEncode", "inputs": {"pixels": ["51", 0], "vae": ["3", 0]}}
+    wf["7"] = _pose_sampler(model, ["12", 0], seed, denoise)
+    wf["8"] = {"class_type": "VAEDecode", "inputs": {"samples": ["7", 0], "vae": ["3", 0]}}
+    wf["52"] = {
+        "class_type": "ImageScale",
+        "inputs": {
+            "image": ["8", 0],
+            "upscale_method": "lanczos",
+            "width": side,
+            "height": side,
+            "crop": "disabled",
+        },
+    }
+    # A square that fades out towards its edge (blurred inside a margin of zeros).
+    n = _Nodes(wf, ["11", 0], side, side)
+    margin = min(SQUARE_FEATHER, side // 4)
+    empty = n.add(
+        {"class_type": "SolidMask", "inputs": {"value": 0.0, "width": side, "height": side}}
+    )
+    inner = n.add(
+        {
+            "class_type": "SolidMask",
+            "inputs": {"value": 1.0, "width": side - 2 * margin, "height": side - 2 * margin},
+        }
+    )
+    placed = n.add(
+        {
+            "class_type": "MaskComposite",
+            "inputs": {
+                "destination": empty,
+                "source": inner,
+                "x": margin,
+                "y": margin,
+                "operation": "add",
+            },
+        }
+    )
+    wf["38"] = {
+        "class_type": "ImageCompositeMasked",
+        "inputs": {
+            "destination": ["11", 0],
+            "source": ["52", 0],
+            "mask": n.soft(placed, SQUARE_FEATHER),
+            "x": left,
+            "y": top,
+            "resize_source": False,
+        },
+    }
+    wf["9"] = {
+        "class_type": "SaveImage",
+        "inputs": {"images": ["38", 0], "filename_prefix": prefix},
+    }
+    return wf
+
+
+def seam(
+    *,
+    variant: str,
+    unet: str,
+    text_encoder: str,
+    vae: str,
+    prompt: str,
+    negative: str,
+    width: int,
+    height: int,
+    seed: int,
+    steps: int,
+    cfg: float,
+    loras: list[tuple[str, float]],
+    square: tuple[int, int, int],
+    band: int = SEAM_BAND,
+    denoise: float = 1.0,
+    prefix: str = "advanced",
+) -> dict[str, Any]:
+    """AnyPaint redraws a band `band` px either side of the square's edge (left, top, side) —
+    where a pasted square met the photo — and keeps everything else (`loras` start with
+    AnyPaint's)."""
+    left, top, side = square
+    wf: dict[str, Any] = {}
+    model = _krea(wf, unet=unet, text_encoder=text_encoder, vae=vae, loras=loras)
+    _conditioning(wf, variant, prompt, negative)
+    wf["10"] = {"class_type": "LoadImage", "inputs": {"image": INPUT}}
+    wf["11"] = {
+        "class_type": "ImageScale",
+        "inputs": {
+            "image": ["10", 0],
+            "upscale_method": "lanczos",
+            "width": width,
+            "height": height,
+            "crop": "disabled",
+        },
+    }
+    n = _Nodes(wf, ["11", 0], width, height)
+
+    def solid(value: float, w: int, h: int) -> list[Any]:
+        return n.add(
+            {"class_type": "SolidMask", "inputs": {"value": value, "width": w, "height": h}}
+        )
+
+    def placed(mask: list[Any], x: int, y: int, other: list[Any], operation: str) -> list[Any]:
+        return n.add(
+            {
+                "class_type": "MaskComposite",
+                "inputs": {
+                    "destination": mask,
+                    "source": other,
+                    "x": max(0, x),
+                    "y": max(0, y),
+                    "operation": operation,
+                },
+            }
+        )
+
+    outer = side + 2 * band
+    inner = max(1, side - 2 * band)
+    ring = placed(
+        solid(0.0, width, height), left - band, top - band, solid(1.0, outer, outer), "add"
+    )
+    ring = placed(ring, left + band, top + band, solid(1.0, inner, inner), "subtract")
+    wf["95"] = {
+        "class_type": "Krea2AnyPaintPrepare",
+        "inputs": {
+            "source": ["11", 0],
+            "left": 0,
+            "top": 0,
+            "right": 0,
+            "bottom": 0,
+            "reference_max_edge": anypaint.REFERENCE_EDGE,
+            "boundary_redraw_px": anypaint.BOUNDARY_PX,
+            "generated_mask": ring,
+        },
+    }
+    wf["96"] = {
+        "class_type": "Krea2AnyPaintEncode",
+        "inputs": {
+            "clip": ["2", 0],
+            "prompt": prompt,
+            "vae": ["3", 0],
+            "semantic_reference": ["95", 0],
+            "known_image": ["95", 1],
+            "keep_mask": ["95", 3],
+            "vlm_reference": True,
+        },
+    }
+    wf["97"] = {
+        "class_type": "Krea2AnyPaintModelPatch",
+        "inputs": {"model": model, "kv_cache": True},
+    }
+    wf["7"] = _sampler(variant, ["97", 0], ["96", 1], seed, steps, cfg, denoise, ["96", 0])
+    wf["8"] = {"class_type": "VAEDecode", "inputs": {"samples": ["7", 0], "vae": ["3", 0]}}
+    wf["38"] = {
+        "class_type": "ImageCompositeMasked",
+        "inputs": {
+            "destination": ["11", 0],
+            "source": ["8", 0],
+            "mask": n.soft(n.grow(ring, PASTE_MARGIN), FEATHER),
+            "x": 0,
+            "y": 0,
+            "resize_source": False,
+        },
+    }
+    wf["9"] = {
+        "class_type": "SaveImage",
+        "inputs": {"images": ["38", 0], "filename_prefix": prefix},
+    }
     return wf
 
 

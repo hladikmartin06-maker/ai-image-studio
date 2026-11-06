@@ -1162,6 +1162,9 @@ export interface AdvancedCapabilities {
   // Region redraws run on Krea 2 AnyPaint (custom nodes added when a rented GPU starts).
   anypaint: { ready: boolean; missing_nodes: string[]; missing_files: string[] };
   anypaint_file: { filename: string; size: number };
+  // A pose from another photo: the pose LoRA and the Krea2 Ostris Edit nodes.
+  pose: { ready: boolean; missing_nodes: string[]; missing_files: string[] };
+  pose_file: { filename: string; size: number };
   ai: boolean;
   file_capability: string;
 }
@@ -1177,7 +1180,10 @@ export type AdvancedTarget =
   | "body"
   | "breasts"
   | "hips"
-  | "whole";
+  | "whole"
+  // Pose steps (a pose photo), never chosen as regions.
+  | "pose"
+  | "head_pose";
 
 export interface AdvancedEdit {
   target: AdvancedTarget;
@@ -1253,6 +1259,8 @@ export interface AdvancedOptions {
   improve_background?: boolean;
   // Edit: after a new background the whole photo once more, gently.
   unify_light?: boolean;
+  // Edit: the pose of another photo (the whole photo anew in it, or only the head).
+  pose?: { source: { kind: string; id: string; thumb_url?: string | null }; part: "body" | "head" } | null;
   denoise?: number | null;
   analysis?: boolean;
   quality?: boolean;
