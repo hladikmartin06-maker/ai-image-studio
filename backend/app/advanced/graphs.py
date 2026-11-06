@@ -64,7 +64,6 @@ NODES_EDIT = (
     "ImageCrop",
     "DifferentialDiffusion",
     "MaskComposite",
-    "SolidMask",
 )
 
 # Region edits: how much of the region is redrawn by default (the studio's values; Krea
@@ -108,11 +107,6 @@ REGIONS = {
 # which a whole-photo redraw would deform (owner's test 2026-11-05: an eye after the hair).
 EXCLUDE = {"body": "face", "hair": "eyes and eyebrows"}
 EXCLUDE_GROW = 8
-# The LoRA character's face: its mouth is redrawn at this share of the strength (the soft mask
-# DifferentialDiffusion reads), so the photo's mouth keeps its shape. At full strength the
-# owner's car photo got an open mouth, teeth or a tongue on some seeds; at half it stayed
-# closed on three seeds, and the tongue-out selfie kept its tongue on three.
-MOUTH_KEEP = ("mouth and lips", 0.5)
 DENOISE_MIN = 0.2
 DENOISE_MAX = 0.95
 
@@ -253,7 +247,6 @@ def edit(
     denoise: float,
     region: str | None,
     exclude: str | None = None,
-    soften: tuple[str, float] | None = None,
     grow: int = GROW_DEFAULT,
     feather: int = FEATHER,
     colour: str | None = None,
@@ -264,8 +257,7 @@ def edit(
 ) -> dict[str, Any]:
     """Redraws only `region` (SAM 3.1's text prompt) of the photo; None = the whole photo.
     The result outside the region is the photo itself (pasted back with a soft edge).
-    `exclude` (SAM 3.1's text prompt): taken out of the region. `soften` (text, share): that
-    part of the region is redrawn only at this share of the strength.
+    `exclude` (SAM 3.1's text prompt): taken out of the region.
     `colour` ("#RRGGBB"): the region is first tinted towards it (stronger on every
     `attempt`). `crop` (left, top, side at width × height): only that square is redrawn, at
     `crop_size`."""
@@ -362,40 +354,6 @@ def edit(
             if colour:
                 wf["49"] = _subtract(["32", 0], ["48", 0])
                 tinted = ["49", 0]
-        if soften:
-            text, share = soften
-            wf["70"] = {"class_type": "CLIPTextEncode", "inputs": {"clip": ["30", 1], "text": text}}
-            wf["71"] = {
-                "class_type": "SAM3_Detect",
-                "inputs": {
-                    "model": ["30", 0],
-                    "image": base,
-                    "conditioning": ["70", 0],
-                    "threshold": 0.4,
-                    "refine_iterations": 2,
-                    "individual_masks": False,
-                },
-            }
-            wf["72"] = {
-                "class_type": "GrowMask",
-                "inputs": {"mask": ["71", 0], "expand": EXCLUDE_GROW, "tapered_corners": True},
-            }
-            wf["73"] = {
-                "class_type": "SolidMask",
-                "inputs": {"value": 1.0 - share, "width": size_w, "height": size_h},
-            }
-            wf["74"] = {
-                "class_type": "MaskComposite",
-                "inputs": {
-                    "destination": ["72", 0],
-                    "source": ["73", 0],
-                    "x": 0,
-                    "y": 0,
-                    "operation": "multiply",
-                },
-            }
-            wf["75"] = _subtract(redrawn, ["74", 0])
-            redrawn = ["75", 0]
         wf.update(
             {
                 # The soft mask decides what is redrawn and what is pasted back.

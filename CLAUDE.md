@@ -189,9 +189,8 @@ repositories.
   whole photo afterwards (Krea 2 Turbo at 0.3 drew hatching into hair and cracks into skin). Without analysis each region gets the request's
   own sentences about it (`compiler.region_prompt`); the face regions without the
   "keep/preserve" sentences (`_changes`: "preserve the mouth shape" opened a closed mouth),
-  the hair with them ("keep the wavy hairstyle" keeps the waves). The face's mouth is
-  redrawn at half the strength (`graphs.MOUTH_KEEP`, a soft mask: SAM 3.1 "mouth and
-  lips" × `SolidMask` 0.5 subtracted), so it keeps the photo's shape on every seed.
+  the hair with them ("keep the wavy hairstyle" keeps the waves). The mouth is redrawn with
+  the face (kept at half strength it left the photo's lips on the new face).
   The face is tried up to three times before the other edits, each from the same photo with
   a new seed (`engine._identity_face`, `IDENTITY_TRIES`): a try that draws a mouth or tongue
   the photo does not have (`quality.new_mouth`: red that appears below the lips) is not

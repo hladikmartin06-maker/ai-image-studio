@@ -589,7 +589,10 @@ one click), optionally Enhance photo, SFace on this Mac and the user's own AI as
   0.45 face heights) turned clearly redder in more than 0.5 % of its pixels
   (`quality.new_mouth`: red − mean(green, blue) up by more than 25). Measured on the car:
   tries with a new tongue 1.1–2.1 %, tries with the closed mouth kept 0.0 % on six seeds.
-  Of the remaining tries the most alike to the LoRA's photos is kept. The hair (redrawn at 0.85) keeps them: without
+  Of the remaining tries the most alike to the LoRA's photos is kept.
+  The half-strength mouth was removed the same morning: on a photo whose face changed more
+  (sitting on the floor) it left the old full lips on the new face, misplaced; with the
+  mouth redrawn fully the lips looked natural, and the tries catch a new tongue. The hair (redrawn at 0.85) keeps them: without
   "preserve the exact original wavy hairstyle, bangs" the selfie's waves became straight. YuNet misplaces
   the face of an extreme expression (the selfie: the box beside the mouth), so its score is
   low whatever the face looks like; the gentle tries then still keep the expression.
