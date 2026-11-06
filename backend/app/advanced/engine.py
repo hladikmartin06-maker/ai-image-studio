@@ -660,29 +660,24 @@ async def _identity_face(
     produced: list[Image],
 ) -> Image:
     """The LoRA character's face, tried up to 1 + IDENTITY_TRIES times from the same photo
-    with a new seed each: a try that draws a mouth or tongue the photo does not have is not
-    used (a LoRA whose photos include an open mouth draws one now and then), and of the rest
-    the one most alike to the LoRA's photos is kept. Measured on this Mac (YuNet, SFace)."""
+    with a new seed each, until one is as alike to the LoRA's photos as the goal; the most
+    alike try is kept. Measured on this Mac (SFace)."""
     refs = await _lora_photos(job)
-    original = storage.absolute(source["file_path"])
-    best: tuple[tuple[bool, float], Image] | None = None
+    best: tuple[float, Image] | None = None
     for attempt in range(IDENTITY_TRIES + 1):
         image = await _edit(
             job, spec, edit, source, key if attempt == 0 else f"{key}-try{attempt + 1}", attempt
         )
         produced.append(image)
-        result = storage.absolute(image.file_path)
         try:
-            mouth = await asyncio.to_thread(quality.new_mouth, original, result)
-            score, baseline = await quality.identity(result, refs)
+            score, baseline = await quality.identity(storage.absolute(image.file_path), refs)
         except faces.FaceError:
-            mouth, score, baseline = None, None, None
-        kept = mouth is None or mouth <= quality.NEW_MOUTH
+            score, baseline = None, None
+        value = score if score is not None else -1.0
+        if best is None or value > best[0]:
+            best = (value, image)
         goal = max(faces.MATCH_THRESHOLD, quality.IDENTITY_SHARE * (baseline or 0.0))
-        rank_key = (kept, score if score is not None else -1.0)
-        if best is None or rank_key > best[0]:
-            best = (rank_key, image)
-        if kept and (score is None or score >= goal):
+        if score is None or score >= goal:
             break
     assert best is not None
     return best[1]

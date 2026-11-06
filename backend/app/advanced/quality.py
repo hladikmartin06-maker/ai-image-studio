@@ -15,7 +15,6 @@ import asyncio
 from pathlib import Path
 from typing import Any
 
-import numpy as np
 from PIL import Image as PILImage
 from PIL import ImageChops, ImageOps
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -43,71 +42,6 @@ CHANGE_LEVEL = 24
 # are 64 % alike, and the owner saw a different woman (2026-11-05).
 FACE_MATCH = "face_match"
 IDENTITY_SHARE = 0.85
-
-
-# A mouth or tongue the photo does not have: share (%) of the pixels below the lips that turned
-# clearly redder (red minus the mean of green and blue up by more than MOUTH_RISE). The owner's
-# car photo (2026-11-05, LoRA Taila 2, whose photos include one with the tongue out): faces
-# with a new tongue 1.1–2.1 %, faces with the closed mouth kept 0.0 % on six seeds.
-MOUTH_RISE = 25
-NEW_MOUTH = 0.5
-
-
-def _landmarks(path: Path) -> tuple[list[float], int, int] | None:
-    """YuNet's largest face: x, y, w, h and five points, in the photo's own pixels."""
-    engine = faces._engine
-    detector = getattr(engine, "detector", None)
-    if detector is None:
-        return None
-    cv2 = engine.cv2
-    image = cv2.imdecode(np.frombuffer(path.read_bytes(), np.uint8), cv2.IMREAD_COLOR)
-    if image is None:
-        return None
-    oh, ow = image.shape[:2]
-    scale = min(1.0, 1600 / max(oh, ow))
-    if scale < 1.0:
-        image = cv2.resize(image, (int(ow * scale), int(oh * scale)))
-    with engine.lock:
-        detector.setInputSize((image.shape[1], image.shape[0]))
-        _, found = detector.detect(image)
-    if found is None or len(found) == 0:
-        return None
-    face = max(found, key=lambda f: f[2] * f[3])
-    return [float(v) / scale for v in face[:14]], ow, oh
-
-
-def new_mouth(original: Path, result: Path) -> float | None:
-    """% of the area below the original's lips that became redder (a tongue or an opened
-    mouth the photo does not have); None without a face."""
-    found = _landmarks(original)
-    if found is None:
-        return None
-    points, ow, oh = found
-    _, _, fw, fh = points[:4]
-    cx = (points[10] + points[12]) / 2
-    low = max(points[11], points[13])
-    with PILImage.open(result) as b:
-        size = b.size
-        after = np.asarray(ImageOps.exif_transpose(b).convert("RGB")).astype(float)
-    with PILImage.open(original) as a:
-        before = np.asarray(
-            ImageOps.exif_transpose(a).convert("RGB").resize(size, PILImage.Resampling.LANCZOS)
-        ).astype(float)
-    sx, sy = size[0] / ow, size[1] / oh
-    box = (
-        max(0, int((cx - 0.4 * fw) * sx)),
-        max(0, int((low + 0.02 * fh) * sy)),
-        min(size[0], int((cx + 0.4 * fw) * sx)),
-        min(size[1], int((low + 0.45 * fh) * sy)),
-    )
-    if box[2] <= box[0] or box[3] <= box[1]:
-        return None
-
-    def red(pixels: np.ndarray) -> np.ndarray:
-        part = pixels[box[1] : box[3], box[0] : box[2]]
-        return part[..., 0] - (part[..., 1] + part[..., 2]) / 2
-
-    return round(float(((red(after) - red(before)) > MOUTH_RISE).mean() * 100), 2)
 
 
 def changed_area(original: Path, result: Path) -> float:

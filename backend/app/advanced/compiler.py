@@ -344,18 +344,17 @@ def _ordered(edits: list[Edit]) -> list[Edit]:
 
 
 def _with_identity(spec: Spec, text: str) -> None:
-    """The face redrawn with the character LoRA first, on the photo itself (measured on the
-    owner's photos, 2026-11-05: 62 % alike to the LoRA's photos this way, 41 % after a masked
-    redraw of the whole person, which also changed poses, so the person is not redrawn), then
-    the other changes. No light pass over the whole photo afterwards: at 0.3 Krea 2 Turbo
-    drew hatching into the hair and cracks into the skin. The plan's own face edit is kept
-    (the user may have edited it)."""
+    """The other changes first (hair …), then the face redrawn with the character LoRA as the
+    last step, so the face that is measured is the face delivered: on the owner's photos
+    (2026-11-06) the hair step after the face pulled its likeness from 47 % to 16–28 %; with
+    the face last it stayed at 58–66 %. The person is not redrawn (it changed poses and
+    clothing). The plan's own face edit is kept (the user may have edited it)."""
     edits = [e for e in spec.edits if e.target not in ("whole", "body")]
     face = next((e for e in edits if e.target == "face"), None) or Edit(
         target="face", prompt=region_prompt(_changes(text), "face")
     )
     rest = _ordered([e for e in edits if e.target != "face"])
-    spec.edits = [face, *rest][:MAX_EDITS]
+    spec.edits = [*rest[: MAX_EDITS - 1], face]
 
 
 def validate(spec: Spec, *, user_prompt: str, adult: bool, identity: bool = False) -> Spec:

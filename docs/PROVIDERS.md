@@ -592,7 +592,15 @@ one click), optionally Enhance photo, SFace on this Mac and the user's own AI as
   Of the remaining tries the most alike to the LoRA's photos is kept.
   The half-strength mouth was removed the same morning: on a photo whose face changed more
   (sitting on the floor) it left the old full lips on the new face, misplaced; with the
-  mouth redrawn fully the lips looked natural, and the tries catch a new tongue. The hair (redrawn at 0.85) keeps them: without
+  mouth redrawn fully the lips looked natural.
+  The redness measure was removed the same morning too: on more photos the LoRA's fuller,
+  pinker lips raised it as much as a tongue (0–1.9 % without a tongue, 1.0–1.9 % with one;
+  lower boxes missed the tongue), so it threw away good faces. The tries pick by likeness
+  only. A LoRA trained with an expression in its photos (Taila 2: one tongue-out photo) can
+  draw it now and then; that is fixed by leaving such a photo out of its dataset.
+  The face is now the last step: the hair step after it changed the face in a mirror selfie
+  and a photo on the floor (SFace 47 % → 28 % and 16 %); hair first and the face last gave
+  58 %, 63 % and 66 % (car) with clean faces. The hair (redrawn at 0.85) keeps them: without
   "preserve the exact original wavy hairstyle, bangs" the selfie's waves became straight. YuNet misplaces
   the face of an extreme expression (the selfie: the box beside the mouth), so its score is
   low whatever the face looks like; the gentle tries then still keep the expression.

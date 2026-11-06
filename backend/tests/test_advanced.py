@@ -628,20 +628,16 @@ async def test_identity_tries_the_face_before_the_other_edits(
         return (28.0, 30.0, 6.0, 8.0, 64, 80)  # a small face in a body shot
 
     monkeypatch.setattr(crop, "face_box", face_box)
-    # Three tries of the face (the LoRA's photos are 60 % alike, so the goal is 51 %): the
-    # first draws a tongue the photo does not have (new red below the lips) although it is
-    # the most alike; the second is short of the goal; the third has both. The final check
-    # measures the chosen face once more.
+    # Three tries of the face (the LoRA's photos are 60 % alike, so the goal is 51 %): no
+    # match, then short of the goal, then a match. The final check measures it once more.
     measured: list[list[Path]] = []
-    scores = [0.58, 0.45, 0.55, 0.55]
-    mouths = [1.6, 0.0, 0.0]
+    scores = [0.21, 0.45, 0.55, 0.55]
 
     async def identity(result: Path, references: list[Path]):
         measured.append(references)
         return scores.pop(0), 0.6
 
     monkeypatch.setattr(quality, "identity", identity)
-    monkeypatch.setattr(quality, "new_mouth", lambda original, result: mouths.pop(0))
     lora = await imported_lora(user)
     for i, colour in enumerate([(200, 40, 40), (201, 41, 40)]):
         files = {"file": (f"t{i}.png", png_bytes(64, 64, colour), "image/png")}
@@ -663,16 +659,16 @@ async def test_identity_tries_the_face_before_the_other_edits(
     }
     # The plan before anything runs shows the same steps.
     shown = (await user.post("/api/advanced/plan", json={**body, "targets": []})).json()
-    assert [e["target"] for e in shown["edits"]] == ["face", "hair"]
+    assert [e["target"] for e in shown["edits"]] == ["hair", "face"]
     # No region chosen: with a LoRA the person becomes its character anyway.
     job = await run(user, body)
     assert job["status"] == "completed", job
     assert job["options"]["identity"] is True and job["options"]["prepare"] == "on"
     keys = [s["key"] for s in job["stages"]]
-    assert keys == ["plan", "prepare", "edit1", "edit1-try2", "edit1-try3", "edit2", "check"]
-    face, try2, try3, hair = sent_graphs(comfy)[-4:]
-    # The face first, in its enlarged crop, gently, with the LoRA and its own sentences; the
-    # person is not redrawn (no SAM 3.1 "person"); the hair last with its colour.
+    assert keys == ["plan", "prepare", "edit1", "edit2", "edit2-try2", "edit2-try3", "check"]
+    hair, face, try2, try3 = sent_graphs(comfy)[-4:]
+    # The hair first with its colour, then the face last, in its enlarged crop, gently, with
+    # the LoRA and its own sentences; the person is not redrawn (no SAM 3.1 "person").
     assert all(
         g.get("31", {}).get("inputs", {}).get("text") != "person" for g in sent_graphs(comfy)
     )
@@ -689,8 +685,8 @@ async def test_identity_tries_the_face_before_the_other_edits(
     assert hair["31"]["inputs"]["text"] == "hair" and hair["41"]["inputs"]["blend_mode"] == (
         "multiply"
     )
-    # Every try starts from the same photo; the hair continues from the third try (the most
-    # alike was the first, but it drew a tongue).
+    # Every try starts from the same image (the one with the new hair); the result is the
+    # third try, the first that reached the goal.
     async with SessionLocal() as db:
         inputs = {
             g.comfy_meta["advanced"]["stage"]: (g.comfy_meta.get("input") or {}).get("id")
@@ -701,42 +697,19 @@ async def test_identity_tries_the_face_before_the_other_edits(
             )
         }
     stage = {s["key"]: s for s in job["stages"]}
-    assert inputs["edit1"] == inputs["edit1-try2"] == inputs["edit1-try3"]
-    assert inputs["edit2"] == stage["edit1-try3"]["image_id"]
+    assert inputs["edit2"] == inputs["edit2-try2"] == inputs["edit2-try3"]
+    assert inputs["edit2"] == stage["edit1"]["image_id"]
+    assert job["result"]["image_id"] == stage["edit2-try3"]["image_id"]
     assert all(len(refs) == 2 for refs in measured)  # the LoRA's photos, not the original
     # The final check measures it; nothing is redrawn after it.
     (report,) = job["reports"]
     match = next(c for c in report["checks"] if c["id"] == "face_match")
     assert match["passed"] is True and report["identity_goal"] == 0.51
     assert report["ai"] is None  # no AI checks with the checks off
-    assert not scores and not mouths
+    assert not scores
     # Identity off: the LoRA only helps, and a region has to be chosen again.
     r = await user.post("/api/advanced/jobs", json={**body, "identity": False})
     assert r.status_code == 400
-
-
-def test_new_mouth_measures_red_below_the_lips(tmp_path, monkeypatch):
-    from PIL import Image as PILImage
-    from PIL import ImageDraw
-
-    from app.advanced import quality
-
-    # A face 200 px wide whose mouth corners are at y 300; a "tongue" drawn below them.
-    monkeypatch.setattr(
-        quality,
-        "_landmarks",
-        lambda path: ([100.0, 100.0, 200.0, 260.0, 0, 0, 0, 0, 0, 0, 160, 300, 240, 300], 400, 500),
-    )
-    before = PILImage.new("RGB", (400, 500), (200, 170, 150))
-    after = before.copy()
-    ImageDraw.Draw(after).rectangle((180, 310, 220, 380), fill=(230, 90, 110))
-    a, b = tmp_path / "a.png", tmp_path / "b.png"
-    before.save(a)
-    after.save(b)
-    assert quality.new_mouth(a, a) == 0.0
-    assert quality.new_mouth(a, b) > quality.NEW_MOUTH
-    monkeypatch.setattr(quality, "_landmarks", lambda path: None)
-    assert quality.new_mouth(a, b) is None
 
 
 def test_region_prompts_leave_out_what_to_keep():
@@ -1099,7 +1072,7 @@ def test_regions_from_the_text():
     ]
 
 
-def test_identity_plan_redraws_the_face_first():
+def test_identity_plan_redraws_the_face_last():
     from app.advanced.compiler import Edit, Spec, by_rules, validate
 
     spec = validate(
@@ -1108,12 +1081,12 @@ def test_identity_plan_redraws_the_face_first():
         adult=False,
         identity=True,
     )
-    # "whole" and the person are not redrawn: the face first, then the hair with its colour.
-    assert [e.target for e in spec.edits] == ["face", "hair"]
-    assert [e.region for e in spec.edits] == ["face", "hair"]
-    assert spec.edits[1].color == "#281B14"
+    # "whole" and the person are not redrawn: the hair with its colour, then the face last.
+    assert [e.target for e in spec.edits] == ["hair", "face"]
+    assert [e.region for e in spec.edits] == ["hair", "face"]
+    assert spec.edits[0].color == "#281B14"
     # Each region with the request's own sentences about it (not the hair over the face).
-    face, hair = spec.edits
+    hair, face = spec.edits
     assert face.prompt.startswith("lmxx2 woman, fully transform the woman's facial identity")
     assert "hair" not in face.prompt and "buttock" not in face.prompt
     assert hair.prompt.startswith("very dark brown, almost black hair, one even natural colour")
@@ -1130,8 +1103,8 @@ def test_identity_plan_redraws_the_face_first():
     )
     spec = validate(edited, user_prompt="x", adult=False, identity=True)
     assert [(e.target, e.prompt.split(",")[0]) for e in spec.edits] == [
-        ("face", "my face prompt"),
         ("hair", "red hair"),
+        ("face", "my face prompt"),
     ]
     # Without identity the plan's own order stays.
     plain = Spec(

@@ -183,19 +183,21 @@ repositories.
   expression) are redrawn in an enlarged crop around the face found on the Mac
   (`advanced/crop.py`, YuNet) and pasted back inside the mask only; masked edits use a soft
   mask with DifferentialDiffusion. An edit with a LoRA turns the person into its character
-  (owner's request 2026-11-05; `options.identity`, switch on by default): the face first,
-  on the photo itself, with the LoRA (0.65, `graphs.DENOISE_IDENTITY_FACE`), then the other
-  edits; the person is not redrawn (it changed poses) and there is no light pass over the
+  (owner's request 2026-11-05; `options.identity`, switch on by default): the other edits
+  (hair …) first, then the face last with the LoRA (0.65, `graphs.DENOISE_IDENTITY_FACE`),
+  so the face measured is the face delivered (a hair step after it cut the likeness from
+  47 % to 16–28 % on the owner's photos, 2026-11-06); the person is not redrawn (it changed poses) and there is no light pass over the
   whole photo afterwards (Krea 2 Turbo at 0.3 drew hatching into hair and cracks into skin). Without analysis each region gets the request's
   own sentences about it (`compiler.region_prompt`); the face regions without the
   "keep/preserve" sentences (`_changes`: "preserve the mouth shape" opened a closed mouth),
   the hair with them ("keep the wavy hairstyle" keeps the waves). The mouth is redrawn with
   the face (kept at half strength it left the photo's lips on the new face).
-  The face is tried up to three times before the other edits, each from the same photo with
-  a new seed (`engine._identity_face`, `IDENTITY_TRIES`): a try that draws a mouth or tongue
-  the photo does not have (`quality.new_mouth`: red that appears below the lips) is not
-  used, of the rest the most alike to the LoRA's photos ("face_match", goal 0.85 × their own
-  likeness, `quality.IDENTITY_SHARE`) is kept — even with the checks off. Tuned on the owner's three photos on his A40 (2026-11-05).
+  The face is tried up to three times, each from the same image with a new seed, until one
+  reaches the goal (0.85 × the LoRA photos' own likeness, `quality.IDENTITY_SHARE`); the most
+  alike is kept (`engine._identity_face`, `IDENTITY_TRIES`) — even with the checks off. A
+  LoRA whose photos show an expression (Taila 2 has a tongue-out photo) may draw it now and
+  then: that is fixed in its dataset, not here (a redness measure below the lips could not
+  tell a tongue from the LoRA's fuller lips and was removed). Tuned on the owner's three photos on his A40 (2026-11-05).
   A photo the edit would enlarge more than 1.3× is first enlarged with Enhance photo
   (`options.prepare`, SeedVR2 by the smallest factor that reaches the edit's size;
   skipped and shown when its models are missing). Without analysis, the
