@@ -167,8 +167,14 @@ repositories.
   finds the region, Krea 2 AnyPaint redraws only it, pasted back 40 px past it; every other
   pixel stays the photo's), checks per requirement (AI vision, SFace identity against the original or the
   LoRA's photos, changed area — estimates, never guarantees), at most 3 corrections of only
-  what failed, the best attempt by those checks. Krea 2 only: no upscaler in Advanced (Enhance
-  photo is a separate tool, the owner's request 2026-11-06). Only models already in the studio,
+  what failed, the best attempt by those checks. No upscaler in Advanced (Enhance photo is a
+  separate tool, the owner's request 2026-11-06) except inside the switch "Finish" (phase 3,
+  approved 2026-11-06, `comfy/finish.py`, off by default): after the face and the
+  corrections, the face once more in its crop (AnyPaint, 0.35, the character LoRA, the skin
+  LoRA inlineresearch/skin-lora-krea-2-raw at 0.6 with its trigger first; one click, SHA-256),
+  kept only when SFace finds it as alike as before within 0.05, then SeedVR2 (ComfyUI's own
+  nodes, Enhance photo's two files and settings) 1.5/2/3×; estimates. No Wan 2× VAE (it needs
+  custom nodes that do not fit ComfyUI v0.35.0). Only models already in the studio,
   plus Krea 2 AnyPaint (the owner's plan, approved 2026-11-06, phase 1: `comfy/anypaint.py`;
   its LoRA installed with one click, checked by SHA-256 on the GPU; its custom nodes
   alexw5702-afk/krea2-anypaint, an approved exception to "built-in nodes only", pinned to a

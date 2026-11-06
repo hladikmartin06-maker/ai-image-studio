@@ -34,7 +34,7 @@ from app.advanced.compiler import (
 )
 from app.advanced.intelligence import IntelligenceError
 from app.advanced.quality import FACE_MATCH, evaluate, failed, rank
-from app.comfy import anypaint, krea2, pose_control
+from app.comfy import anypaint, enhance, finish, krea2, pose_control
 from app.db import SessionLocal
 from app.models import (
     AdvancedJob,
@@ -327,8 +327,17 @@ async def _generate(job: AdvancedJob, spec: Spec, key: str, attempt: int) -> Ima
 
 
 async def _edit(
-    job: AdvancedJob, spec: Spec, edit: Edit, source: dict[str, Any], key: str, attempt: int
+    job: AdvancedJob,
+    spec: Spec,
+    edit: Edit,
+    source: dict[str, Any],
+    key: str,
+    attempt: int,
+    *,
+    skin: bool = False,
 ) -> Image:
+    """One region (or the whole photo) redrawn. `skin` (Finish): the skin LoRA after the
+    character's, its trigger first in the prompt, and the step named "finish"."""
     options = job.options or {}
     width, height = krea2.size_for_source(
         source.get("width") or 1024, source.get("height") or 1024, options.get("resolution", "1K")
@@ -361,8 +370,6 @@ async def _edit(
         square = crop.plan_crop(box, width, height)
     seed = _seed(job, attempt)
     # The background without the LoRA (its studio backdrops turned places grey) and its
-    # trigger, which would draw the character into it.
-    # The background without the LoRA (its studio backdrops turned places grey) and its
     # trigger, which would draw the character into it. The figure's parts with the LoRA at
     # FIGURE_LORA of its strength (the new shape comes from the prompt).
     lora = None if edit.target == "background" else options.get("lora")
@@ -375,6 +382,9 @@ async def _edit(
     # Every region on Krea 2 AnyPaint: its LoRA first, at its authors' strength.
     if region:
         args["loras"] = [(anypaint.LORA.filename, anypaint.STRENGTH), *args["loras"]]
+    if skin:
+        args["loras"] = [*args["loras"], (finish.SKIN_LORA.filename, finish.SKIN_STRENGTH)]
+        prompt = f"{finish.SKIN_TRIGGER}, {prompt}"
     workflow = graphs.edit(
         **args,
         prompt=prompt,
@@ -395,7 +405,8 @@ async def _edit(
     return await _gpu(
         job,
         key=key,
-        label=f"{edit.target} · {method}" + (f" · attempt {attempt + 1}" if attempt else ""),
+        label=f"{'finish' if skin else edit.target} · {method}"
+        + (f" · attempt {attempt + 1}" if attempt else ""),
         workflow=workflow,
         prompt=prompt,
         settings={
@@ -776,6 +787,9 @@ async def _run(job_id: uuid.UUID) -> None:
                 await _update(job_id, reports=reports)
             best = max(attempts, key=lambda a: rank(a["report"]) if a["report"] else (0, 0, 0.0))
             image = best["image"]
+        # 4. Finish (switched on): the face once more with the skin LoRA, then SeedVR2.
+        if options.get("finish"):
+            image = await _finishing(job, spec, image, produced)
         await _finish(job_id, image, produced)
     except Cancelled:
         await _update(job_id, status="cancelled", finished_at=datetime.now(UTC))
@@ -865,6 +879,68 @@ async def _identity_face(
     if first[0] is not None and first[0] >= faces.MATCH_THRESHOLD and best[0] < first[0] + MARGIN:
         return first[1]
     return best[1]
+
+
+async def _likeness(path: Path, refs: list[Path]) -> float | None:
+    try:
+        return (await quality.identity(path, refs))[0]
+    except faces.FaceError:
+        return None
+
+
+async def _finishing(job: AdvancedJob, spec: Spec, image: Image, produced: list[Image]) -> Image:
+    """Finish (phase 3, the owner's plan): the face in its enlarged crop once more, gently,
+    with the character LoRA and the skin LoRA; kept only when SFace finds it as alike as
+    before (within `finish.LIKENESS_DROP`) to the LoRA's photos, else to the original photo;
+    then SeedVR2 enlarges the result. No face on this Mac's detector = no face pass."""
+    options = job.options or {}
+    refs = await _lora_photos(job)
+    if not refs and job.source:
+        refs = [storage.absolute(job.source["file_path"])]
+    path = storage.absolute(image.file_path)
+    if await crop.face_box(path) is None:
+        await _stage(job.id, "finish-face", "finish · AnyPaint", status="skipped")
+    else:
+        face = next((e for e in spec.edits if e.target == "face"), None) or face_edit(job.prompt)
+        edit = face.model_copy(update={"denoise": finish.FACE_DENOISE, "color": None})
+        after = await _edit(job, spec, edit, _image_input(image), "finish-face", 0, skin=True)
+        produced.append(after)
+        before_score = await _likeness(path, refs)
+        after_score = await _likeness(storage.absolute(after.file_path), refs)
+        # Nothing to compare (text to image without a LoRA) or no face read before: kept.
+        kept = before_score is None or (
+            after_score is not None and after_score >= before_score - finish.LIKENESS_DROP
+        )
+        await _stage(
+            job.id,
+            "finish-check",
+            "likeness",
+            status="completed",
+            likeness={"before": before_score, "after": after_score, "kept": kept},
+        )
+        if kept:
+            image = after
+    scale = float(options["finish"].get("upscale", finish.DEFAULT_UPSCALE))
+    seed = _seed(job, 0)
+    image = await _gpu(
+        job,
+        key="finish-upscale",
+        label="upscale · SeedVR2",
+        workflow=graphs.upscale(scale=scale, seed=seed),
+        prompt=job.prompt,
+        settings={"upscale": scale, "seed": seed, "method": "SeedVR2", "engine": "advanced"},
+        source=_image_input(image),
+        model_key=enhance.MODEL_KEY,
+        family=enhance.FAMILY,
+        lora=None,
+    )
+    produced.append(image)
+    if refs:
+        score = await _likeness(storage.absolute(image.file_path), refs)
+        await _stage(
+            job.id, "finish-likeness", "likeness", status="completed", likeness={"after": score}
+        )
+    return image
 
 
 async def _correct(

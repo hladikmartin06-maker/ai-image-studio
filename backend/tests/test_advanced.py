@@ -20,7 +20,7 @@ from sqlalchemy import select
 from app.advanced import compiler, crop, engine, graphs
 from app.ai.providers.openai_compat import OpenAICompatibleProvider
 from app.ai.registry import AI_PROVIDERS, set_adapter
-from app.comfy import anypaint, enhance, krea2, pose_control
+from app.comfy import anypaint, enhance, finish, krea2, pose_control
 from app.comfy import runner as comfy_runner
 from app.comfy.client import ComfyClient
 from app.db import SessionLocal
@@ -56,6 +56,7 @@ def comfy(tmp_path: Path):
     files = {k: list(KREA_FILES.get(k, [])) + ENHANCE_FILES.get(k, []) for k in KREA_FILES}
     files["loras"].append(anypaint.LORA.filename)  # installed with one click
     files["loras"].append(pose_control.LORA.filename)
+    files["loras"].append(finish.SKIN_LORA.filename)
     fake = FakeComfy(files=files, models_dir=str(tmp_path / "ComfyUI"))
     ComfyClient.transport = fake.transport()
     comfy_runner.POLL_INITIAL = 0.01
@@ -1744,3 +1745,168 @@ async def test_pose_preview_and_a_photo_without_a_person(user: Api, monkeypatch,
         "/api/advanced/pose-preview", json={"image": {"kind": "reference", "id": pose_ref["id"]}}
     )
     assert r.status_code == 400 and r.json()["error"]["code"] == "pose_failed"
+
+
+# --- phase 3: Finish (the face with the skin LoRA, a likeness check, SeedVR2) ---------------
+
+
+def test_finish_downloads_are_pinned_and_detected():
+    (skin,) = finish.downloads("skin")
+    assert skin["url"] == (
+        "https://huggingface.co/inlineresearch/skin-lora-krea-2-raw/resolve/"
+        "15fbc074697eed816159dbbc99f9c98170301b14/inline-skin-lora-krea-2-raw.safetensors"
+    )
+    assert skin["sha256"].startswith("7ac516bc") and skin["folder"] == "loras"
+    # SeedVR2: the two files Enhance photo uses, from the same place.
+    assert [d["url"] for d in finish.downloads("seedvr2")] == [
+        enhance.SEEDVR2.url,
+        enhance.SEEDVR2_VAE.url,
+    ]
+    info = {
+        "LoraLoaderModelOnly": {"input": {"required": {"lora_name": [[skin["filename"]]]}}},
+        "UNETLoader": {"input": {"required": {"unet_name": [[enhance.SEEDVR2.filename]]}}},
+        "VAELoader": {"input": {"required": {"vae_name": [[enhance.SEEDVR2_VAE.filename]]}}},
+        **{n: {} for n in finish.UPSCALE_NODES},
+    }
+    state = finish.detect(info)
+    assert state["skin"]["ready"] and state["seedvr2"]["ready"]
+    del info["SeedVR2Conditioning"]
+    info["VAELoader"]["input"]["required"]["vae_name"] = [[]]
+    state = finish.detect(info)
+    assert state["seedvr2"]["missing_nodes"] == ["SeedVR2Conditioning"]
+    assert state["seedvr2"]["missing_files"] == [enhance.SEEDVR2_VAE.filename]
+
+
+async def test_finish_redraws_the_face_with_the_skin_lora_then_enlarges(
+    user: Api, comfy, tmp_path, face_engine, monkeypatch
+):
+    """At the end: the face in its crop at 0.35 with AnyPaint, the character LoRA and the skin
+    LoRA (0.6, its trigger first); kept only when SFace finds it as alike as before (within
+    0.05); then SeedVR2 enlarges the result (1 step, "lab" colours) and the likeness of the
+    enlarged photo is measured. No face found = no face pass."""
+    from app.advanced import quality
+
+    box: list = [(28.0, 30.0, 6.0, 8.0, 64, 80)]
+
+    async def face_box(path: Path):
+        return box[0]
+
+    monkeypatch.setattr(crop, "face_box", face_box)
+    scores: list[float] = []
+
+    async def identity(result: Path, references: list[Path]):
+        return scores.pop(0), None
+
+    monkeypatch.setattr(quality, "identity", identity)
+    lora = await imported_lora(user)
+    conn = await connect(user, tmp_path)
+    ref = await photo(user)
+    body = {
+        "connection_id": conn["id"],
+        "mode": "edit",
+        "variant": "turbo",
+        "prompt": "Change her hair color to red.",
+        "image": {"kind": "reference", "id": ref["id"]},
+        "lora": {"version_id": lora["preferred_version_id"], "strength": 1.0},
+        "identity": False,
+        "analysis": False,
+        "quality": False,
+        "corrections": 0,
+        "finish": True,
+        "finish_upscale": 2.0,
+    }
+
+    def stage(job: dict, key: str) -> dict:
+        return next(s for s in job["stages"] if s["key"] == key)
+
+    async def upscaled_from(job: dict) -> str:
+        async with SessionLocal() as db:
+            gen = await db.get(Generation, uuid.UUID(stage(job, "finish-upscale")["generation_id"]))
+            return gen.comfy_meta["input"]["id"]
+
+    # Before 0.60, after the pass 0.57 (within 0.05): kept; the enlarged photo 0.56.
+    scores[:] = [0.60, 0.57, 0.56]
+    job = await run(user, body)
+    assert job["status"] == "completed", job
+    keys = [s["key"] for s in job["stages"]]
+    assert keys == [
+        "plan",
+        "edit1",
+        "finish-face",
+        "finish-check",
+        "finish-upscale",
+        "finish-likeness",
+    ]
+    assert job["options"]["finish"] == {"upscale": 2.0}
+    assert stage(job, "finish-face")["label"] == "finish · AnyPaint"
+    assert stage(job, "finish-check")["likeness"] == {"before": 0.6, "after": 0.57, "kept": True}
+    assert stage(job, "finish-likeness")["likeness"] == {"after": 0.56}
+    face, upscaled = sent_graphs(comfy)[-2:]
+    loras = [
+        (n["inputs"]["lora_name"], n["inputs"]["strength_model"])
+        for k, n in sorted(face.items(), key=lambda kv: int(kv[0]))
+        if n["class_type"] == "LoraLoaderModelOnly"
+    ]
+    assert loras[0] == (anypaint.LORA.filename, 1.0) and loras[-1] == (
+        finish.SKIN_LORA.filename,
+        0.6,
+    )
+    assert len(loras) == 3 and loras[1][1] == 1.0  # the character LoRA between them
+    assert face["4"]["inputs"]["text"].startswith("inline-skin-lora, detailed skin texture, lmx")
+    assert face["7"]["inputs"]["denoise"] == 0.35 and face["50"]["class_type"] == "ImageCrop"
+    assert upscaled["5"]["inputs"]["scale_by"] == 2.0
+    assert upscaled["40"]["inputs"]["unet_name"] == enhance.SEEDVR2.filename
+    assert upscaled["45"]["inputs"]["steps"] == 1
+    assert upscaled["47"]["inputs"]["color_correction_method"] == "lab"
+    assert "LoraLoaderModelOnly" not in {n["class_type"] for n in upscaled.values()}
+    assert await upscaled_from(job) == stage(job, "finish-face")["image_id"]
+    assert job["result"]["image_id"] == stage(job, "finish-upscale")["image_id"]
+    # Less alike by more than 0.05: the face pass is not kept, the image before it is enlarged.
+    scores[:] = [0.60, 0.50, 0.59]
+    job = await run(user, body)
+    assert stage(job, "finish-check")["likeness"]["kept"] is False
+    assert await upscaled_from(job) == stage(job, "edit1")["image_id"]
+    # No face found: no face pass and no check; the photo is still enlarged.
+    box[0] = None
+    scores[:] = [0.4]
+    job = await run(user, body)
+    assert job["status"] == "completed", job
+    assert stage(job, "finish-face")["status"] == "skipped"
+    assert "finish-check" not in [s["key"] for s in job["stages"]]
+    assert await upscaled_from(job) == stage(job, "edit1")["image_id"]
+
+
+async def test_finish_refused_with_what_is_missing(user: Api, comfy, tmp_path):
+    conn = await connect(user, tmp_path)
+    body = {
+        "connection_id": conn["id"],
+        "mode": "text-to-image",
+        "variant": "turbo",
+        "prompt": "A woman in a park.",
+        "analysis": False,
+        "quality": False,
+        "corrections": 0,
+        "finish": True,
+    }
+    r = await user.post("/api/advanced/jobs", json={**body, "finish_upscale": 2.5})
+    assert r.status_code == 400
+    comfy.files["loras"].remove(finish.SKIN_LORA.filename)
+    await user.post(f"/api/comfy/connections/{conn['id']}/test")
+    caps = (await user.get(f"/api/advanced/capabilities?connection_id={conn['id']}")).json()
+    assert caps["finish"]["skin"]["missing_files"] == [finish.SKIN_LORA.filename]
+    assert caps["finish_files"]["skin"]["size"] == 191_871_280 and caps["upscales"] == [
+        1.5,
+        2.0,
+        3.0,
+    ]
+    r = await user.post("/api/advanced/jobs", json=body)
+    assert r.status_code == 409 and "skin LoRA" in r.json()["error"]["message"]
+    comfy.files["loras"].append(finish.SKIN_LORA.filename)
+    comfy.files["vae"].remove(enhance.SEEDVR2_VAE.filename)
+    await user.post(f"/api/comfy/connections/{conn['id']}/test")
+    r = await user.post("/api/advanced/jobs", json=body)
+    assert r.status_code == 409 and "SeedVR2" in r.json()["error"]["message"]
+    comfy.files["vae"].append(enhance.SEEDVR2_VAE.filename)
+    # Off: none of it is needed.
+    r = await user.post("/api/advanced/jobs", json={**body, "finish": False})
+    assert r.status_code == 201, r.text

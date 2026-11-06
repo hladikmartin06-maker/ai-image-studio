@@ -20,6 +20,7 @@ from app.advanced import compiler, engine, graphs
 from app.advanced.intelligence import IntelligenceError
 from app.comfy import anypaint, krea2, pose_control
 from app.comfy import enhance as pgupscaler
+from app.comfy import finish as finish_files
 from app.comfy.generation import LoraUse, SourceImage, resolve_lora, source_input
 from app.comfy.service import file_capability, lora_filename, owned
 from app.db import get_db
@@ -55,6 +56,9 @@ class AdvancedBody(BaseModel):
     improve_background: bool = False
     # Edit: after a new background the whole photo once more, gently (off by default).
     unify_light: bool = False
+    # Finish (phase 3): the face once more with the skin LoRA, then SeedVR2 by this factor.
+    finish: bool = False
+    finish_upscale: float = finish_files.DEFAULT_UPSCALE
     # Edit: a pose from another photo (phase 2): the whole photo anew in it, or only the head.
     pose_image: SourceImage | None = None
     pose_part: Literal["body", "head"] = "body"
@@ -105,6 +109,40 @@ def _need_anypaint(caps: dict[str, Any], conn: ComfyConnection) -> None:
             409,
             "missing_models",
             f"Krea 2 AnyPaint is not installed on {conn.name}: install it in Advanced (229 MB).",
+        )
+
+
+def _need_finish(caps: dict[str, Any], conn: ComfyConnection, upscale: float) -> None:
+    """Finish needs SAM 3.1 and AnyPaint (the face pass), the skin LoRA and SeedVR2; without
+    one of them it is refused with what is missing, never run another way."""
+    if upscale not in finish_files.UPSCALES:
+        raise api_error(400, "invalid_parameter", "Unsupported enlargement.")
+    if not caps["sam3"]:
+        raise api_error(
+            409,
+            "missing_models",
+            f"SAM 3.1 (finds the face for Finish) is not installed on {conn.name}.",
+        )
+    _need_anypaint(caps, conn)
+    state = caps["finish"]
+    if state["skin"].get("missing_files"):
+        raise api_error(
+            409,
+            "missing_models",
+            f"The skin LoRA is not installed on {conn.name}: install it in Advanced (192 MB).",
+        )
+    if state["seedvr2"].get("missing_nodes"):
+        raise api_error(
+            409,
+            "missing_nodes",
+            f"SeedVR2's nodes are missing on {conn.name} (they come with ComfyUI v0.35.0; "
+            "a GPU rented by the studio has them).",
+        )
+    if state["seedvr2"].get("missing_files"):
+        raise api_error(
+            409,
+            "missing_models",
+            f"SeedVR2 is not installed on {conn.name}: install it in Advanced (8.8 GB).",
         )
 
 
@@ -179,6 +217,30 @@ def capabilities(conn: ComfyConnection, ai: bool) -> dict[str, Any]:
             "files": [],
         },
         "pose_file": {"filename": pose_control.LORA.filename, "size": pose_control.LORA.size},
+        # Finish (phase 3): the skin LoRA, and SeedVR2's nodes and two files.
+        "finish": info.get("finish")
+        or {
+            finish_files.SKIN: {
+                "ready": False,
+                "missing_nodes": [],
+                "missing_files": [finish_files.SKIN_LORA.filename],
+                "files": [],
+            },
+            finish_files.UPSCALE: {
+                "ready": False,
+                "missing_nodes": list(finish_files.UPSCALE_NODES),
+                "missing_files": [f.filename for f in finish_files.UPSCALE_FILES],
+                "files": [],
+            },
+        },
+        "finish_files": {
+            "skin": {
+                "filename": finish_files.SKIN_LORA.filename,
+                "size": finish_files.SKIN_LORA.size,
+            },
+            "seedvr2": {"size": sum(f.size for f in finish_files.UPSCALE_FILES)},
+        },
+        "upscales": list(finish_files.UPSCALES),
         "anypaint_file": {
             "filename": anypaint.LORA.filename,
             "size": anypaint.LORA.size,
@@ -287,6 +349,8 @@ async def _prepare(
         )
     if body.corrections and not body.quality:
         raise api_error(400, "invalid_parameter", "Corrections need the quality check.")
+    if body.finish:
+        _need_finish(caps, conn, body.finish_upscale)
     prompt = body.prompt.strip()
     try:
         check_prompt(prompt, allows_mature=True)
@@ -340,6 +404,7 @@ async def _prepare(
         "identity": body.mode == "edit" and body.identity and lora_meta is not None,
         "improve_background": body.mode == "edit" and body.improve_background,
         "unify_light": body.mode == "edit" and body.unify_light,
+        "finish": {"upscale": body.finish_upscale} if body.finish else None,
         "pose": {"source": pose_source, "part": body.pose_part} if pose_source else None,
         "denoise": body.denoise,
         "analysis": body.analysis,

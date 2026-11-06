@@ -91,8 +91,10 @@ Integrations and Settings.
     requirement is checked on the result (the assistant looks at the image, the face is
     compared with the original or the LoRA's photos, and the changed area is measured; these
     are estimates, not guarantees). What failed is corrected again (0–3 times, only that part)
-    and the best attempt is kept. Advanced uses Krea 2 only: to enlarge or sharpen the result,
-    use "Enhance photo" afterwards. Without the assistant, switch the analysis off and pick
+    and the best attempt is kept. **Finish** (a switch, off by default) then redraws the face
+    once more, gently, with your LoRA and a skin LoRA (kept only if it stays as alike), and
+    enlarges the photo 1.5, 2 or 3 times with SeedVR2 (the skin LoRA and SeedVR2 are
+    installed once per GPU with one click; SeedVR2 is already there with "Enhance photo"). Without the assistant, switch the analysis off and pick
     the parts to change yourself (hair, face, body, clothing, mouth, eyes, expression or a new
     background that your text asks for are added by themselves). **A photo with a LoRA** (the LoRA is always on: it carries the face and the body) turns
     the person into the LoRA's character step by step, each region drawn by **Krea 2

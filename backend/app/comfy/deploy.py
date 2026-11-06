@@ -24,7 +24,7 @@ from typing import Any
 
 from sqlalchemy import func, select
 
-from app.comfy import anypaint, custom_nodes, enhance, krea2, pose_control
+from app.comfy import anypaint, custom_nodes, enhance, finish, krea2, pose_control
 from app.comfy.client import ComfyError
 from app.comfy.service import agent_for, assoc, client_for, inspect
 from app.db import SessionLocal
@@ -636,7 +636,8 @@ def model_progress(job: dict[str, Any], sizes_gb: list[float | None]) -> int:
 
 async def install_model(db, conn: ComfyConnection, variant: str, filename: str | None) -> None:
     """Starts downloading a Krea 2 model (and its text encoder and VAE), the Enhance photo
-    models ("pgupscaler") or Advanced's AnyPaint ("anypaint") on the GPU, straight from
+    models ("pgupscaler"), Advanced's AnyPaint ("anypaint"), pose LoRA ("pose"), skin LoRA
+    ("skin") or SeedVR2 alone ("seedvr2") on the GPU, straight from
     Hugging Face. Only once ComfyUI answers
     (its first-start copy is done by then)."""
     if conn.auth_type != "agent" or conn.status != "ready":
@@ -648,6 +649,11 @@ async def install_model(db, conn: ComfyConnection, variant: str, filename: str |
         # Enhance photo: the six PGUpscaler files from its Hugging Face repository.
         files = enhance.downloads()
         sizes = {f.filename: f.size / 1e9 for f in enhance.FILES}
+    elif variant in (finish.SKIN, finish.UPSCALE):
+        # Advanced's Finish: the skin LoRA (SHA-256 on the GPU), or SeedVR2's two files.
+        files = finish.downloads(variant)
+        found = (finish.SKIN_LORA,) if variant == finish.SKIN else finish.UPSCALE_FILES
+        sizes = {f.filename: f.size / 1e9 for f in found}
     elif variant == pose_control.FAMILY:
         # Advanced's pose step: the Krea 2 pose LoRA (checked by SHA-256 on the GPU).
         files = pose_control.downloads()

@@ -494,7 +494,8 @@ uses Krea 2 RAW / Turbo (the files, loaders and sampler settings of `krea2.VARIA
 only), SAM 3.1 (`checkpoints/sam3.1_multiplex_fp16.safetensors`, the Enhance photo file from
 `huggingface.co/AIPRIVATEGROUP/pgupscaler`, installable alone with one click), since
 2026-11-06 Krea 2 AnyPaint (below), SFace on this Mac and the user's own AI assistant. No
-upscaler (since 2026-11-06, the owner's request: Enhance photo is a separate tool). No Flux,
+upscaler (since 2026-11-06, the owner's request: Enhance photo is a separate tool) except
+inside "Finish" (below). No Flux,
 no Qwen-Image / Qwen-Image-Edit.
 
 - **Krea 2 AnyPaint** (the owner's plan, phase 1, approved 2026-11-06; `comfy/anypaint.py`,
@@ -586,6 +587,33 @@ no Qwen-Image / Qwen-Image-Edit.
     redrawn at 1024 px with denoise 0.9, pasted back with a soft edge, and AnyPaint redraws
     a 48 px band either side of the square's edge. **Estimates** (2.2, 0.9, 48 px and the
     31 px edge are the studio's, not the authors', who validated a full redraw only).
+- **Finish** (the owner's plan, phase 3, approved 2026-11-06; `comfy/finish.py`,
+  `engine._finishing`, `graphs.upscale`; a switch, off by default). Not yet run on a GPU.
+  - Skin LoRA: model card `huggingface.co/inlineresearch/skin-lora-krea-2-raw`, revision
+    `15fbc074` (Krea 2 Community License: derivatives inherit it; it requires safeguards
+    against unlawful content, NCII, CSAM and defamation): "a photorealistic skin texture
+    LoRA", trained on Krea 2 RAW and, per the card, carrying over to Turbo; strength 1.0;
+    `inline-skin-lora, detailed skin texture` at the front of the prompt; a PEFT adapter
+    (rank 16) loaded as a standard LoRA; no workflow given; NSFW not mentioned. File
+    `inline-skin-lora-krea-2-raw.safetensors`, 191,871,280 bytes, SHA-256
+    `7ac516bc335953be4afffa53411e38a012e91eaff56afc16c79232438b7040ac`, one click, checked on
+    the GPU like AnyPaint's.
+  - The face pass: the face's enlarged crop redrawn by AnyPaint (its LoRA 1.0, the
+    character's at its strength, the skin LoRA at 0.6 — the owner's number, the authors say
+    1.0) at denoise 0.35 (the owner's 0.3–0.4); kept only when SFace finds it as alike to
+    the LoRA's photos (else the original photo) as the image before, within 0.05. No face
+    found by YuNet = no face pass. **Estimates.**
+  - SeedVR2 7B: ComfyUI's own nodes and Enhance photo's two files
+    (`seedvr2_7b_int8_convrot.safetensors`, `seedvr2_ema_vae_fp16.safetensors` from
+    `AIPRIVATEGROUP/pgupscaler`, installable alone with one click) and settings (1 step,
+    tiles of 512 with 128 overlap, "lab" colours), 1.5×, 2× or 3× (3× very slow, 48 GB
+    recommended by the template's README). The likeness of the enlarged photo is measured.
+  - Not used: `huggingface.co/spacepxl/Wan2.1-VAE-upscale2x` (Apache 2.0, revision
+    `384fb7de`; a decoder-only Wan 2.1 VAE finetune that decodes 2× and, per its card, works
+    with the Wan/Qwen latent space Krea 2's VAE uses). ComfyUI v0.35.0 loads its 12 output
+    channels but has no node that rearranges them into a 2× image; the card's custom nodes
+    (`spacepxl/ComfyUI-VAE-Utils`, MIT) use `comfy.model_patcher.CoreModelPatcher`, which
+    v0.35.0 does not have (checked in its source).
 - **Nodes** (built in, checked in ComfyUI v0.35.0's `nodes.py` and `comfy_extras`, the
   pinned rented image): text to image = UNETLoader, CLIPLoader (`krea2`),
   LoraLoaderModelOnly, CLIPTextEncode, ConditioningZeroOut (Turbo) or a negative (RAW),

@@ -960,3 +960,62 @@ def _combine(mask: list[Any], other: list[Any], operation: str) -> dict[str, Any
 def colour_int(hex_colour: str) -> int:
     """ "#RRGGBB" → EmptyImage's `color` (0xRRGGBB)."""
     return int(hex_colour.lstrip("#"), 16)
+
+
+def upscale(*, scale: float, seed: int, prefix: str = "advanced") -> dict[str, Any]:
+    """Finish (phase 3): the image enlarged `scale` times by SeedVR2 7B with ComfyUI's own
+    nodes, as Enhance photo does it (1 step, tiles of 512, the original's colours by "lab");
+    only the enlargement, no skin fix."""
+    tiles = {"tile_size": 512, "overlap": 128, "temporal_size": 4096, "temporal_overlap": 8}
+    return {
+        "10": {"class_type": "LoadImage", "inputs": {"image": INPUT}},
+        "5": {
+            "class_type": "ImageScaleBy",
+            "inputs": {"image": ["10", 0], "upscale_method": "lanczos", "scale_by": scale},
+        },
+        "40": {
+            "class_type": "UNETLoader",
+            "inputs": {"unet_name": enhance.SEEDVR2.filename, "weight_dtype": "default"},
+        },
+        "41": {"class_type": "VAELoader", "inputs": {"vae_name": enhance.SEEDVR2_VAE.filename}},
+        "42": {"class_type": "SeedVR2Preprocess", "inputs": {"resized_images": ["5", 0]}},
+        "43": {
+            "class_type": "VAEEncodeTiled",
+            "inputs": {"pixels": ["42", 0], "vae": ["41", 0], **tiles},
+        },
+        "44": {
+            "class_type": "SeedVR2Conditioning",
+            "inputs": {"model": ["40", 0], "vae_conditioning": ["43", 0]},
+        },
+        "45": {
+            "class_type": "KSampler",
+            "inputs": {
+                "model": ["40", 0],
+                "positive": ["44", 0],
+                "negative": ["44", 1],
+                "latent_image": ["43", 0],
+                "seed": seed,
+                "steps": 1,
+                "cfg": 1,
+                "sampler_name": "euler",
+                "scheduler": "simple",
+                "denoise": 1,
+            },
+        },
+        "46": {
+            "class_type": "VAEDecodeTiled",
+            "inputs": {"samples": ["45", 0], "vae": ["41", 0], **tiles},
+        },
+        "47": {
+            "class_type": "SeedVR2PostProcessing",
+            "inputs": {
+                "images": ["46", 0],
+                "original_resized_images": ["5", 0],
+                "color_correction_method": "lab",
+            },
+        },
+        "9": {
+            "class_type": "SaveImage",
+            "inputs": {"images": ["47", 0], "filename_prefix": prefix},
+        },
+    }

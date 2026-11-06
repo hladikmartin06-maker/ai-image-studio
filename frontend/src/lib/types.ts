@@ -1165,6 +1165,10 @@ export interface AdvancedCapabilities {
   // A pose from another photo: the pose LoRA and the Krea2 Ostris Edit nodes.
   pose: { ready: boolean; missing_nodes: string[]; missing_files: string[] };
   pose_file: { filename: string; size: number };
+  // Finish: the skin LoRA, and SeedVR2's nodes and files.
+  finish: Record<"skin" | "seedvr2", { ready: boolean; missing_nodes: string[]; missing_files: string[] }>;
+  finish_files: { skin: { filename: string; size: number }; seedvr2: { size: number } };
+  upscales: number[];
   ai: boolean;
   file_capability: string;
 }
@@ -1237,6 +1241,8 @@ export interface AdvancedStage {
   started_at: string;
   finished_at?: string;
   detail?: string | null;
+  // Finish: SFace likeness before and after the face pass (null = no face read).
+  likeness?: { before?: number | null; after: number | null; kept?: boolean };
   generation_id?: string;
   image_id?: string;
 }
@@ -1260,6 +1266,8 @@ export interface AdvancedOptions {
   // Edit: after a new background the whole photo once more, gently.
   unify_light?: boolean;
   // Edit: the pose of another photo (the whole photo anew in it, or only the head).
+  // The face once more with the skin LoRA, then SeedVR2 by this factor.
+  finish?: { upscale: number } | null;
   pose?: { source: { kind: string; id: string; thumb_url?: string | null }; part: "body" | "head" } | null;
   denoise?: number | null;
   analysis?: boolean;

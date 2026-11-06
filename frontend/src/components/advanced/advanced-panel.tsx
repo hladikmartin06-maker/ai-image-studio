@@ -70,6 +70,11 @@ function stageLabel(stage: AdvancedStage, t: (k: MessageKey, v?: Record<string, 
   if (stage.key === "enhance") return t("adv.stage.enhance");
   if (stage.key.startsWith("check")) return t("adv.stage.check");
   if (stage.key.endsWith("-light")) return t("adv.stage.light");
+  if (stage.key === "finish-face") return t(stage.status === "skipped" ? "adv.stage.finishNoFace" : "adv.stage.finishFace");
+  if (stage.key === "finish-check" && stage.likeness)
+    return t(stage.likeness.kept ? "adv.stage.finishKept" : "adv.stage.finishRejected", { before: pct(stage.likeness.before), after: pct(stage.likeness.after) });
+  if (stage.key === "finish-upscale") return t("adv.stage.upscale");
+  if (stage.key === "finish-likeness" && stage.likeness) return t("adv.stage.finishLikeness", { after: pct(stage.likeness.after) });
   if (stage.key.startsWith("edit")) {
     // The engine names the method it used ("body · AnyPaint", "pose · Pose LoRA"); it never
     // switches silently.
@@ -346,6 +351,8 @@ export function AdvancedPanel({ header }: { header: React.ReactNode }) {
   const [corrections, setCorrections] = useState(1);
   const [improveBackground, setImproveBackground] = useState(false);
   const [unifyLight, setUnifyLight] = useState(false);
+  const [finishOn, setFinishOn] = useState(false);
+  const [upscale, setUpscale] = useState(2);
   const [targets, setTargets] = useState<AdvancedTarget[]>([]);
   const [identity, setIdentity] = useState(true);
   const [more, setMore] = useState(false);
@@ -413,6 +420,8 @@ export function AdvancedPanel({ header }: { header: React.ReactNode }) {
     setCorrections(o.corrections ?? 1);
     setImproveBackground(Boolean(o.improve_background));
     setUnifyLight(Boolean(o.unify_light));
+    setFinishOn(Boolean(o.finish));
+    setUpscale(o.finish?.upscale ?? 2);
     setAdult(Boolean(o.adult));
     setDraft(!older && j.spec && (j.spec.prompt || j.spec.edits.length) ? { ...j.spec } : null);
     setMore(true);
@@ -439,6 +448,13 @@ export function AdvancedPanel({ header }: { header: React.ReactNode }) {
   const withPose = mode === "edit" && Boolean(posePhoto);
   if (withPose && variant !== "turbo") problems.push(t("adv.poseTurbo"));
   if (withPose && c && !c.pose.ready) problems.push(t(c.pose.missing_nodes.length ? "adv.poseNodes" : "adv.poseMissing"));
+  // Finish: the face pass (SAM 3.1, AnyPaint), the skin LoRA and SeedVR2, never another way.
+  if (finishOn && c) {
+    if (!c.sam3) problems.push(t("adv.sam3Missing"));
+    else if (!c.anypaint.ready) problems.push(t(c.anypaint.missing_nodes.length ? "adv.anypaintNodes" : "adv.anypaintMissing"));
+    else if (!c.finish.skin.ready) problems.push(t("adv.skinMissing"));
+    else if (!c.finish.seedvr2.ready) problems.push(t(c.finish.seedvr2.missing_nodes.length ? "adv.seedvrNodes" : "adv.seedvrMissing"));
+  }
   if (analysis && c && !c.ai) problems.push(t("adv.aiMissing"));
   if (!prompt.trim()) problems.push(t("adv.promptFirst"));
   if (chosenLora?.disabled) problems.push(t("adv.loraIncompatible"));
@@ -460,6 +476,8 @@ export function AdvancedPanel({ header }: { header: React.ReactNode }) {
     unify_light: mode === "edit" && unifyLight,
     pose_image: mode === "edit" && posePhoto ? { kind: posePhoto.kind, id: posePhoto.id } : null,
     pose_part: posePart,
+    finish: finishOn,
+    finish_upscale: upscale,
     denoise,
     analysis,
     quality,
@@ -537,6 +555,16 @@ export function AdvancedPanel({ header }: { header: React.ReactNode }) {
     try {
       await install.mutateAsync({ id: conn.id, variant: "pose" });
       toast.success(t("adv.poseDownloading"));
+    } catch (e) {
+      toast.error(e instanceof ApiError ? e.message : t("errors.generic"));
+    }
+  };
+
+  const installFinish = async (variant: "skin" | "seedvr2") => {
+    if (!conn) return;
+    try {
+      await install.mutateAsync({ id: conn.id, variant });
+      toast.success(t(variant === "skin" ? "adv.skinDownloading" : "adv.seedvrDownloading"));
     } catch (e) {
       toast.error(e instanceof ApiError ? e.message : t("errors.generic"));
     }
@@ -805,6 +833,54 @@ export function AdvancedPanel({ header }: { header: React.ReactNode }) {
                       <div className="hint">{t("adv.unifyLightHint")}</div>
                     </div>
                   </label>
+                ) : null}
+                <label className="row" style={{ gap: 10, alignItems: "flex-start" }}>
+                  <Switch checked={finishOn} onChange={setFinishOn} label={t("adv.finish")} />
+                  <div>
+                    <div className="small">{t("adv.finish")}</div>
+                    <div className="hint">{t("adv.finishHint")}</div>
+                  </div>
+                </label>
+                {finishOn ? (
+                  <>
+                    <Field label={t("adv.upscale")} hint={upscale === 3 ? t("adv.upscaleSlow") : undefined}>
+                      <Segmented
+                        label={t("adv.upscale")}
+                        value={upscale}
+                        block
+                        onChange={setUpscale}
+                        options={(c?.upscales ?? [1.5, 2, 3]).map((u) => ({ value: u, label: `${u}×` }))}
+                      />
+                    </Field>
+                    {c && (!c.finish.skin.ready || !c.finish.seedvr2.ready) ? (
+                      <Notice tone="warning">
+                        {!c.finish.skin.ready ? <div>{t("adv.skinNeed", { size: formatBytes(c.finish_files.skin.size, locale) })}</div> : null}
+                        {c.finish.seedvr2.missing_nodes.length ? (
+                          <div>{t("adv.seedvrNodes")}</div>
+                        ) : !c.finish.seedvr2.ready ? (
+                          <div>{t("adv.seedvrNeed", { size: formatBytes(c.finish_files.seedvr2.size, locale) })}</div>
+                        ) : null}
+                        <div className="row wrap" style={{ gap: 8, marginTop: 8 }}>
+                          {c.file_capability === "agent" && !c.finish.skin.ready ? (
+                            <Button size="sm" icon={<Download />} loading={install.isPending} onClick={() => installFinish("skin")}>
+                              {t("adv.skinInstall")}
+                            </Button>
+                          ) : null}
+                          {c.file_capability === "agent" && !c.finish.seedvr2.ready && !c.finish.seedvr2.missing_nodes.length ? (
+                            <Button size="sm" icon={<Download />} loading={install.isPending} onClick={() => installFinish("seedvr2")}>
+                              {t("adv.seedvrInstall")}
+                            </Button>
+                          ) : null}
+                          {c.file_capability !== "agent" && !c.finish.skin.ready ? (
+                            <span className="tiny mono">models/loras/{c.finish_files.skin.filename}</span>
+                          ) : null}
+                          <Button size="sm" variant="ghost" icon={<RefreshCw />} loading={testConn.isPending} onClick={recheck}>
+                            {t("adv.recheck")}
+                          </Button>
+                        </div>
+                      </Notice>
+                    ) : null}
+                  </>
                 ) : null}
               </div>
               <section className="card">
