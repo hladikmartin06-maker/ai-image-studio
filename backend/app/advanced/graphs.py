@@ -92,13 +92,6 @@ DENOISE = {
 # at 0.6 the same, and only the gentle passes kept a tilted selfie's tongue-out expression —
 # at 0.85 it was lost, at 0.75 hair was drawn over the face.
 DENOISE_IDENTITY_FACE = 0.65
-# The figure when the person becomes the LoRA's character (the owner's request, 2026-11-06:
-# body, breasts, waist and hips like the LoRA's): redrawn strongly enough for the LoRA's
-# proportions, while the face, hair, hands and feet stay the photo's and hold the pose
-# (EXCLUDE), and the mask grows so the outline can change (GROW). Tried 0.6–0.85 on the
-# owner's six photos (2026-11-06): the pose held throughout; at 0.8 a lying woman's buttocks
-# came out misshapen and once at 0.75 a second hand appeared on a chest; 0.7 was clean.
-DENOISE_IDENTITY_BODY = 0.7
 # "Improve the background": the same place redrawn sharper (a new background is 0.9).
 DENOISE_BACKGROUND_SHARPER = 0.5
 # SAM 3.1's text prompt per target when the plan gives none.
@@ -133,6 +126,11 @@ EXCLUDE_GROW = 8
 # drew a second hand on the lift photo's cheek, 2026-11-06); bangs over the forehead are
 # hair and still change colour. The face is redrawn after the hair anyway.
 BESIDE: dict[str, str] = {"hair": "face:2"}
+# A ring around the region redrawn gently and pasted back with it (px grown past what SAM 3.1
+# found, its share of the strength): new hair falls differently from the old, and what lay
+# under the old strands (the top, the skin) has to be drawn to match — with only the hair
+# redrawn, torn patches of the old picture stayed beside the new hair (the selfie, 2026-11-06).
+RING: dict[str, tuple[int, float]] = {"hair": (72, 0.45)}
 # What a region's redraw changes only partly (DifferentialDiffusion reads the mask as a
 # per-pixel strength, and the result is pasted back with it): the figure's clothing at this
 # share, so its shape can follow the LoRA's figure while its colour and kind stay (at full
@@ -147,7 +145,8 @@ DENOISE_MAX = 0.95
 COLOUR_TARGETS = ("hair", "clothing")
 # Hair at 0.85 since 2026-11-05: at 0.75 Krea 2 kept the old colour's light strands as
 # streaks (blonde → dark brown came out with caramel highlights, three times).
-DENOISE_COLOUR = {"hair": 0.85, "clothing": 0.75}
+# Clothing at 0.85 since 2026-11-06: at 0.75 a red dress tinted black came out dark red.
+DENOISE_COLOUR = {"hair": 0.85, "clothing": 0.85}
 # How far the region goes towards the colour. Multiply at full strength since the owner's car
 # photo (2026-11-05): at 0.85 the old blonde strands stayed as lighter streaks (hair
 # measured 42/28/23, highlights 54), at 1.0 darker and more even (32/21/17, 43).
@@ -271,6 +270,236 @@ def text_to_image(
     wf["7"] = _sampler(variant, model, ["6", 0], seed, steps, cfg, 1.0)
     wf["8"] = {"class_type": "VAEDecode", "inputs": {"samples": ["7", 0], "vae": ["3", 0]}}
     wf["9"] = {"class_type": "SaveImage", "inputs": {"images": ["8", 0], "filename_prefix": prefix}}
+    return wf
+
+
+# The person step of an edit with a LoRA (the owner's request, 2026-11-06): ONE redraw of the
+# whole person — figure, skin, hair, clothing, hands — so no part is pasted next to a part
+# drawn separately (a separate hair step left torn patches of the old top under the new hair
+# on the owner's selfie). DifferentialDiffusion reads the noise mask as a per-pixel strength,
+# so each part gets its share of PERSON_DENOISE: the hair fully when the request changes it,
+# the figure enough for the LoRA's proportions and skin, the clothing and the hands and feet
+# gently (their colour and shape stay; at full strength grey sweatpants came out beige and a
+# second hand appeared), the face lightly (its own step follows).
+PERSON_DENOISE = 0.85
+# The face only lightly (its own step follows): kept out entirely, its edge cut the new hair
+# and bangs with a hard line and left pieces of the old bangs on the forehead (the selfie).
+SHARE = {
+    "body": 0.82,
+    "hair": 1.0,
+    "clothing": 0.5,
+    "limbs": 0.5,  # at 0.35 a hand stayed paler than the new arm
+    "face": 0.4,
+}
+# DifferentialDiffusion redraws a pixel or not at each step, so a jump in strength is a hard
+# line: the strengths are blurred widely and the hair's full strength reaches past what SAM
+# 3.1 found (light strands it missed kept their old colour as jagged bits on the selfie).
+PERSON_FEATHER = 31
+HAIR_REACH = 24
+# Around the face (px past SAM 3.1's "face") everything is redrawn at this share at most:
+# with the hair beside a turned face at full strength, Krea 2 drew a second, frontal face into
+# the hair next to the old one (the mirror selfie, 2026-11-06). The tint still gives the hair
+# its colour there.
+FACE_RING = (64, 0.55)
+
+
+TINT_FEATHER = 12
+
+
+def _set(n: _Nodes, strength: list[Any], where: list[Any], share: float) -> list[Any]:
+    """`strength` with `where` (a 0/1 mask) set to `share`: strength × (1 − where) + where ×
+    share (MaskComposite has no minimum)."""
+    outside = n.add({"class_type": "InvertMask", "inputs": {"mask": where}})
+    return n.combine(n.combine(strength, outside, "multiply"), n.scaled(where, share), "add")
+
+
+def blur_sigma(radius: int) -> float:
+    """ImageBlur's sigma for a radius: half of it, within the node's 0.1–10 (ComfyUI v0.35.0
+    `comfy_extras/nodes_post_processing.py`; 15.5 for a radius of 31 was refused)."""
+    return max(0.1, min(10.0, radius / 2))
+
+
+class _Nodes:
+    """Numbers new nodes from 100 up and builds the mask arithmetic."""
+
+    def __init__(self, wf: dict[str, Any], image: list[Any], width: int, height: int):
+        self.wf, self.image, self.width, self.height, self.next = wf, image, width, height, 100
+
+    def add(self, node: dict[str, Any]) -> list[Any]:
+        key = str(self.next)
+        self.next += 1
+        self.wf[key] = node
+        return [key, 0]
+
+    def detect(self, text: str) -> list[Any]:
+        text_node, node = str(self.next), str(self.next + 1)
+        self.next += 2
+        self.wf.update(_detect(text_node, node, text, self.image))
+        return [node, 0]
+
+    def grow(self, mask: list[Any], px: int) -> list[Any]:
+        return self.add(
+            {
+                "class_type": "GrowMask",
+                "inputs": {"mask": mask, "expand": px, "tapered_corners": True},
+            }
+        )
+
+    def combine(self, mask: list[Any], other: list[Any], operation: str) -> list[Any]:
+        return self.add(_combine(mask, other, operation))
+
+    def scaled(self, mask: list[Any], value: float) -> list[Any]:
+        solid = self.add(
+            {
+                "class_type": "SolidMask",
+                "inputs": {"value": round(value, 2), "width": self.width, "height": self.height},
+            }
+        )
+        return self.combine(mask, solid, "multiply")
+
+    def soft(self, mask: list[Any], feather: int) -> list[Any]:
+        image = self.add({"class_type": "MaskToImage", "inputs": {"mask": mask}})
+        blurred = self.add(
+            {
+                "class_type": "ImageBlur",
+                "inputs": {"image": image, "blur_radius": feather, "sigma": blur_sigma(feather)},
+            }
+        )
+        return self.add(
+            {"class_type": "ImageToMask", "inputs": {"image": blurred, "channel": "red"}}
+        )
+
+
+def person(
+    *,
+    variant: str,
+    unet: str,
+    text_encoder: str,
+    vae: str,
+    prompt: str,
+    negative: str,
+    width: int,
+    height: int,
+    seed: int,
+    steps: int,
+    cfg: float,
+    loras: list[tuple[str, float]],
+    denoise: float = PERSON_DENOISE,
+    hair: bool = False,
+    restyle: bool = False,
+    colour: str | None = None,
+    feather: int = FEATHER,
+    prefix: str = "advanced",
+) -> dict[str, Any]:
+    """The whole person redrawn once (see PERSON_DENOISE). `hair`: the request changes the
+    hair (full strength there); `restyle`: its style too (no FACE_RING, which kept a bob from
+    becoming a ponytail); `colour`: tinted towards it first, where SAM 3.1 found hair."""
+    wf: dict[str, Any] = {}
+    model = _krea(wf, unet=unet, text_encoder=text_encoder, vae=vae, loras=loras)
+    wf["60"] = {"class_type": "DifferentialDiffusion", "inputs": {"model": model}}
+    _conditioning(wf, variant, prompt, negative)
+    wf["10"] = {"class_type": "LoadImage", "inputs": {"image": INPUT}}
+    wf["11"] = {
+        "class_type": "ImageScale",
+        "inputs": {
+            "image": ["10", 0],
+            "upscale_method": "lanczos",
+            "width": width,
+            "height": height,
+            "crop": "disabled",
+        },
+    }
+    wf["30"] = {"class_type": "CheckpointLoaderSimple", "inputs": {"ckpt_name": SAM3_FILE}}
+    n = _Nodes(wf, ["11", 0], width, height)
+    # The people (a person in a mirror too) and the hair on them.
+    people = n.combine(n.detect(BACKGROUND_PERSON), n.detect(REFLECTION), "add")
+    hair_mask = n.combine(n.detect("hair:2"), n.grow(people, PERSON_GROW), "and")
+    area = n.grow(people, GROW["body"])
+    body = SHARE["body"]
+    strength = n.scaled(area, body)
+    face = n.detect("face:2")
+    for part, share in (
+        (n.detect("clothing:4"), SHARE["clothing"]),
+        (n.detect("hands:4"), SHARE["limbs"]),
+        (n.detect("feet:4"), SHARE["limbs"]),
+        (face, SHARE["face"]),
+    ):
+        strength = n.combine(strength, n.scaled(part, body - share), "subtract")
+    if hair:
+        # The hair fully, bangs over the face too (clamped at 1). Less than full left it
+        # blurred (a near-black tint has no strands to keep) and still did not keep curls
+        # (0.9 and 0.65 tried, 2026-11-06).
+        strength = n.combine(strength, n.grow(hair_mask, HAIR_REACH), "add")
+    if not restyle:
+        # The ring around the face at its share.
+        px, cap = FACE_RING
+        ring = n.combine(n.combine(n.grow(face, px), face, "subtract"), area, "and")
+        strength = _set(n, strength, ring, cap)
+    noise_mask = n.soft(strength, PERSON_FEATHER)
+    paste_mask = n.soft(area, feather)
+    pixels: list[Any] = ["11", 0]
+    if colour:
+        mode, amount = tint(colour)
+        flat = n.add(
+            {
+                "class_type": "EmptyImage",
+                "inputs": {
+                    "width": width,
+                    "height": height,
+                    "batch_size": 1,
+                    "color": colour_int(colour),
+                },
+            }
+        )
+        blended = n.add(
+            {
+                "class_type": "ImageBlend",
+                "inputs": {
+                    "image1": pixels,
+                    "image2": flat,
+                    "blend_factor": amount,
+                    "blend_mode": mode,
+                },
+            }
+        )
+        # The tint fades out at the hair's edge: with a hard edge, where the hair is redrawn
+        # gently (beside the face) the line between tinted and untinted strands stayed.
+        tint_mask = n.soft(n.grow(hair_mask, EXCLUDE_GROW), TINT_FEATHER)
+        pixels = n.add(
+            {
+                "class_type": "ImageCompositeMasked",
+                "inputs": {
+                    "destination": pixels,
+                    "source": blended,
+                    "mask": tint_mask,
+                    "x": 0,
+                    "y": 0,
+                    "resize_source": False,
+                },
+            }
+        )
+    wf["12"] = {"class_type": "VAEEncode", "inputs": {"pixels": pixels, "vae": ["3", 0]}}
+    wf["34"] = {
+        "class_type": "SetLatentNoiseMask",
+        "inputs": {"samples": ["12", 0], "mask": noise_mask},
+    }
+    wf["7"] = _sampler(variant, ["60", 0], ["34", 0], seed, steps, cfg, denoise)
+    wf["8"] = {"class_type": "VAEDecode", "inputs": {"samples": ["7", 0], "vae": ["3", 0]}}
+    wf["38"] = {
+        "class_type": "ImageCompositeMasked",
+        "inputs": {
+            "destination": ["11", 0],
+            "source": ["8", 0],
+            "mask": paste_mask,
+            "x": 0,
+            "y": 0,
+            "resize_source": False,
+        },
+    }
+    wf["9"] = {
+        "class_type": "SaveImage",
+        "inputs": {"images": ["38", 0], "filename_prefix": prefix},
+    }
     return wf
 
 
@@ -428,17 +657,34 @@ def edit(
             wf["93"] = _combine(["91", 0], ["92", 0], "multiply")
             wf["94"] = _combine(redrawn, ["93", 0], "subtract")
             redrawn = ["94", 0]
+        paste: list[Any] = ["37", 0]
+        noise: list[Any] = ["37", 0]
+        ring = RING.get(region) if not background else None
+        if ring:
+            px, share = ring
+            n = _Nodes(wf, base, size_w, size_h)
+            n.next = 150
+            around = n.grow(found, px)
+            if taken is not None:
+                around = n.combine(around, taken, "subtract")
+            graded = n.combine(n.scaled(around, share), n.scaled(redrawn, 1 - share), "add")
+            noise = n.soft(graded, feather)
+            paste = n.soft(around, feather)
         wf.update(
             {
                 # The soft mask decides what is redrawn and what is pasted back.
                 "34": {
                     "class_type": "SetLatentNoiseMask",
-                    "inputs": {"samples": ["12", 0], "mask": ["37", 0]},
+                    "inputs": {"samples": ["12", 0], "mask": noise},
                 },
                 "35": {"class_type": "MaskToImage", "inputs": {"mask": redrawn}},
                 "36": {
                     "class_type": "ImageBlur",
-                    "inputs": {"image": ["35", 0], "blur_radius": feather, "sigma": feather / 2},
+                    "inputs": {
+                        "image": ["35", 0],
+                        "blur_radius": feather,
+                        "sigma": blur_sigma(feather),
+                    },
                 },
                 "37": {
                     "class_type": "ImageToMask",
@@ -470,12 +716,16 @@ def edit(
             }
             # Only what SAM 3.1 found is tinted (not the grown rim), so no coloured halo
             # stays on the skin or the background around it.
+            # A little past what SAM 3.1 found, fading out (parts it missed — a dress's
+            # bodice — stayed in the old colour; a hard edge showed where the redraw is gentle).
+            t = _Nodes(wf, base, size_w, size_h)
+            t.next = 180
             wf["42"] = {
                 "class_type": "ImageCompositeMasked",
                 "inputs": {
                     "destination": base,
                     "source": ["41", 0],
-                    "mask": tinted,
+                    "mask": t.soft(t.grow(tinted, EXCLUDE_GROW), TINT_FEATHER),
                     "x": 0,
                     "y": 0,
                     "resize_source": False,
@@ -508,7 +758,7 @@ def edit(
             "inputs": {
                 "destination": ["11", 0],
                 "source": source,
-                "mask": ["37", 0],
+                "mask": paste,
                 "x": x,
                 "y": y,
                 "resize_source": False,

@@ -1044,7 +1044,7 @@ export const en = {
   "adv.regions": "What to change",
   "adv.regionsHint": "Without analysis: these regions are redrawn with your text as the prompt, plus hair, face or body when your text asks to change them.",
   "adv.identity": "Turn the person into the LoRA character",
-  "adv.identityHint": "The figure is redrawn with the LoRA (body, proportions, skin) while the hands, feet and pose stay and the clothing keeps its colour; a reflection in a mirror too. Then the hair and the face last. The face is compared with the LoRA's photos and tried up to three times; the most alike is kept. Turn it off when the photo already shows the character.",
+  "adv.identityHint": "With the LoRA the whole person is redrawn at once, with the hair the text changes (body, skin, proportions, a reflection in a mirror too). The clothing, hands and feet only gently, so they keep their colour and shape. The face last: compared with the LoRA's photos and tried up to three times; the most alike is kept. Turn it off when the photo already shows the character.",
   "adv.quality": "Quality check",
   "adv.qualityHint": "Each requirement checked (AI), face similarity and the changed area measured.",
   "adv.qualityMeasuredHint": "Without analysis only measured: face similarity and the changed area.",

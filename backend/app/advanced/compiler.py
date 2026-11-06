@@ -37,6 +37,7 @@ TARGETS: tuple[str, ...] = (
 # first, the face next, the hair last so its colour has the final say.
 ORDER = ("whole", "body", "background", "clothing", "face", "expression", "eyes", "mouth", "hair")
 MAX_EDITS = 6
+FACE_PARTS = ("mouth", "eyes", "expression")
 
 
 class Edit(BaseModel):
@@ -199,9 +200,11 @@ _FROM_TO = re.compile(r"\b(?:from|z|zo)\b[^.;]*?\b(?:to|into|na|do)\b", re.IGNOR
 _TO = re.compile(r"\b(?:to|into|na|do)\b(?P<after>(?:[\s,]+[^\W\d_]+){1,6})", re.IGNORECASE)
 
 
-def _target_colour(text: str) -> tuple[str, str] | None:
-    for sentence in re.split(r"[.;!?\n]+", text):
-        if not re.search(rf"\b{_HAIR}", sentence, re.IGNORECASE):
+def _target_colour(text: str, about: str = _HAIR) -> tuple[str, str] | None:
+    # Clauses ("her hair to dark brown and her red dress to a black dress"): each colour
+    # belongs to what its own clause speaks of.
+    for sentence in re.split(r"[.;!?\n]+|\band\b", text):
+        if not re.search(rf"\b(?:{about})", sentence, re.IGNORECASE):
             continue
         for m in _TO.finditer(sentence):
             after = m.group("after")
@@ -260,10 +263,25 @@ _KEEP = re.compile(
 _CHANGE = re.compile(
     r"\b(change|make|turn|transform|match|replace|give|switch|swap|new|different|dye|"
     r"recolou?r|bigger|larger|smaller|longer|shorter|slimmer|thinner|thicker|curvier|fuller|"
-    r"put|place|move|presuň\w*|presun\w*|prenes\w*|"
+    r"put|place|move|presuň\w*|presun\w*|prenes\w*|close|open|smile|wear|dress|"
+    r"zatvor\w*|otvor\w*|usmej\w*|obleč\w*|oblec\w*|"
     r"zmeň\w*|zmen\w*|sprav\w*|daj|uprav\w*|prefarb\w*|nov\w*|väčš\w*|vacs\w*|menš\w*|"
     r"mens\w*|dlhš\w*|dlhs\w*|kratš\w*|krats\w*)\b",
     re.IGNORECASE,
+)
+_CLOTHING_WORDS = (
+    r"outfit|clothes|clothing|dress|top|shirt|t-shirt|blouse|tank|bra|bikini|lingerie|"
+    r"underwear|panties|shorts|leggings|jeans|pants|trousers|skirt|socks|jacket|hoodie|"
+    r"sweater|choker|necklace|oblečen\w*|šat\w*|tričk\w*|nohavic\w*|sukn\w*|podprsenk\w*"
+)
+# Garments SAM 3.1 can be asked for by name.
+_GARMENTS = (
+    r"dress|top|shirt|t-shirt|blouse|tank top|bra|bikini|lingerie|underwear|panties|shorts|"
+    r"leggings|jeans|pants|trousers|skirt|socks|jacket|hoodie|sweater|coat"
+)
+_MOUTH_WORDS = r"mouth|lips|teeth|tongue|ústa|usta|pery|zuby|jazyk\w*"
+_EXPRESSION_WORDS = (
+    r"smile|smiling|expression|frown\w*|laugh\w*|úsmev\w*|usmev\w*|usmiat\w*|výraz\w*|vyraz\w*"
 )
 _REGION_WORDS = {
     "body": r"body|figure|proportions?|curves|buttocks?|butt|hips|waist|breasts?|"
@@ -272,6 +290,10 @@ _REGION_WORDS = {
     "hair": r"hair\w*|ponytail|bangs|braids?|vlas\w*|účes\w*|uces\w*|vrkoč\w*|vrkoc\w*",
     "background": r"background|backdrop|scene|setting|surroundings|environment|room|interior|"
     r"location|pozad\w*|prostred\w*|miestnos\w*|izb\w*|interiér\w*|interier\w*",
+    "clothing": _CLOTHING_WORDS,
+    "mouth": _MOUTH_WORDS,
+    "expression": _EXPRESSION_WORDS,
+    "eyes": r"eyes|eye colou?r|oči|oci",
 }
 
 
@@ -284,11 +306,6 @@ _FACE_WORDS = (
 )
 # The figure's prompt says what she wears and how she sits or lies (the LoRA gives the body),
 # never the hair or the face (they are not in its mask and would be drawn into it).
-_CLOTHING_WORDS = (
-    r"outfit|clothes|clothing|dress|top|shirt|t-shirt|blouse|tank|bra|bikini|lingerie|"
-    r"underwear|panties|shorts|leggings|jeans|pants|trousers|skirt|socks|jacket|hoodie|"
-    r"sweater|choker|necklace|oblečen\w*|šat\w*|tričk\w*|nohavic\w*|sukn\w*|podprsenk\w*"
-)
 _POSE_WORDS = (
     r"pose|posture|position|sitting|seated|lying|standing|kneeling|leaning|arms?|legs?|"
     r"hands?|phone|póz\w*|sed\w*|leží\w*|lezi\w*|stoj\w*|ruk\w*|noh\w*"
@@ -305,6 +322,7 @@ _SENTENCE_WORDS = {
     "hair": (_REGION_WORDS["hair"], r"facial|identity|lora|body|figure|proportions?|buttocks?"),
     "body": (rf"{_REGION_WORDS['body']}|{_CLOTHING_WORDS}|{_POSE_WORDS}", _NOT_BODY),
     "background": (_REGION_WORDS["background"], rf"{_NOT_BODY}|{_FACE_WORDS}"),
+    "clothing": (_CLOTHING_WORDS, _NOT_BODY),
 }
 
 
@@ -327,6 +345,23 @@ def _region_text(text: str, target: str) -> str:
     return region_prompt(_changes(text) if face else text, target)
 
 
+def _without_clauses(sentence: str, other: str) -> str:
+    """The sentence without its clauses (between commas and "and") that speak of `other`;
+    the rest keeps its own wording."""
+    parts = re.split(r"(,|\band\b)", sentence)
+    kept: list[str] = []
+    previous = False  # the clause before this one was kept
+    for index in range(0, len(parts), 2):
+        clause = parts[index].strip()
+        if not clause or re.search(rf"\b({other})\b", clause, re.IGNORECASE):
+            previous = False
+            continue
+        joint = parts[index - 1] if index and previous else ","
+        kept.append(clause if not kept else (f", {clause}" if joint == "," else f" and {clause}"))
+        previous = True
+    return "".join(kept)
+
+
 def region_prompt(text: str, target: str, *, fallback: str | None = None) -> str:
     """The request's sentences about this region (its first words — the trigger and "woman" —
     kept in front, except for the background, where they would draw a person); `fallback`,
@@ -338,22 +373,25 @@ def region_prompt(text: str, target: str, *, fallback: str | None = None) -> str
     sentences = [s.strip() for s in re.split(r"[.;!?\n]+", text) if s.strip()]
     said = []
     for sentence in sentences:
-        if target == "body":
-            # The figure keeps a sentence's clauses about clothing and pose and drops those
+        if target == "hair":
+            # The hair's sentence without its clauses about clothing ("… and her red dress to
+            # a black dress").
+            sentence = _without_clauses(sentence, _CLOTHING_WORDS)
+        if target in ("body", "clothing"):
+            # The figure and the clothing keep a sentence's clauses about them and drop those
             # about the face or hair ("…the pose, the finger touching her lips, the black
-            # dress…" lost the dress with the whole sentence, 2026-11-06).
-            sentence = ", ".join(
-                c.strip()
-                for c in sentence.split(",")
-                if not re.search(rf"\b({other})\b", c, re.IGNORECASE)
-            )
+            # dress…" lost the dress with the whole sentence; "her hair to dark brown and her
+            # red dress to a black dress" gave the clothing step the hair, 2026-11-06).
+            sentence = _without_clauses(sentence, other)
         if re.search(rf"\b({about})\b", sentence, re.IGNORECASE) and not re.search(
             rf"\b({other})\b", sentence, re.IGNORECASE
         ):
             said.append(sentence)
     if not said:
         return text if fallback is None else fallback
-    lead = sentences[0].split(",")[0].strip() if sentences and target != "background" else ""
+    # Who it is about ("lmxx2 woman"), never a whole first sentence that changes something
+    # else ("change her hair … and her red dress …" had led every step's prompt).
+    lead = _lead(text) if target != "background" else ""
     body = ". ".join(said)
     return body if not lead or body.startswith(lead) else f"{lead}, {body}"
 
@@ -385,18 +423,53 @@ def _with_identity(spec: Spec, text: str) -> None:
     58–66 %). The plan's own figure and face edits are kept (the user may have edited them)."""
     edits = [e for e in spec.edits if e.target != "whole"]
     body = next((e for e in edits if e.target == "body"), None) or Edit(
-        target="body", prompt=region_prompt(text, "body")
+        target="body", prompt=region_prompt(text, "body", fallback=subject(text))
     )
     face = next((e for e in edits if e.target == "face"), None) or face_edit(text)
-    rest = _ordered([e for e in edits if e.target not in ("body", "face")])
+    # The face step draws the mouth, eyes and expression too (its prompt has the request's
+    # sentences about them): a separate step before it would only be redrawn again.
+    rest = _ordered([e for e in edits if e.target not in ("body", "face", *FACE_PARTS)])
     spec.edits = [body, *rest[: MAX_EDITS - 2], face]
+
+
+_STYLE = re.compile(
+    r"\b(ponytail|bun|braids?|bangs|fringe|straight|curly|curls|wavy|waves|short|bob|pixie|"
+    r"updo|haircut|hairstyle|styled|cop\w*|vrkoč\w*|vrkoc\w*|ofin\w*|kučer\w*|kucer\w*|"
+    r"mikád\w*|mikad\w*|účes\w*|uces\w*|krátk\w*|kratk\w*)\b",
+    re.IGNORECASE,
+)
+
+
+def restyles(text: str) -> bool:
+    """Whether a request changes the hair's style, not only its colour: a style word in a
+    sentence that does not keep something ("in a high ponytail"; not "keep the wavy
+    hairstyle")."""
+    return any(_STYLE.search(x) and not _KEEP.search(x) for x in re.split(r"[.;!?\n]+", text))
+
+
+def _lead(text: str) -> str:
+    """The request's first words when they only name who it is about ("lmxx2 woman"), else
+    ""."""
+    first = re.split(r"[.;!?\n]+", text.strip())[0].split(",")[0].strip()
+    if first and len(first.split()) <= 4 and not _CHANGE.search(first) and not _KEEP.search(first):
+        return first
+    return ""
+
+
+def subject(text: str) -> str:
+    """Who the request is about when no sentence speaks of a region: `_lead`, else "the
+    woman". A step then never gets another region's sentences (the face crop got "her red
+    dress to a black dress", the figure "a hotel bathroom with marble walls", 2026-11-06)."""
+    return _lead(text) or "the woman"
 
 
 def face_edit(text: str) -> Edit:
     """The LoRA character's face: the request's sentences about the face without the "keep"
-    ones (`_changes`), or the whole request when none speaks of it."""
+    ones (`_changes`), or only who it is about when none speaks of it."""
     return Edit(
-        target="face", region=graphs.REGIONS["face"], prompt=region_prompt(_changes(text), "face")
+        target="face",
+        region=graphs.REGIONS["face"],
+        prompt=region_prompt(_changes(text), "face", fallback=subject(text)),
     )
 
 
@@ -459,6 +532,29 @@ def validate(
             if found:
                 edit.color = found[1]
                 _colour_first(edit, found[0])
+        elif edit.target == "clothing":
+            # SAM 3.1 looks for the garment the request names ("dress"), not any clothing
+            # (its best match for "clothing" can be the shoes).
+            garment = re.search(rf"\b({_GARMENTS})\b", edit.prompt, re.IGNORECASE)
+            if garment and edit.region in ("", graphs.REGIONS["clothing"]):
+                edit.region = garment.group(1).lower()
+            # Every piece of it: an arm across a dress split it in two, and SAM 3.1 returns
+            # only its best match unless told how many (half the dress stayed red).
+            if edit.region and ":" not in edit.region:
+                edit.region = f"{edit.region}:3"
+            # "her red dress to a black dress": the colour after "to" in a clause about
+            # clothing (the same palette) tints it and is said first (with "her red dress"
+            # first, Krea 2 drew a dark red one, 2026-11-06).
+            found = None
+            if edit.color is None:
+                found = _target_colour(edit.prompt, _CLOTHING_WORDS) or _target_colour(
+                    user_prompt, _CLOTHING_WORDS
+                )
+            if found:
+                edit.color = found[1]
+                what = garment.group(1).lower() if garment else "clothes"
+                if not edit.prompt.lower().startswith(found[0]):
+                    edit.prompt = f"{found[0]} {what}, {edit.prompt}"
     texts = [
         spec.prompt,
         spec.negative,

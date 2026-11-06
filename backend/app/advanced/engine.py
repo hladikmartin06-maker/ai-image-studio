@@ -23,7 +23,7 @@ from sqlalchemy import select, update
 from sqlalchemy.orm import selectinload
 
 from app.advanced import crop, graphs, quality
-from app.advanced.compiler import Edit, Spec, by_ai, by_rules, face_edit, validate
+from app.advanced.compiler import Edit, Spec, by_ai, by_rules, face_edit, restyles, validate
 from app.advanced.intelligence import IntelligenceError
 from app.advanced.quality import FACE_MATCH, evaluate, failed, rank
 from app.comfy import krea2
@@ -338,8 +338,12 @@ async def _edit(
         default = graphs.DENOISE_COLOUR.get(edit.target, default)
     elif edit.target == "face" and identity:
         default = graphs.DENOISE_IDENTITY_FACE
-    elif edit.target == "body" and identity:
-        default = graphs.DENOISE_IDENTITY_BODY
+    # The person turned into the LoRA's character: one redraw of the whole person with the
+    # hair the request asks for (graphs.person), not a figure step and a hair step.
+    person = edit.target == "body" and identity and job.mode == "edit"
+    hair = next((e for e in spec.edits if e.target == "hair"), None) if person else None
+    if person:
+        default = graphs.PERSON_DENOISE
     base = edit.denoise or options.get("denoise") or default
     # A correction redraws stronger; the LoRA character's face again as gently (its pose and
     # expression stay; the passes add up).
@@ -354,27 +358,44 @@ async def _edit(
     # The background without the LoRA (its studio backdrops turned places grey) and its
     # trigger, which would draw the character into it.
     lora = None if edit.target == "background" else options.get("lora")
-    prompt = _with_trigger(job, edit.prompt) if lora else edit.prompt
+    text = f"{hair.prompt}. {edit.prompt}" if hair else edit.prompt
+    prompt = _with_trigger(job, text) if lora else text
     args = _krea_args(job)
     if lora is None:
         args["loras"] = []
-    workflow = graphs.edit(
-        **args,
-        prompt=prompt,
-        negative=_negative(job, spec, edit.target),
-        width=width,
-        height=height,
-        seed=seed,
-        denoise=denoise,
-        region=region,
-        exclude=exclude,
-        soften=graphs.SOFTEN.get(edit.target) if region else None,
-        grow=graphs.GROW.get(edit.target, graphs.GROW_DEFAULT),
-        colour=colour,
-        attempt=attempt,
-        crop=square,
-        crop_size=crop.CROP_SIZE,
-    )
+    if person:
+        colour = hair.color if hair and hair.color else None
+        exclude = ()
+        workflow = graphs.person(
+            **args,
+            prompt=prompt,
+            negative=_negative(job, spec, edit.target),
+            width=width,
+            height=height,
+            seed=seed,
+            denoise=denoise,
+            hair=hair is not None,
+            restyle=hair is not None and restyles(hair.prompt),
+            colour=colour,
+        )
+    else:
+        workflow = graphs.edit(
+            **args,
+            prompt=prompt,
+            negative=_negative(job, spec, edit.target),
+            width=width,
+            height=height,
+            seed=seed,
+            denoise=denoise,
+            region=region,
+            exclude=exclude,
+            soften=graphs.SOFTEN.get(edit.target) if region else None,
+            grow=graphs.GROW.get(edit.target, graphs.GROW_DEFAULT),
+            colour=colour,
+            attempt=attempt,
+            crop=square,
+            crop_size=crop.CROP_SIZE,
+        )
     return await _gpu(
         job,
         key=key,
@@ -404,6 +425,7 @@ async def _edit(
 # Face corrections of a person turned into the LoRA's character when the user set fewer (each
 # is one face redraw in its crop, stronger, with a new seed; the most alike face is kept).
 IDENTITY_TRIES = 2
+MARGIN = 0.08  # how much more alike a later face try must be than the first to be chosen
 
 
 async def _lora_photos(job: AdvancedJob) -> list[Path]:
@@ -519,9 +541,13 @@ async def _run(job_id: uuid.UUID) -> None:
         else:
             current = job.source or {}
             image = None
-            for index, edit in enumerate(spec.edits):
+            identity_edit = job.mode == "edit" and bool(options.get("identity"))
+            # With the LoRA's character the hair is drawn in the person's one redraw.
+            together = identity_edit and any(e.target == "body" for e in spec.edits)
+            steps = [e for e in spec.edits if not (together and e.target == "hair")]
+            for index, edit in enumerate(steps):
                 key = f"edit{index + 1}"
-                if job.mode == "edit" and options.get("identity") and edit.target == "face":
+                if identity_edit and edit.target == "face":
                     image = await _identity_face(job, spec, edit, current, key, produced)
                 else:
                     image = await _edit(job, spec, edit, current, key, 0)
@@ -623,9 +649,13 @@ async def _identity_face(
 ) -> Image:
     """The LoRA character's face, tried up to 1 + IDENTITY_TRIES times from the same photo
     with a new seed each, until one is as alike to the LoRA's photos as the goal; the most
-    alike try (or `start`, the image it began from) is kept. Measured on this Mac (SFace)."""
+    alike try (or `start`, the image it began from) is kept. Measured on this Mac (SFace).
+    Only scores SFace can stand behind (≥ its threshold) choose: on a face it cannot read
+    (a tongue-out selfie scored 0.02–0.15 whatever was drawn) the choice was chance, and it
+    chose the one try that had closed the mouth (2026-11-06) — then the first is kept."""
     refs = await _lora_photos(job)
-    best = start
+    first: tuple[float | None, Image] | None = start
+    best = start if start and start[0] >= faces.MATCH_THRESHOLD else None
     for attempt in range(IDENTITY_TRIES + 1):
         image = await _edit(
             job, spec, edit, source, key if attempt == 0 else f"{key}-try{attempt + 1}", attempt
@@ -635,12 +665,19 @@ async def _identity_face(
             score, baseline = await quality.identity(storage.absolute(image.file_path), refs)
         except faces.FaceError:
             score, baseline = None, None
-        value = score if score is not None else -1.0
-        if best is None or value > best[0]:
-            best = (value, image)
+        first = first or (score, image)
+        sure = score is not None and score >= faces.MATCH_THRESHOLD
+        if sure and (best is None or score > best[0]):
+            best = (score, image)
         if score is None or score >= _goal(baseline):
             break
-    assert best is not None
+    assert first is not None
+    if best is None:
+        return first[1]
+    # A later try only when clearly more alike: the most alike face tends to the LoRA's own
+    # neutral look ("keep her smile" lost the smile to a try 3 points more alike).
+    if first[0] is not None and first[0] >= faces.MATCH_THRESHOLD and best[0] < first[0] + MARGIN:
+        return first[1]
     return best[1]
 
 

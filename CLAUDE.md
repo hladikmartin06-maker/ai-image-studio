@@ -183,22 +183,29 @@ repositories.
   expression) are redrawn in an enlarged crop around the face found on the Mac
   (`advanced/crop.py`, YuNet) and pasted back inside the mask only; masked edits use a soft
   mask with DifferentialDiffusion. An edit with a LoRA turns the person into its character
-  (owner's request 2026-11-05; `options.identity`, switch on by default): first the figure
-  with the LoRA (the owner's request 2026-11-06: body, breasts, waist, hips like the LoRA's;
-  SAM 3.1 "person" plus "reflection of a person" (a woman in a mirror), without the face,
-  head, hair, hands and feet, which pin the pose (`graphs.EXCLUDE`; SAM 3.1 returns one match
-  per text unless told "hands:4"), the clothing at half strength so its colour stays
-  (`graphs.SOFTEN`); grown 40 px so the outline can change; `DENOISE_IDENTITY_BODY`), then the
-  other edits (background, hair …), the face last with the LoRA (0.65,
-  `graphs.DENOISE_IDENTITY_FACE`), so the face measured is the face delivered (a hair step
-  after it cut the likeness from 47 % to 16–28 % on the owner's photos, 2026-11-06); no light
+  (owner's request 2026-11-05; `options.identity`, switch on by default): first ONE redraw
+  of the whole person with the LoRA (`graphs.person`, the owner's request 2026-11-06: body,
+  breasts, waist, hips like the LoRA's, and no seams between separately drawn parts — a
+  separate figure and hair step left torn patches and a second hand): SAM 3.1 "person" plus
+  "reflection of a person" grown 40 px, pasted back whole; DifferentialDiffusion strengths
+  per part (`graphs.SHARE` of `PERSON_DENOISE` 0.85, blurred widely): figure 0.82, the hair
+  the text changes 1.0 (tinted first with a soft edge, "hair:2" on the people, reaching 24 px
+  past SAM), clothing, hands and feet 0.5 so their colour and shape stay, the face 0.4 and, when only
+  the hair's colour changes, a ring 64 px around it at most 0.55 (else a second face was
+  drawn into the hair beside a turned face; a new style needs it, `compiler.restyles`,
+  `graphs.FACE_RING`) (SAM 3.1 returns one match per text unless told
+  "hands:4"); then the other edits (background,
+  clothing: the garment named, its colour tinted and said first, 0.85; mouth, eyes and
+  expression go into the face step), the face last with the LoRA
+  (0.65, `graphs.DENOISE_IDENTITY_FACE`), so the face measured is the face delivered; no light
   pass over the whole photo afterwards (Krea 2 Turbo at 0.3 drew hatching into hair and
-  cracks into skin). The hair step finds every head of hair on the photo's people
-  ("hair:2" inside "person" + reflection) and leaves the face alone except bangs
-  (`graphs.SEVERAL`, `graphs.BESIDE`). Text to image with a LoRA redraws a face short of the
-  likeness goal the same way (crop, 0.65, up to three tries, the generated face kept when it
-  is the most alike; `engine._lora_face`); its LoRA strength starts at 1.3 (edits 1.0). The face measured and cropped is the largest of
-  those YuNet is sure of (`faces.main_face`). The background is everything but the people (SAM 3.1 "person" grown
+  cracks into skin). Without a LoRA the hair step redraws a ring around the hair gently and
+  leaves the face alone except bangs (`graphs.RING`, `graphs.BESIDE`, "hair:2" on the people,
+  `graphs.SEVERAL`). Text to image with a LoRA redraws a face short of the likeness goal the
+  same way (crop, 0.65, up to three tries, the generated face kept when it is the most alike;
+  `engine._lora_face`); its LoRA strength starts at 1.3 (edits 1.0). The face measured and
+  cropped is the largest of those YuNet is sure of (`faces.main_face`). Node inputs stay
+  within ComfyUI's limits (ImageBlur sigma ≤ 10; `test_advanced.LIMITS` checks every graph). The background is everything but the people (SAM 3.1 "person" grown
   8 px, `InvertMask`), redrawn without the LoRA or its trigger: a new one when the text asks
   for it ("change the background to …", 0.9), or sharper, the same place, with the switch
   "Improve the background" (`options.improve_background`, `DENOISE_BACKGROUND_SHARPER`). Without analysis each region gets the request's
@@ -208,12 +215,16 @@ repositories.
   the face (kept at half strength it left the photo's lips on the new face).
   The face is tried up to three times, each from the same image with a new seed, until one
   reaches the goal (0.85 × the LoRA photos' own likeness, `quality.IDENTITY_SHARE`); the most
-  alike is kept (`engine._identity_face`, `IDENTITY_TRIES`) — even with the checks off. A
+  alike is kept (`engine._identity_face`, `IDENTITY_TRIES`) — even with the checks off — but
+  only by scores SFace can stand behind (≥ its threshold; else the first try) and only when
+  0.08 more alike than the first (`engine.MARGIN`: the most alike drifts to the LoRA's
+  neutral look and lost a requested smile). A
   LoRA whose photos show an expression (Taila 2 has a tongue-out photo) may draw it now and
   then: that is fixed in its dataset, not here (a redness measure below the lips could not
   tell a tongue from the LoRA's fuller lips and was removed). Tuned on the owner's three photos on his A40 (2026-11-05).
-  Without analysis, the hair, face, body or background the text asks to change are added to
-  the chosen regions
+  Without analysis, the hair, face, body, background, clothing, mouth, eyes or expression the
+  text asks to change are added to the chosen regions (a text that names them needs no chosen
+  region; a colour belongs to its own clause, "hair to dark brown and the dress to black")
   (`compiler.detected_targets`). Every number is the studio's estimate, tuned on the owner's
   GPU tests.
 - Hugging Face: token in Integrations › Hugging Face, checked with `whoami-v2` and the Krea 2

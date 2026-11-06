@@ -606,34 +606,63 @@ one click), SFace on this Mac and the user's own AI assistant. No upscaler (sinc
   "preserve the exact original wavy hairstyle, bangs" the selfie's waves became straight. YuNet misplaces
   the face of an extreme expression (the selfie: the box beside the mouth), so its score is
   low whatever the face looks like; the gentle tries then still keep the expression.
-- **The figure** (since 2026-11-06, the owner's request: breasts, waist, hips like the
-  LoRA's; tried the same day on his A40 with six photos — a car, a bed, a tongue-out selfie,
-  a mirror selfie, a woman on the floor and a lift with a mirror). Before the hair and the
-  face, the person is redrawn with the LoRA: SAM 3.1 "person" plus "reflection of a person"
-  (`MaskComposite` "add"; "person" left out the woman in the lift's mirror, the photo's
-  subject, and found only her cut-off profile at the edge; "reflection of a person" finds the
-  person in ordinary photos too), grown 40 px so the outline can change, without the face,
-  head, hair, hands and feet (each found by SAM 3.1, grown 8 px, added up and subtracted),
-  which pin the pose. SAM 3.1 returns only its best match per text in ComfyUI v0.35.0 unless
-  the text gives a count (`comfy/text_encoders/sam3_clip.py`, `_parse_prompts`: "text:N",
-  comma-separated texts; `nodes_sam3.py` keeps the N best above the threshold), so the anchors
-  are "face:2", "head:2", "hair:2", "hands:4", "feet:4" — with one "hands" only one hand was
-  pinned. The clothing ("clothing:4") is redrawn at half strength (`SolidMask` 0.5,
-  `MaskComposite` "multiply", subtracted; DifferentialDiffusion reads the mask as a per-pixel
-  strength and the paste-back blends with it): at full strength grey sweatpants came out
-  beige and pink lace shorts a white thong; at half strength both kept their colour at 0.75
-  and 0.85 while the skin, back and chest followed the LoRA. Strength 0.7 (0.6–0.85 tried:
-  the pose stayed at every strength with these anchors; 0.6 changed little; at 0.8 a lying
-  woman's buttocks came out misshapen, at 0.75 one seed drew a second hand on a chest and
-  covered a bare midriff, two other seeds were clean; 0.7 was clean on every photo).
-  Measured faces after the whole edit (figure, hair, face): 47–66 % alike to the LoRA's
-  photos, which are 64–67 % alike to each other.
-- **Hair on every person, never over the face** (2026-11-06): "hair:2" kept only where
-  "person" and "reflection of a person" are (grown 8 px, `MaskComposite` "and"), so a woman
-  and her reflection both change colour and a stranger does not; the face ("face:2", grown
-  8 px) minus what SAM 3.1 found as hair (bangs stay in) is left alone — the grown hair rim
-  had smeared the face of the woman on the floor and drawn a second hand on the lift photo's
-  cheek.
+- **The person in one redraw** (since 2026-11-06, the owner's request: breasts, waist, hips
+  like the LoRA's, the whole photo consistent; tried the same day on his A40 with his six
+  photos — a car, a bed, a tongue-out selfie, a mirror selfie, a woman on the floor, a lift
+  with a mirror — and five new ones made for the test). First a figure step and a hair step
+  ran one after the other; the hair step then left torn patches of the old top beside the new
+  hair (the selfie), smeared a face and drew a second hand on a cheek, and the figure step
+  (person minus face, head, hair, hands and feet, 0.75) once drew a second hand on a chest.
+  Now `graphs.person` redraws the whole person once with the LoRA: SAM 3.1 "person" plus
+  "reflection of a person" (`MaskComposite` "add"; "person" left out the woman in the lift's
+  mirror, the photo's subject; "reflection of a person" finds the person in ordinary photos
+  too), grown 40 px so the outline can change, pasted back whole (`ImageCompositeMasked` with
+  that soft area, not with the strengths, so nothing ghosts). DifferentialDiffusion reads the
+  noise mask as a per-pixel strength, so the parts get shares of 0.85 (`SolidMask` ×,
+  `MaskComposite` subtract/add, blurred with radius 31 because a jump in strength is drawn as
+  a hard line): figure 0.82; the hair the text changes 1.0, reaching 24 px past what SAM 3.1
+  found; clothing, hands and feet 0.5 (at full strength grey sweatpants came out beige, pink
+  lace shorts a white thong and a second hand appeared; at 0.35 a hand stayed paler than the
+  new arm); the face 0.4 (kept out entirely, its edge cut the new bangs with a hard line and
+  left pieces of the old ones on the forehead); when only the hair's colour changes, a ring
+  64 px around the face at most 0.55 (with the hair beside a turned face at full strength
+  Krea 2 drew a second, frontal face into the hair next to the old one — the mirror selfie);
+  not when the text restyles the hair (`compiler.restyles`: the ring kept a bob from becoming
+  the ponytail asked for). Less than full strength on the hair left
+  it blurred, because a near-black tint leaves no strands to keep, and still did not keep a
+  woman's curls (0.9 and 0.65 tried): with this LoRA, whose photos all have straight hair, a
+  new colour can straighten curls. The tint fades out over 12 px past what SAM 3.1 found
+  (8 px further): with a hard edge the line between tinted and untinted strands stayed where
+  the redraw is gentle. SAM 3.1 returns only its best match per text in ComfyUI v0.35.0
+  unless the text gives a count (`comfy/text_encoders/sam3_clip.py`, `_parse_prompts`:
+  "text:N"; `nodes_sam3.py` keeps the N best above the threshold), so the parts are "hair:2"
+  (kept on the people, so a woman and her reflection both change and a stranger does not),
+  "face:2", "clothing:4", "hands:4", "feet:4". ImageBlur takes a sigma of 0.1–10 only (a
+  radius of 31 with sigma 15.5 was refused), so the sigma is clamped and the tests check
+  every graph against the node limits read from the GPU.
+- **Hair without a LoRA**: the hair step redraws a ring 72 px around the hair at 0.45 of its
+  strength and pastes it back with the hair, so what lay under the old strands is drawn to
+  match; the face (minus hair over it) and the eyes and brows are left alone. Tried on a new
+  photo ("change her hair color to bright red"): red hair, the rest unchanged.
+- **Choosing the face try** (2026-11-06): only scores SFace can stand behind (≥ 0.363)
+  choose — on the tongue-out selfie every try scored 0.02–0.15, the choice was chance and
+  took the one try that had closed the mouth; then the first try is kept. A later try must be
+  0.08 more alike than the first: the most alike face tends to the LoRA's neutral look
+  (a café photo's "keep her smile" lost the smile to a try 0.03 more alike).
+- **Clothing**: SAM 3.1 looks for every piece of the garment the request names ("dress:3":
+  an arm across a red dress split it and half of it stayed red); its new colour
+  (after "to" in its own clause) tints it and is said first, at 0.85 (at 0.75 and with "her
+  red dress" first a red dress tinted black came out dark red). A new colour may come with a
+  new cut (the red dress came out as a black wrap dress).
+- **Prompts per step without analysis**: each step gets the request's sentences about it; the
+  figure and the clothing keep only their clauses (between commas and "and") — "her hair to
+  dark brown and her red dress to a black dress" gives the clothing step only the dress; a
+  colour belongs to its own clause. A step no sentence speaks of gets only who it is about
+  ("lmxx2 woman", else "the woman"): the face crop had got "her red dress to a black dress"
+  and the figure "a hotel bathroom with marble walls". The text alone may name what to change
+  (hair, face, body, background, clothing, mouth, eyes, expression; "close her mouth", "make
+  her smile"): no region has to be chosen then (it was refused before). With the LoRA's
+  character the mouth, eyes and expression are part of the face step.
 - **Text to image with a LoRA** (2026-11-06): eight hard prompts (a street from afar, a gym
   mirror selfie, a beach from above, a café profile, from behind, a laughing close-up, a bed
   with a laptop, a car at night) gave faces 42–66 % alike at LoRA strength 1.0 and 44–69 %

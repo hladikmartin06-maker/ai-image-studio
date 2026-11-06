@@ -93,11 +93,12 @@ Integrations and Settings.
     are estimates, not guarantees). What failed is corrected again (0–3 times, only that part)
     and the best attempt is kept. Advanced uses Krea 2 only: to enlarge or sharpen the result,
     use "Enhance photo" afterwards. Without the assistant, switch the analysis off and pick
-    the parts to change yourself (hair, face, body or a new background that your text asks for
-    are added by themselves). **A photo with a LoRA** turns the person into the LoRA's
-    character: first the figure is redrawn with the LoRA (body, breasts, waist, hips, skin) while
-    the face, hair, hands and feet stay and hold the pose, then the other changes, the face
-    last; the face is always compared with the LoRA's photos and tried up to three times, the
+    the parts to change yourself (hair, face, body, clothing, mouth, eyes, expression or a new
+    background that your text asks for are added by themselves). **A photo with a LoRA** turns
+    the person into the LoRA's character: first the whole person is redrawn with the LoRA at
+    once (body, breasts, waist, hips, skin and the hair your text changes, a reflection in a
+    mirror too) while the clothing, hands and feet change only gently and keep their colour and
+    shape, then the other changes, the face last; the face is always compared with the LoRA's photos and tried up to three times, the
     most alike is kept (switch "Turn the person into the LoRA character" off when the photo
     already shows the character). **The background** stays as it is, unless your text asks for
     a new one ("change the background to a beach") or you switch on "Improve the background"

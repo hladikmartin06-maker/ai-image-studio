@@ -182,13 +182,7 @@ async def _prepare(
             or bool(compiler.detected_targets(body.prompt))
             or bool(body.spec)
         )
-        if (
-            not body.analysis
-            and not targets
-            and not body.spec
-            and not identity
-            and not body.improve_background
-        ):
+        if not body.analysis and not regions and not body.spec:
             raise api_error(400, "invalid_parameter", "Choose what to change, or turn on analysis.")
         if regions and not caps["sam3"]:
             raise api_error(
