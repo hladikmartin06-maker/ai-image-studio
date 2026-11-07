@@ -108,8 +108,6 @@ def comfy_summary(gen: Generation) -> dict[str, Any] | None:
         "test_label": meta.get("test_label"),
         "test_prompt": meta.get("test_prompt"),
         "cancel_requested": bool(meta.get("cancel_requested")),
-        # A step of a Generate › Advanced request: {job_id, stage}.
-        "advanced": meta.get("advanced"),
     }
 
 

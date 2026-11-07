@@ -13,9 +13,6 @@ import { useCallback } from "react";
 import { api, query } from "@/lib/api";
 import { hiddenCount, hideDeleted, isHidden, showAgain, useHiddenVersion } from "@/lib/pending-deletes";
 import type {
-  AdvancedCapabilities,
-  AdvancedJob,
-  AdvancedSpec,
   AIProviderList,
   AIUsage,
   AuthState,
@@ -321,7 +318,6 @@ export function useSaveToLibrary() {
     onSuccess: (img) => {
       patchImageEverywhere(qc, img.id, () => img);
       qc.invalidateQueries({ queryKey: keys.images });
-      qc.invalidateQueries({ queryKey: advancedKeys.jobs });
     },
   });
 }
@@ -336,7 +332,6 @@ export function useDeleteImage() {
       patchImageEverywhere(qc, id, () => null);
       qc.invalidateQueries({ queryKey: keys.images });
       qc.invalidateQueries({ queryKey: keys.generations });
-      qc.invalidateQueries({ queryKey: advancedKeys.jobs });
       qc.invalidateQueries({ queryKey: keys.stats });
       qc.invalidateQueries({ queryKey: keys.storage });
     },
@@ -854,7 +849,7 @@ export function useComfyPower() {
 }
 
 export function useInstallKrea2Model() {
-  return useComfyMutation(({ id, ...body }: { id: string; variant: "turbo" | "raw" | "pgupscaler" | "anypaint" | "pose" | "skin" | "seedvr2"; filename?: string | null }) =>
+  return useComfyMutation(({ id, ...body }: { id: string; variant: "turbo" | "raw" | "pgupscaler"; filename?: string | null }) =>
     api<ComfyConnection>(`/api/comfy/connections/${id}/models/install`, { body }),
   );
 }
@@ -1282,79 +1277,5 @@ export function useLoraGenerated(loraId: string, enabled: boolean) {
     enabled,
     refetchInterval: (q) =>
       q.state.data?.items.some((g) => g.status === "queued" || g.status === "processing") ? 4000 : false,
-  });
-}
-
-// --- Generate › Advanced -----------------------------------------------------------------
-
-export const advancedKeys = {
-  jobs: ["advanced", "jobs"] as const,
-  caps: (connectionId: string) => ["advanced", "caps", connectionId] as const,
-};
-
-export function useAdvancedCapabilities(connectionId: string | null) {
-  return useQuery({
-    queryKey: advancedKeys.caps(connectionId ?? ""),
-    queryFn: () => api<AdvancedCapabilities>(`/api/advanced/capabilities${query({ connection_id: connectionId ?? undefined })}`),
-    enabled: Boolean(connectionId),
-  });
-}
-
-/** The latest requests, followed while one runs. */
-export function useAdvancedJobs() {
-  return useQuery({
-    queryKey: advancedKeys.jobs,
-    queryFn: () => api<{ items: AdvancedJob[] }>("/api/advanced/jobs?limit=30"),
-    refetchInterval: (q) =>
-      q.state.data?.items.some((j) => j.status === "queued" || j.status === "running") ? 2000 : false,
-  });
-}
-
-export function useStartAdvanced() {
-  const qc = useQueryClient();
-  return useMutation({
-    mutationFn: (body: Record<string, unknown>) => api<AdvancedJob>("/api/advanced/jobs", { body }),
-    onSuccess: () => {
-      void qc.invalidateQueries({ queryKey: advancedKeys.jobs });
-      void qc.invalidateQueries({ queryKey: ["generations"] });
-    },
-  });
-}
-
-export function usePosePreview() {
-  return useMutation({
-    mutationFn: (body: { image: { kind: string; id: string }; part: "body" | "head" }) =>
-      api<{ image: string; width: number; height: number }>("/api/advanced/pose-preview", { body }),
-  });
-}
-
-export function usePlanAdvanced() {
-  return useMutation({
-    mutationFn: (body: Record<string, unknown>) => api<AdvancedSpec>("/api/advanced/plan", { body }),
-  });
-}
-
-/** Removes a request with every image it made (sent after the "Undo" moment). */
-export function useDeleteAdvanced() {
-  const qc = useQueryClient();
-  return useMutation({
-    mutationFn: (id: string) => api(`/api/advanced/jobs/${id}`, { method: "DELETE" }),
-    onMutate: (id) => hideDeleted(id),
-    onError: (_e, id) => showAgain(id),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: advancedKeys.jobs });
-      qc.invalidateQueries({ queryKey: keys.generations });
-      qc.invalidateQueries({ queryKey: keys.images });
-      qc.invalidateQueries({ queryKey: keys.stats });
-      qc.invalidateQueries({ queryKey: keys.storage });
-    },
-  });
-}
-
-export function useCancelAdvanced() {
-  const qc = useQueryClient();
-  return useMutation({
-    mutationFn: (id: string) => api<AdvancedJob>(`/api/advanced/jobs/${id}/cancel`, { body: {} }),
-    onSuccess: () => qc.invalidateQueries({ queryKey: advancedKeys.jobs }),
   });
 }

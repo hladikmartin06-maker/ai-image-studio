@@ -28,7 +28,6 @@ import io
 import itertools
 import json
 import os
-import re
 import signal
 import subprocess
 import sys
@@ -284,91 +283,13 @@ def _chat_answer(text: str) -> str:
     )
 
 
-def _advanced_answer(system: str, question: Any) -> str:
-    """Generate › Advanced: a plan (JSON) or a check (JSON), like a vision model would."""
-    text = (
-        question
-        if isinstance(question, str)
-        else " ".join(part.get("text", "") for part in question if isinstance(part, dict))
-    )
-    if "You check an image" in system:
-        ids = re.findall(r"^- (\S+) \[", text, re.MULTILINE)
-        return json.dumps(
-            {
-                "checks": [{"id": i, "passed": True, "note": "looks right"} for i in ids],
-                "artifacts": "",
-            }
-        )
-    request = (
-        text.split("USER REQUEST:", 1)[-1].strip().splitlines()[0]
-        if "USER REQUEST:" in text
-        else text
-    )
-    if "EDIT" in text.split("\n", 1)[0]:
-        target = (
-            "hair"
-            if "hair" in request.lower()
-            else "mouth"
-            if "mouth" in request.lower()
-            else "whole"
-        )
-        region = {"hair": "hair", "mouth": "mouth and lips", "whole": ""}[target]
-        return json.dumps(
-            {
-                "summary": f"Only the {target} changes; everything else is kept.",
-                "preserve": ["facial identity", "pose", "outfit", "background", "lighting"],
-                "modify": [request],
-                "prompt": "",
-                "negative": "",
-                "edits": [
-                    {"target": target, "region": region, "prompt": f"photo of the woman, {request}"}
-                ],
-                "checks": [
-                    {
-                        "id": "change",
-                        "question": f"Is this done: {request}?",
-                        "kind": "modify",
-                        "target": target,
-                    },
-                    {
-                        "id": "bg",
-                        "question": "Is the background the same?",
-                        "kind": "preserve",
-                        "target": "background",
-                    },
-                ],
-            }
-        )
-    return json.dumps(
-        {
-            "summary": "A photorealistic image as asked.",
-            "preserve": [],
-            "modify": [],
-            "prompt": f"photorealistic photo, {request}, natural light, detailed skin texture",
-            "negative": "",
-            "edits": [],
-            "checks": [
-                {
-                    "id": "subject",
-                    "question": f"Does the image show: {request}?",
-                    "kind": "modify",
-                    "target": None,
-                }
-            ],
-        }
-    )
-
-
 @app.post("/openai/v1/chat/completions")
 async def chat_completions(request: Request):
     if not _authorized(request):
         return _unauthorized()
     body = await request.json()
     question = body["messages"][-1]["content"]
-    system = json.dumps(body["messages"][0]) if body.get("messages") else ""
-    if "You plan requests" in system or "You check an image" in system:
-        answer = _advanced_answer(system, question)
-    elif isinstance(question, list):
+    if isinstance(question, list):
         # A vision request (dataset caption): describe what varies, as instructed.
         answer = "standing by a window in a cream knit sweater, soft daylight, half-body shot"
     else:

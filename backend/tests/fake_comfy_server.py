@@ -57,31 +57,12 @@ NODES = [
     "ImageBlur",
     "ImageToMask",
     "ImageCompositeMasked",
-    # Advanced generation: Krea 2 redraws only a masked region (built-in, ComfyUI >= 0.30).
-    "SetLatentNoiseMask",
-    # Advanced: colour tint before a redraw, and face edits in an enlarged crop.
-    "EmptyImage",
-    "ImageBlend",
-    "ImageCrop",
-    "DifferentialDiffusion",
-    "MaskComposite",
-    "InvertMask",
-    "SolidMask",
     "ImageScaleBy",
     "SeedVR2Preprocess",
     "VAEEncodeTiled",
     "SeedVR2Conditioning",
     "VAEDecodeTiled",
     "SeedVR2PostProcessing",
-    # Advanced: Krea 2 AnyPaint (custom nodes, alexw5702-afk/krea2-anypaint).
-    "Krea2AnyPaintPrepare",
-    "Krea2AnyPaintEncode",
-    "Krea2AnyPaintModelPatch",
-    # Advanced: a pose from a photo (custom nodes ostris/ComfyUI-Krea2-Ostris-Edit; the
-    # reference-latent node is built into ComfyUI).
-    "TextEncodeKrea2OstrisEdit",
-    "Krea2OstrisEditModelPatch",
-    "FluxKontextMultiReferenceLatentMethod",
 ]
 # The Enhance photo (PGUpscaler) model files, by ComfyUI models folder.
 ENHANCE_FILES = {
@@ -140,8 +121,6 @@ class FakeComfy:
         self.require_token: str | None = None
         # Photos uploaded through POST /upload/image: name -> bytes.
         self.uploads: dict[str, bytes] = {}
-        # The node classes this ComfyUI has (tests take custom ones away).
-        self.nodes = list(NODES)
         self.lock = threading.Lock()
 
     def listed(self, folder: str) -> list[str]:
@@ -167,7 +146,7 @@ class FakeComfy:
         def combo(values):
             return [values]
 
-        info = {name: {"input": {"required": {}}, "python_module": "nodes"} for name in self.nodes}
+        info = {name: {"input": {"required": {}}, "python_module": "nodes"} for name in NODES}
         info["UNETLoader"]["input"]["required"] = {
             "unet_name": combo(self.listed("diffusion_models")),
             "weight_dtype": combo(["default", "fp8_e4m3fn"]),

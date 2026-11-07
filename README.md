@@ -36,7 +36,7 @@ Integrations and Settings.
 - **Dashboard** — real statistics, recent images, live activity, provider usage, WaveSpeed
   balance and **Spending this month** (the prices you confirmed before each paid run, GPU hours
   × their hourly price, and Modal's own bill; estimates, the providers' bills count).
-- **Generate** — four choices at the top (Online models, Krea 2, Enhance photo, Advanced). Results
+- **Generate** — three choices at the top (Online models, Krea 2, Enhance photo). Results
   appear on the right; one click on the bin deletes an image or a whole generation, with
   "Undo" for a few seconds.
   - **Online models** (Nano Banana Pro, Seedream, Wan 2.7, Wan 2.7 Pro through WaveSpeed or
@@ -81,47 +81,6 @@ Integrations and Settings.
     what the photo shows. With "Face only" you can name what to fix (e.g. "face, neck, hand").
     The image viewer compares before and after (slider or side by side); every image viewer
     has an "Enhance photo" button.
-  - **Advanced** — one request, everything together, on the same GPU or Mac as Krea 2: write
-    what you want, optionally add a photo and a LoRA, and press Run. **From text** it makes a
-    new image with Krea 2 RAW or Turbo; **edit a photo** changes only what you asked (e.g.
-    "blonde hair, mouth closed") and keeps the rest of the photo as it is — SAM 3.1 finds the
-    hair, mouth, eyes, face, clothing or background and only that part is redrawn (install its
-    file once with one click). Your AI assistant (Integrations) first writes a plan — what to
-    keep, what to change, the prompt — which you can see and edit before the run; then every
-    requirement is checked on the result (the assistant looks at the image, the face is
-    compared with the original or the LoRA's photos, and the changed area is measured; these
-    are estimates, not guarantees). What failed is corrected again (0–3 times, only that part)
-    and the best attempt is kept. **Finish** (a switch, off by default) then redraws the face
-    once more, gently, with your LoRA and a skin LoRA (kept only if it stays as alike), and
-    enlarges the photo 1.5, 2 or 3 times with SeedVR2 (the skin LoRA and SeedVR2 are
-    installed once per GPU with one click; SeedVR2 is already there with "Enhance photo"). Without the assistant, switch the analysis off and pick
-    the parts to change yourself (hair, face, body, clothing, mouth, eyes, expression or a new
-    background that your text asks for are added by themselves). **A photo with a LoRA** (the LoRA is always on: it carries the face and the body) turns
-    the person into the LoRA's character step by step, each region drawn by **Krea 2
-    AnyPaint** (installed once per GPU with one click; its nodes come with a GPU the studio
-    rents): the figure (body, breasts, hips and buttocks — "make her breasts bigger" works,
-    with 18+ on), the hair and clothing, the background, the face last; the face is always
-    compared with the LoRA's photos and tried up to three times (switch "Turn the person into
-    the LoRA character" off when the photo already shows the character). Every step shows
-    that it ran on AnyPaint; without AnyPaint nothing runs another way. **The background** stays as it is, unless your text asks for
-    a new one ("change the background to a beach") or you switch on "Improve the background"
-    (the same place, redrawn sharper); the person stays exactly as in the photo. "Unify the
-    light" (off by default) then redraws the whole photo very gently once more. **A pose from
-    a photo** (Krea 2 Turbo): add a second photo of anyone in the pose you want and choose
-    "Whole body" (the photo is drawn anew in that pose from your text, then the LoRA brings
-    back the face and body) or "Head only" (only the head and neck turn; the rest stays).
-    "Show the skeleton" shows what was found; the skeleton is found on this Mac (the first
-    time downloads about 350 MB) and only it goes to the GPU. The pose LoRA is installed
-    once per GPU with one click. For a **new hair colour** the hair is first
-    tinted with the colour (keeping its light and shadow; shown in the plan, where you can
-    change or remove it), so Krea 2 starts from it; the **mouth, eyes and expression** are
-    redrawn in an enlarged crop of the face (found on this Mac), so small details come out
-    right and the head's pose stays as it was. Steps, checks and before/after are
-    shown in the panel; attempts not chosen stay out of the library. Like everywhere else, the
-    result opens in the viewer and can be downloaded, deleted (with "Undo"), enhanced or added
-    to a LoRA; "All images of this request" shows every attempt. The buttons at the top of a
-    request copy its prompt, **load its settings** (with the plan and seed it used, so Run
-    repeats it) and delete the whole request with its images.
 - **AI Models** — your own fictional adult characters with up to 200 photos (shown across the
   whole page, primary photo first). The profile (description, age, hair, face, body, style, …)
   is optional and opens in a window. Select one on Generate: its description is added to the

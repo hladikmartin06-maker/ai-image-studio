@@ -53,15 +53,6 @@ async def _database() -> AsyncIterator[None]:
 
 
 @pytest.fixture(autouse=True)
-def _no_github() -> None:
-    """GitHub never reached from tests: the custom ComfyUI nodes are not found (a GPU then
-    starts without them), unless a test serves them."""
-    from app.comfy import custom_nodes
-
-    custom_nodes.transport = httpx.MockTransport(lambda request: httpx.Response(404))
-
-
-@pytest.fixture(autouse=True)
 def hub() -> FakeHub:
     """Hugging Face never reached from tests: a fake Hub answers token and license checks."""
     h = FakeHub()

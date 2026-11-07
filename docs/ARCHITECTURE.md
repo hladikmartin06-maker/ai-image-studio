@@ -46,7 +46,6 @@ Next.js 16 (127.0.0.1:3000) ── /api/* rewrite ──▶ FastAPI (127.0.0.1:8
 | `gpu/agent_client.py` | client for the agent (chunked resumable upload in 8 MB pieces: a chunk whose answer was lost continues from the size the agent reports with "offset mismatch", one upload per file at a time, size checked at the end; ranged resumable download with SHA-256) |
 | `comfy/` | `client.py` (ComfyUI HTTP API), `krea2.py` (verified facts, file detection, sizes, workflow, LoRA compatibility), `workflows.py` (import, secret scrubbing, bindings, LoRA insertion), `service.py` (connections, inspection, LoRA placement), `generation.py`, `runner.py` (in the job worker), `deploy.py` (ComfyUI on RunPod/Modal) |
 | `lora/` | `presets.py` (per-architecture options and presets), `aitoolkit.py` (job file), `dataset.py` (analysis, dHash, packing with crop), `captions.py` (vision captions via the assistant provider), `safetensors_meta.py`, `runner.py` (training state machine), `serial.py` |
-| `advanced/` | Generate › Advanced: `compiler.py` (preserve/modify spec from the assistant or rules, checked like prompts), `graphs.py` (its own Krea 2 text-to-image and SAM 3.1 masked-edit graphs, built-in nodes), `intelligence.py` (JSON from the user's assistant, usage recorded), `quality.py` (AI checks, SFace identity, changed area), `engine.py` (one background task per job) |
 | `services/gpu_runner.py` | background loop that advances training runs and deployments (state in the database) |
 | `services/uploads.py` | chunked uploads (8 MB pieces) for LoRA and model files |
 | `services/huggingface.py` | Hugging Face token check (`whoami-v2`) and access to the gated Krea 2 repositories (`auth-check`), cached; used by Integrations › Hugging Face and before training rents a GPU |
@@ -72,7 +71,6 @@ Next.js 16 (127.0.0.1:3000) ── /api/* rewrite ──▶ FastAPI (127.0.0.1:8
 | `comfy_connections` | ComfyUI servers: kind, URL, encrypted auth or agent token, inspection result, deployment state |
 | `comfy_workflows` | imported workflows (API format runs, UI format export only), bindings |
 | `loras` / `lora_dataset_items` / `lora_versions` | LoRA projects, dataset (links to reference images + caption, split, crop, dHash; a copied project links the same images, whose files go only when nothing links them), training runs and imported files (config, ai-toolkit config, GPU, progress, artifacts, deployments) |
-| `advanced_jobs` | Advanced requests: mode, Krea 2 variant, prompt, source photo, LoRA version, options, the spec used, stages, quality reports, result image (migration 0007, additive) |
 
 Images are files on disk; the database stores only relative paths. Every query filters by
 `user_id`.
@@ -141,23 +139,6 @@ Enhance photo: POST /api/comfy/enhance ─▶ Generation (model pgupscaler, mode
           enhance.py, built-in nodes only) ─▶ /prompt ─▶ result saved like Krea 2
           (no answer within 30 min, Modal 45: the GPU is stopped)
 
-Advanced: POST /api/advanced/jobs (idempotent; ready connection, files, nodes, AI and LoRA
-          checked first) ─▶ advanced_jobs row ─▶ engine task:
-          plan (assistant → spec, or rules + regions found in the text; with a LoRA the
-          person and then the face first) ─▶ Krea 2 text to image | a small photo enlarged
-          (Enhance photo) ─▶ one masked edit per region (SAM 3.1 mask ─▶ soft mask +
-          DifferentialDiffusion ─▶ ImageCompositeMasked) ─▶ checks (assistant per
-          requirement, SFace against the original or the LoRA's photos, changed area)
-          ─▶ ≤ 3 corrections of what failed
-          ─▶ best attempt ─▶ optional Enhance photo ─▶ completed
-          every GPU step = a Generation(provider "comfyui", comfy_meta.advanced {job_id,
-          stage}) in the same per-connection queue as Krea 2; the engine waits for it in the
-          database. Cancel stops the running step; a restart marks unfinished jobs
-          "interrupted" (their steps follow the worker's own restart rules, nothing is resent).
-          GET /api/advanced/jobs lists each job with every image its steps made; DELETE
-          /api/advanced/jobs/{id} (only when no step runs) removes the job, those images and
-          the steps' history entries, not the photo it started from.
-
 ComfyUI deployed by the studio is never exposed: only the agent port is, and every request
 needs the agent token. Files in a container are copied to this Mac before the workload is
 removed; RunPod keeps a pod volume across stop/start, Modal a named Volume (ComfyUI's models
@@ -185,9 +166,8 @@ in answers can be applied back to it ("Use in studio", "Apply settings").
 |---|---|
 | `proxy.ts` | refuses requests with a foreign `Host` (DNS rebinding protection) |
 | `app/welcome` | sign in / create account (only with `AUTO_LOGIN=false`; by default the shell signs in automatically through `POST /api/auth/auto`) |
-| `app/(studio)/…` | dashboard, generate (online models, Krea 2 with the ComfyUI choice inside, Enhance photo, Advanced), ai-models, loras (list + training history; `[id]` photos, captions, training, runs/versions, tests, details), library (generated images or AI model photos), library/history, assistant, integrations (images, AI, GPU, Hugging Face), settings |
+| `app/(studio)/…` | dashboard, generate (online models, Krea 2 with the ComfyUI choice inside, Enhance photo), ai-models, loras (list + training history; `[id]` photos, captions, training, runs/versions, tests, details), library (generated images or AI model photos), library/history, assistant, integrations (images, AI, GPU, Hugging Face), settings |
 | `components/comfy`, `components/lora`, `components/studio` | ComfyUI connection bar (This Mac / Rent a GPU), manage window, workflows, Krea 2 panel on Generate; dataset, captions, simplified training form, runs, comparison; shared status, GPU picker |
-| `components/advanced` | Generate › Advanced: connection, mode, model, photo, SAM 3.1 install, LoRA, switches, plan preview (editable), steps, checks, before/after, history |
 | `components/personas` | AI model picker and Generate section, profile form, reference collection, "Add to AI model" |
 | `components/assistant` | chat panel, safe Markdown with prompt/settings action cards, floating drawer |
 | `components/integrations` | image, AI and GPU provider management; Hugging Face token and Krea 2 license check |
