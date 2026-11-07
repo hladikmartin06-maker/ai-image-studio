@@ -205,6 +205,28 @@ def detect(object_info: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def place(x: float, y: float) -> str:
+    """Where a point (shares of the image) is, in words."""
+    if x < 0.34:
+        return "left edge"
+    if x > 0.66:
+        return "right edge"
+    return "top" if y < 0.4 else "bottom" if y > 0.6 else "middle"
+
+
+def other_face_instruction(who: str, side: str, main_side: str, note: str = "") -> str:
+    """A second pass for another face of her (a mirror reflection): the edit turns the main
+    person into the character and leaves a reflection as it was; named by its place, with the
+    user's own instruction repeated (without it the reflection's hair stayed), it changes too
+    (measured on the owner's elevator photo, PROVIDERS.md)."""
+    where = "in the middle" if main_side == "middle" else f"at the {main_side}"
+    return (
+        f"The person at the {side} of the photo is the same woman (her reflection in a mirror):"
+        f" turn her into {who} too, like the woman {where}. {note.strip()} Keep her face, her"
+        " hands and her pose visible as they are."
+    ).replace("  ", " ")
+
+
 def names(prompt: str, trigger: str) -> bool:
     return re.search(rf"(?<!\w){re.escape(trigger)}(?!\w)", prompt, re.IGNORECASE) is not None
 
@@ -506,13 +528,17 @@ def keep_unchanged(original: bytes, edited: bytes) -> tuple[bytes, float]:
 #
 # In a whole-body photo the face is small, so the owner's LoRA has few pixels to work with.
 # With a character LoRA, the main face (YuNet on the Mac, services/faces.py) is cropped as a
-# square 2.2x its size, redrawn at 1024 px by Krea 2 Turbo image to image with the LoRA at
-# denoise 0.4 (keeps expression and angle), and pasted back through a feathered ellipse.
-# Faces already large (over FACE_MAX_SHARE of the shorter side) are left alone. Measured on
+# square 2.2x its size, redrawn at 1024 px by Krea 2 Turbo image to image with the LoRA (1.25x)
+# at denoise 0.5 (the instruction repeated, so the expression stays), and pasted back through
+# a feathered ellipse. On six photos: likeness and sameness of her face across them up.
+# Every face size (a big face kept too much of the photo's own face without it). Measured on
 # the studio's runs: face likeness to the character's photos up (docs/PROVIDERS.md).
 FACE_EXPAND = 2.2
 FACE_PX = 1024
-FACE_DENOISE = 0.4
+FACE_DENOISE = 0.5
+# The character's LoRA is applied this much stronger in the face step (at most FACE_LORA_MAX).
+FACE_LORA_BOOST = 1.25
+FACE_LORA_MAX = 1.5
 FACE_MAX_SHARE = 0.3
 FACE_MIN_PX = 24
 FACE_NOTE_MAX = 400
@@ -594,6 +620,47 @@ def crop_paste(
     img.paste(Image.composite(patch.resize((side, side), Image.LANCZOS), old, mask), (left, top))
     buf = io.BytesIO()
     img.save(buf, "PNG")
+    return buf.getvalue()
+
+
+def hold_face(original: bytes, result: bytes, box: tuple[float, float, float, float]) -> bytes:
+    """Hair and Body: the face is put back exactly as it was (an oval inside the face box,
+    feathered). Those edits re-render the face slightly even when it is held, and it came out
+    smoother and a little different (seen on the studio's runs)."""
+    import io
+
+    from PIL import Image, ImageDraw, ImageFilter, ImageOps
+
+    src = ImageOps.exif_transpose(Image.open(io.BytesIO(original))).convert("RGB")
+    out = Image.open(io.BytesIO(result)).convert("RGB")
+    sx, sy = out.width / src.width, out.height / src.height
+    x, y, w, h = box
+    oval = (
+        x * sx + 0.08 * w * sx,
+        y * sy - 0.05 * h * sy,
+        (x + w) * sx - 0.08 * w * sx,
+        (y + h) * sy + 0.02 * h * sy,
+    )
+    mask = Image.new("L", out.size, 0)
+    ImageDraw.Draw(mask).ellipse(oval, fill=255)
+    mask = mask.filter(ImageFilter.GaussianBlur(max(2.0, 0.06 * w * sx)))
+    out.paste(src.resize(out.size, Image.LANCZOS), (0, 0), mask)
+    buf = io.BytesIO()
+    out.save(buf, "PNG")
+    return buf.getvalue()
+
+
+def for_upload(data: bytes, longest: int) -> bytes:
+    """The photo turned upright, at most `longest` px on its longer side, as a JPEG (95)."""
+    import io
+
+    from PIL import Image, ImageOps
+
+    img = ImageOps.exif_transpose(Image.open(io.BytesIO(data))).convert("RGB")
+    if max(img.size) > longest:
+        img.thumbnail((longest, longest), Image.LANCZOS)
+    buf = io.BytesIO()
+    img.save(buf, "JPEG", quality=95)
     return buf.getvalue()
 
 

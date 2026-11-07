@@ -816,6 +816,7 @@ export interface AdvancedBody {
   count: number;
   resolution: "auto" | "1K" | "2K";
   face_refine: boolean;
+  all_faces: boolean;
   face_only: boolean;
   area: "photo" | "face" | "head" | "hair" | "body";
   body_part: string | null;

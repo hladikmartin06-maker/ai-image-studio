@@ -391,6 +391,9 @@ async def test_character_face_is_redrawn_close_up(user: Api, monkeypatch):
             "close-up photo of tla woman, natural skin texture. Make her smile."
         )
         assert face["10"]["inputs"]["image"] in fake.uploads
+        assert face["20"]["inputs"]["strength_model"] == min(
+            k2edit.FACE_LORA_MAX, 1.1 * k2edit.FACE_LORA_BOOST
+        )
         # No face found (or too big): one prompt only. Text to image: a batch, no photo.
         boxes[0] = None
         before = len(fake.prompts)
@@ -726,7 +729,7 @@ async def test_auto_resolution_follows_the_photo(user: Api):
     comfy_runner.POLL_MAX = 0.02
     try:
         conn = await _ready_connection(user)
-        for size, tier in (((2000, 1500), "2K"), ((800, 600), "1K")):
+        for size, tier in (((2000, 1500), "1K"), ((800, 600), "1K")):
             ref = (
                 await user.post(
                     "/api/reference-images",
@@ -747,6 +750,9 @@ async def test_auto_resolution_follows_the_photo(user: Api):
             sent = list(fake.prompts.values())[-1]["prompt"]
             w, h = krea2.size_for_source(*size, tier)
             assert (sent["6"]["inputs"]["width"], sent["6"]["inputs"]["height"]) == (w, h)
+            # Sent at the edit's size, as a JPEG (big photos timed out on the way).
+            sent_photo = Image.open(io.BytesIO(fake.uploads[sent["10"]["inputs"]["image"]]))
+            assert sent_photo.format == "JPEG" and max(sent_photo.size) <= max(w, h)
     finally:
         ComfyClient.transport = None
         async with SessionLocal() as db:
@@ -766,3 +772,132 @@ def test_keep_unchanged_keeps_thin_new_things():
     out = Image.open(io.BytesIO(result)).convert("RGB")
     for x, y in ((160, 150), (160, 249), (100, 200), (219, 200)):  # top, bottom, left, right
         assert out.getpixel((x, y))[2] < 100, (x, y)  # gold, not the old skin
+
+
+def test_hold_face_puts_the_face_back():
+    src = Image.new("RGB", (400, 400), (200, 150, 120))
+    edit = Image.new("RGB", (800, 800), (10, 10, 10))  # the edit's size may differ
+    out = Image.open(
+        io.BytesIO(k2edit.hold_face(_png(src), _png(edit), (150.0, 120.0, 100.0, 120.0)))
+    ).convert("RGB")
+    assert out.size == (800, 800)
+    assert out.getpixel((400, 380)) == (200, 150, 120)  # the face's middle: the original
+    assert out.getpixel((40, 40)) == (10, 10, 10)  # elsewhere: the edit
+
+
+async def test_character_with_new_hair_lets_the_hair_go(user: Api, monkeypatch):
+    from app.services import faces
+
+    fake = FakeComfy(
+        files={
+            **KREA_FILES,
+            "loras": [*KREA_FILES["loras"], EDIT_FILE],
+            "checkpoints": [k2edit.SAM3.filename],
+        },
+        custom_nodes=list(k2edit.NODES),
+    )
+    ComfyClient.transport = fake.transport()
+    comfy_runner.POLL_INITIAL = 0.01
+    comfy_runner.POLL_MAX = 0.02
+
+    async def no_face(_data: bytes):
+        return None
+
+    monkeypatch.setattr(faces, "face_box", no_face)
+    try:
+        conn = await _ready_connection(user)
+        version_id, lora_file = await _character(user, conn["id"])
+        fake.files["loras"].append(lora_file)
+        ref = (
+            await user.post(
+                "/api/reference-images",
+                files={"file": ("me.png", png_bytes(64, 80), "image/png")},
+            )
+        ).json()
+        body = {
+            "connection_id": conn["id"],
+            "image": {"kind": "reference", "id": ref["id"]},
+            "prompt": "Give her long straight black hair.",
+            "lora": {"version_id": version_id, "strength": 1.0},
+        }
+        r = await user.post("/api/comfy/advanced", json=body)
+        assert r.status_code == 201, r.text
+        assert (await wait_done(user, r.json()["id"]))["status"] == "completed"
+        sent = list(fake.prompts.values())[-1]["prompt"]
+        texts = [n["inputs"]["text"] for n in sent.values() if n["class_type"] == "CLIPTextEncode"]
+        assert texts == ["hair", "face"]
+        assert sent["13"]["inputs"]["ref_boost"] == k2edit.REGION_BOOST
+        # Without hair in the instruction, the photo is held as before (no SAM).
+        r = await user.post("/api/comfy/advanced", json={**body, "prompt": "Make her smile."})
+        assert (await wait_done(user, r.json()["id"]))["status"] == "completed"
+        sent = list(fake.prompts.values())[-1]["prompt"]
+        assert "40" not in sent and sent["13"]["inputs"]["ref_boost"] == 2.0
+    finally:
+        ComfyClient.transport = None
+        async with SessionLocal() as db:
+            await db.execute(ComfyConnection.__table__.delete())
+            await db.execute(Generation.__table__.delete().where(Generation.provider == "comfyui"))
+            await db.commit()
+
+
+async def test_reflection_gets_a_second_pass(user: Api, monkeypatch):
+    from app.services import faces
+
+    fake = FakeComfy(
+        files={**KREA_FILES, "loras": [*KREA_FILES["loras"], EDIT_FILE]},
+        custom_nodes=list(k2edit.NODES),
+    )
+    ComfyClient.transport = fake.transport()
+    comfy_runner.POLL_INITIAL = 0.01
+    comfy_runner.POLL_MAX = 0.02
+
+    async def main_face(_data: bytes):
+        return (30.0, 30.0, 40.0, 40.0)
+
+    async def others(_data: bytes, min_score: float = 0.6):
+        return [(0.9, 0.4)]  # her reflection at the right edge
+
+    monkeypatch.setattr(faces, "face_box", main_face)
+    monkeypatch.setattr(faces, "other_faces", others)
+    try:
+        conn = await _ready_connection(user)
+        version_id, lora_file = await _character(user, conn["id"])
+        fake.files["loras"].append(lora_file)
+        ref = (
+            await user.post(
+                "/api/reference-images",
+                files={"file": ("me.png", png_bytes(100, 100), "image/png")},
+            )
+        ).json()
+        body = {
+            "connection_id": conn["id"],
+            "image": {"kind": "reference", "id": ref["id"]},
+            "prompt": "Make her smile.",
+            "lora": {"version_id": version_id, "strength": 1.0},
+        }
+        before = len(fake.prompts)
+        r = await user.post("/api/comfy/advanced", json=body)
+        gen = await wait_done(user, r.json()["id"])
+        assert gen["status"] == "completed", gen
+        assert len(fake.prompts) == before + 3  # edit, reflection, face step
+        second = list(fake.prompts.values())[-2]["prompt"]
+        assert second["4"]["inputs"]["prompt"].startswith("The person at the right edge")
+        assert "Make her smile." in second["4"]["inputs"]["prompt"]
+        assert second["21"]["inputs"]["lora_name"] == lora_file
+        assert second["10"]["inputs"]["image"] in fake.uploads  # the first result
+        # Switched off: one pass.
+        before = len(fake.prompts)
+        r = await user.post("/api/comfy/advanced", json={**body, "all_faces": False})
+        await wait_done(user, r.json()["id"])
+        assert len(fake.prompts) == before + 2
+    finally:
+        ComfyClient.transport = None
+        async with SessionLocal() as db:
+            await db.execute(ComfyConnection.__table__.delete())
+            await db.execute(Generation.__table__.delete().where(Generation.provider == "comfyui"))
+            await db.commit()
+
+
+def test_places_in_words():
+    assert k2edit.place(0.9, 0.5) == "right edge" and k2edit.place(0.1, 0.5) == "left edge"
+    assert k2edit.place(0.5, 0.5) == "middle" and k2edit.place(0.5, 0.1) == "top"

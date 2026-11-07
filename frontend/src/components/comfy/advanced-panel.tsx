@@ -78,6 +78,7 @@ export function AdvancedPanel({
   const [part, setPart] = useState<BodyPart>((before.body_part as BodyPart) ?? "bust");
   const [change, setChange] = useState<"normal" | "strong">(before.change === "strong" ? "strong" : "normal");
   const [faceRefine, setFaceRefine] = useState(initial ? before.face_refine === true : true);
+  const [allFaces, setAllFaces] = useState(true);
   const [adult, setAdult] = useState(before.adult === true);
   const [aspect, setAspect] = useState(before.aspect_ratio && before.aspect_ratio !== "match" ? before.aspect_ratio : "3:4");
   const [count, setCount] = useState(1);
@@ -170,6 +171,7 @@ export function AdvancedPanel({
         count: mode === "edit" ? 1 : count,
         resolution,
         face_refine: Boolean(lora) && faceRefine,
+        all_faces: allFaces,
         face_only: false,
         area: mode === "edit" ? target : "photo",
         body_part: mode === "edit" && target === "body" ? part : null,
@@ -353,6 +355,15 @@ export function AdvancedPanel({
                           <div className="hint">{t("ad.faceRefineHint")}</div>
                         </div>
                       </div>
+                      {mode === "edit" ? (
+                        <div className="row" style={{ gap: 10, alignItems: "flex-start" }}>
+                          <Switch checked={allFaces} onChange={setAllFaces} label={t("ad.allFaces")} />
+                          <div>
+                            <div className="small">{t("ad.allFaces")}</div>
+                            <div className="hint">{t("ad.allFacesHint")}</div>
+                          </div>
+                        </div>
+                      ) : null}
                     </div>
                   ) : null}
                   {chosen?.disabled ? (

@@ -171,8 +171,10 @@ repositories.
   original's pixels (on by default, closed mask with holes filled); "Face" edits the face
   crop and keeps the photo's hands (SAM 3.1); "Head" edits a head square and puts back only
   the changes; "Hair" and "Body" free a part found by SAM 3.1 (`ref_boost` 0.05 there, the
-  face always held); "Strong" = lower `ref_boost` (new pose, hard expressions). The face
-  step repeats the instruction so an edited expression stays. The instruction can
+  face always held); "Strong" = lower `ref_boost` (new pose, hard expressions). With a
+  character LoRA the face step runs for every face size (LoRA ×1.25, denoise 0.5, the
+  instruction repeated) and another face (a mirror reflection) gets a second pass named by
+  its place. Edits run at 1K (2K restaged a selfie); text to image at 2K. The instruction can
   be rewritten in English by the user's AI provider, which also picks what to change (shown
   before use). Same safety rules and 18+ switch as Krea 2. SAM 3.1 is Enhance photo's file; no
   other models or nodes (no upscaler). Measured facts and limits in `docs/PROVIDERS.md` › Advanced.

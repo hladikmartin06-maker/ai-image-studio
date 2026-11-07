@@ -249,6 +249,37 @@ def _box_of(engine: Any, data: bytes) -> tuple[float, float, float, float] | Non
     return float(face[0]), float(face[1]), float(face[2]), float(face[3])
 
 
+def _boxes_of(engine: Any, data: bytes) -> tuple[int, int, list[tuple[float, ...]]]:
+    import numpy as np
+
+    image = engine.cv2.imdecode(np.frombuffer(data, np.uint8), engine.cv2.IMREAD_COLOR)
+    if image is None:
+        return 0, 0, []
+    h, w = image.shape[:2]
+    with engine.lock:
+        engine.detector.setInputSize((w, h))
+        _, found = engine.detector.detect(image)
+    if found is None:
+        return w, h, []
+    return w, h, [tuple(float(v) for v in (*f[:4], f[14])) for f in found]
+
+
+async def other_faces(data: bytes, min_score: float = 0.6) -> list[tuple[float, float]]:
+    """Centres (x, y as shares of the image) of the faces other than the main one (e.g. her
+    reflection in a mirror), main_face's rule; empty when there are none."""
+    engine = await _get_engine()
+    w, h, found = await asyncio.to_thread(_boxes_of, engine, data)
+    if len(found) < 2 or not w:
+        return []
+    best = max(f[4] for f in found)
+    main = max((f for f in found if f[4] >= SURE_SHARE * best), key=lambda f: f[2] * f[3])
+    return [
+        ((f[0] + f[2] / 2) / w, (f[1] + f[3] / 2) / h)
+        for f in found
+        if f is not main and f[4] >= min_score
+    ]
+
+
 async def face_box(data: bytes) -> tuple[float, float, float, float] | None:
     """The main face's box (x, y, width, height in pixels of the image), or None."""
     engine = await _get_engine()

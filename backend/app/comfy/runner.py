@@ -114,6 +114,13 @@ async def _with_input(client: ComfyClient, gen: Generation) -> dict[str, Any]:
         # Advanced, face only: just the face, cropped on this Mac (k2edit.face_crop).
         data = await asyncio.to_thread(k2edit.face_crop, data, tuple(square))
         ext, mime = "png", "image/png"
+    if meta.get("family") == k2edit.FAMILY:
+        # Advanced scales the photo to the edit's size anyway: send it at that size (a 4 MP
+        # PNG timed out on its way to a rented GPU).
+        settings = gen.settings or {}
+        longest = max(int(settings.get("width") or 0), int(settings.get("height") or 0))
+        data = await asyncio.to_thread(k2edit.for_upload, data, longest or k2edit.FACE_PX)
+        ext, mime = "jpg", "image/jpeg"
     name = await client.upload_image(data, f"studio-{gen.id.hex[:12]}.{ext}", mime)
     return enhance.set_input(gen.request_payload, name)
 
@@ -304,6 +311,40 @@ async def run(worker: Any, gen: Generation) -> None:
     await _publish(gen.id)
 
 
+async def _extra_pass(
+    client: ComfyClient, gen: Generation, task: Any, data: bytes, instruction: str, index: int
+) -> bytes:
+    """Advanced: the edited photo edited once more (another face of her, a reflection), with
+    the same edit LoRA and character LoRA; the first result is kept if this fails."""
+    workflow = dict(gen.request_payload)
+    try:
+        name = await client.upload_image(
+            data, f"studio-{gen.id.hex[:12]}-x{index}.png", "image/png"
+        )
+        graph = {k: {**v, "inputs": dict(v["inputs"])} for k, v in workflow.items()}
+        graph = enhance.set_input(graph, name)
+        graph["4"]["inputs"]["prompt"] = instruction
+        graph["13"]["inputs"]["ref_boost"] = 4.0
+        for node in ("40", "41", "42", "43", "45", "50", "51", "53", "54", "70", "80", "81"):
+            graph.pop(node, None)  # no region: the whole photo, held as at 4
+        graph["13"]["inputs"].pop("ref_boost_mask", None)
+        graph["7"]["inputs"]["seed"] = int(graph["7"]["inputs"]["seed"]) + 1
+        prompt_id = str(uuid.uuid4())
+        await client.submit(graph, prompt_id, str(gen.id))
+        images = history_outputs(await _poll(client, gen, task, prompt_id))
+        if not images:
+            return data
+        return await client.view(images[0]["filename"], images[0]["subfolder"], images[0]["type"])
+    except RunFailed as exc:
+        if exc.code in ("cancelled", "timeout"):
+            raise
+        log.warning("Advanced second pass failed for %s: %s", gen.id, exc.message)
+        return data
+    except ComfyError as exc:
+        log.warning("Advanced second pass failed for %s: %s", gen.id, exc.message)
+        return data
+
+
 async def _refine_face(
     client: ComfyClient, gen: Generation, task: Any, data: bytes, face: dict, index: int
 ) -> bytes:
@@ -318,7 +359,8 @@ async def _refine_face(
     except Exception:  # noqa: BLE001 - no face models or an unreadable image: keep the edit
         log.warning("Advanced face pass skipped for %s", gen.id, exc_info=True)
         return data
-    square = k2edit.face_square(box, *size) if box else None
+    # Every size: a big face kept the photo's own face too much (likeness 0.29 vs 0.67).
+    square = k2edit.face_square(box, *size, any_size=True) if box else None
     if square is None:
         return data
     crop = await asyncio.to_thread(k2edit.face_crop, data, square)
@@ -329,7 +371,7 @@ async def _refine_face(
         workflow = k2edit.face_graph(
             image=name,
             lora=face["lora"],
-            strength=float(face["strength"]),
+            strength=min(k2edit.FACE_LORA_MAX, float(face["strength"]) * k2edit.FACE_LORA_BOOST),
             who=face["who"],
             seed=int((gen.settings or {}).get("seed") or 0) + index,
             note=str(face.get("note") or ""),
@@ -402,16 +444,30 @@ async def _advanced_finish(
             await asyncio.to_thread(k2edit.face_paste, original, d, tuple(square), hands)
             for d in datas
         ]
+    extra = meta.get("extra_pass")
+    if extra:
+        datas = [await _extra_pass(client, gen, task, d, extra, i) for i, d in enumerate(datas)]
     face = meta.get("face")
     if face:
         datas = [await _refine_face(client, gen, task, d, face, i) for i, d in enumerate(datas)]
-    if not meta.get("keep_unchanged") or not source:
+    if not source or not (meta.get("keep_unchanged") or meta.get("hold_face")):
         return datas
     try:
         original = await asyncio.to_thread(storage.absolute(source["file_path"]).read_bytes)
     except OSError:
         return datas  # the photo was deleted meanwhile: the edit as it came
-    return [(await asyncio.to_thread(k2edit.keep_unchanged, original, d))[0] for d in datas]
+    if meta.get("keep_unchanged"):
+        datas = [(await asyncio.to_thread(k2edit.keep_unchanged, original, d))[0] for d in datas]
+    if meta.get("hold_face"):
+        from app.services import faces
+
+        try:
+            box = await faces.face_box(await asyncio.to_thread(k2edit.upright, original))
+        except Exception:  # noqa: BLE001 - no face models: the edit as it is
+            box = None
+        if box:
+            datas = [await asyncio.to_thread(k2edit.hold_face, original, d, box) for d in datas]
+    return datas
 
 
 async def after_finish(gen_id: uuid.UUID) -> None:

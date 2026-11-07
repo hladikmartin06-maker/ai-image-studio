@@ -533,14 +533,27 @@ What the studio does:
    (body shape, a new pose). 8 steps.
 2. **With a character LoRA** the instruction starts with "Turn the woman into
    `<trigger> <class>`[, with `<hair>` hair]." (hair from the AI model's appearance when filled
-   in). Afterwards the main face (YuNet on the Mac) is cropped as a square 2.2× its size,
-   redrawn at 1024 px by Turbo image to image with the LoRA at denoise 0.4 and pasted back
-   through a feathered ellipse — only when it is small (under 30 % of the shorter side).
+   in); when the instruction mentions hair, the hair (SAM 3.1) is let go too. Afterwards the
+   main face (YuNet on the Mac), at any size, is cropped as a square 2.2× its size, redrawn at
+   1024 px by Turbo image to image with the LoRA at 1.25× its strength, denoise 0.5, the
+   user's instruction repeated, and pasted back through a feathered ellipse. When the photo
+   shows another face (her mirror reflection), a second pass edits the whole result with
+   "The person at the right edge … is the same woman (her reflection): turn her into … like
+   the woman in the middle. <the user's instruction>" (switch "Her mirror reflection too",
+   on by default). The owner's six photos, "Give her long straight black hair" with Taila 2:
+   likeness to her photos 0.72 (each 0.54–0.81) and her face across the six results 0.64,
+   against 0.49 / 0.33 with the edit alone and 0.62 / 0.45 with the earlier face step (only
+   small faces, denoise 0.4); the reflection, untouched by the plain edit, turns
+   black-haired when named by place with the instruction (generic "same hair" did not).
 3. **Untouched parts** (default on): where the edit changed nothing (per-pixel difference of
-   the lightly blurred images over 0.07, opened 9 px, closed 41 px, holes under 2 % of the
-   picture filled, grown 17 px, feathered 8 px), the original's pixels come back, at the
-   original's size (at most 1.5× the edit's). Without the closing and filling, a new beige
-   beanie over blond hair let strands of the old hair through where the colours were alike.
+   the lightly blurred images over 0.07, specks under 0.015 % of the picture dropped, closed
+   41 px, holes under 2 % filled, grown 17 px, feathered 8 px), the original's pixels come
+   back, at the original's size (at most 1.5× the edit's). Without the closing and filling,
+   a new beige beanie over blond hair let strands of the old hair through where the colours
+   were alike; with a morphological opening instead of the speck filter, the wire rims of
+   new glasses were dropped and only their hinges stayed. When over half of the photo changed
+   (a new background) the edit is used whole: mixing kept the old white sky and a tree's
+   edge behind a new white studio wall.
 4. **Face only**: the face square (any size) is edited at 1024 px (`ref_boost` 1; "Strong"
    0.6) and pasted back; nothing else changes. SAM 3.1 finds the hands in the square (a
    preview the studio fetches) and the paste keeps them as they were, and the instruction
@@ -548,7 +561,9 @@ What the studio does:
    and a finger at the lips was cut off by the new mouth (seen on the owner's photos).
 5. **Head** (glasses, sunglasses, a cap or beanie, earrings, makeup): a square 3.5× the face,
    reaching down by half a face, is edited at 1024 px (`ref_boost` 4) and only what changed
-   goes back (the change mask below, faded at the square's edges, hands kept). On 5 photos
+   goes back (the change mask, faded at the square's edges, hands kept) — only when that
+   square is under 60 % of the photo's shorter side; for a bigger face the whole photo is
+   edited (a square spanning the photo let the edit move the hair, cut off at its edge). On 5 photos
    with small or medium faces, earrings appeared only this way and glasses came out at
    their real size (on the whole photo they were missing or oversized).
 6. **Hair** (colour, a bob, a ponytail, curls): SAM 3.1 "hair" on the whole photo, let go
@@ -607,6 +622,11 @@ results checked by eye on contact sheets and with the studio's SFace face match)
   `ref_boost` 2 and 1; kiss and tongue need 1 or less; one raised eyebrow and a lip bite stay
   weak even at 0.3–0.6, where the face starts to look like another person (0.4 → 0.6 for
   "Strong"). With a character LoRA the face step brings her identity back.
+- Resolution "auto": text to image at 2K (1536×2048 for 3:4: skin pores and lashes; likeness
+  0.67 vs 0.62 at 1K on ten prompts; ~20 s); edits at 1K: at 2K a character edit restaged a
+  tilted selfie (another pose and framing) on three seeds, at 1K the pose stayed.
+- Hair and Body without a character LoRA: the original face is put back afterwards (an oval
+  inside the face box): those edits re-rendered the face slightly smoother and different.
 - Speed: text to image 5.7 s (1 MP, warm; 17 s with the first model load); an edit 14–18 s on
   the GPU; Face only and Body about 22–28 s end to end (SAM adds 1–3 s). Ten edits in a row through the studio (character LoRA + face step + composite,
   each started after the previous one ended): average 31.9 s, median 34.1 s, 90th percentile

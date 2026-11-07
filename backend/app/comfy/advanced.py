@@ -6,6 +6,7 @@ work unchanged. Text to image in Advanced is the Krea 2 Turbo run (comfy/generat
 
 from __future__ import annotations
 
+import re
 import secrets
 import uuid
 from typing import Any
@@ -30,8 +31,6 @@ from app.services.generation import GenerationRejected
 from app.services.safety import ADULT_OFF, PromptRefused, check_prompt, is_explicit
 from app.services.worker import worker
 
-AUTO_2K_PIXELS = 1_800_000
-
 
 class AdvancedBody(BaseModel):
     connection_id: uuid.UUID
@@ -44,11 +43,14 @@ class AdvancedBody(BaseModel):
     aspect_ratio: str = "3:4"
     count: int = Field(default=1, ge=1, le=4)
     # "auto": text to image at 2K (real skin texture, a closer likeness than 1K; ~20 s
-    # instead of 6 s on an L40S); an edit at 2K when the photo has AUTO_2K_PIXELS or more
-    # (sharper, ~75 s instead of ~15 s), else 1K.
+    # instead of 6 s on an L40S); an edit at 1K (at 2K a character edit restaged a selfie:
+    # another pose and framing; the edit LoRAs are trained at about 1 MP).
     resolution: str = Field(default="auto", pattern="^(auto|1K|2K)$")
     # With a character LoRA: its face redrawn close up when it is small (k2edit.face_*).
     face_refine: bool = True
+    # With a character LoRA: other faces of her (a mirror reflection) are changed too, in a
+    # second pass (k2edit.other_face_instruction).
+    all_faces: bool = True
     # Edit only the face: the face is cropped, edited at 1024 px and put back; the rest of
     # the photo stays exactly as it was (expressions, makeup, a smile on a small face).
     face_only: bool = False
@@ -89,6 +91,40 @@ async def _hair(db: AsyncSession, user: User, lora: Any) -> str:
     persona = await personas.owned(db, user.id, lora.persona_id)
     look = (persona.appearance or {}) if persona else {}
     return " ".join(str(look.get(k) or "").strip() for k in ("hairstyle", "hair_color")).strip()
+
+
+def _size_of(data: bytes) -> tuple[int, int]:
+    import io
+
+    from PIL import Image
+
+    return Image.open(io.BytesIO(data)).size
+
+
+async def _other_face(source: dict[str, Any], who: str, note: str) -> str | None:
+    """The second-pass instruction when the photo shows another face (her reflection)."""
+    import asyncio
+
+    from app.services import faces, storage
+
+    try:
+        data = await asyncio.to_thread(storage.absolute(source["file_path"]).read_bytes)
+        upright = await asyncio.to_thread(k2edit.upright, data)
+        others = await faces.other_faces(upright)
+        main = await faces.face_box(upright)
+        size = await asyncio.to_thread(
+            lambda: __import__("PIL.Image").Image.open(__import__("io").BytesIO(upright)).size
+        )
+    except Exception:  # noqa: BLE001 - no face models: no second pass
+        return None
+    if not others or not main:
+        return None
+    x, y, w, h = main
+    main_side = k2edit.place((x + w / 2) / size[0], (y + h / 2) / size[1])
+    side = k2edit.place(*others[0])
+    if side == main_side:
+        return None
+    return k2edit.other_face_instruction(who, side, main_side, note)
 
 
 async def _face_square(source: dict[str, Any], area: str = "face") -> tuple[int, int, int] | None:
@@ -218,8 +254,7 @@ async def create_advanced_generation(
     seed = body.seed if body.seed is not None else secrets.randbelow(krea2.SEED_MAX)
     tier = body.resolution
     if tier == "auto":
-        big = source and source["width"] * source["height"] >= AUTO_2K_PIXELS
-        tier = "2K" if not source or big else "1K"
+        tier = "1K" if source else "2K"
     count = 1 if source else body.count
     if square:
         width = height = k2edit.FACE_PX
@@ -228,6 +263,22 @@ async def create_advanced_generation(
         final = f"{final.rstrip()} {note}"
     elif source:
         width, height = krea2.size_for_source(source["width"], source["height"], tier)
+    extra = None
+    if source and loras and area == "photo" and body.all_faces:
+        who = face["who"] if face else f"{lora_meta['trigger_word']} woman"
+        look = await _hair(db, user, lora)
+        note = f"{prompt} Give her {look} hair." if look else prompt
+        extra = await _other_face(source, who, note)
+    # Her character with new hair (photo mode): the hair is let go too, so all of it becomes
+    # hers and her face comes through more (likeness 0.74 vs 0.63 and her face far more alike
+    # across six photos, the pose kept; PROVIDERS.md).
+    hair = bool(
+        source
+        and loras
+        and area == "photo"
+        and detection.get("sam")
+        and re.search(r"\bhair", final, re.I)
+    )
     if source:
         workflow = k2edit.build_edit(
             image=enhance.INPUT_PLACEHOLDER,
@@ -237,7 +288,7 @@ async def create_advanced_generation(
             seed=seed,
             edit_lora=k2edit.DEFAULT_EDIT,
             loras=loras,
-            region=body.body_part if area == "body" else "hair" if area == "hair" else None,
+            region=body.body_part if area == "body" else "hair" if area == "hair" or hair else None,
             keep_hands=bool(square),
             **k2edit.settings_for(
                 character=bool(loras), strength=body.strength, face=area == "face"
@@ -310,8 +361,12 @@ async def create_advanced_generation(
             "keep_unchanged": bool(source) and body.keep_unchanged,
             **({"input": source} if source else {}),
             "face": face,
+            # A second pass for another face of her (k2edit.other_face_instruction).
+            "extra_pass": extra,
             "face_only": list(square) if square and area == "face" else None,
             "head_crop": list(square) if square and area == "head" else None,
+            # Hair and Body (no character LoRA): the face comes back exactly (k2edit.hold_face).
+            "hold_face": area in ("hair", "body") and not loras,
             "adult": adult,
         },
         tasks=[ProviderTask(index=0, images_requested=count)],
