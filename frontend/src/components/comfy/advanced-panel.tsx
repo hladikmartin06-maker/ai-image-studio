@@ -81,6 +81,7 @@ export function AdvancedPanel({
   const [adult, setAdult] = useState(before.adult === true);
   const [aspect, setAspect] = useState(before.aspect_ratio && before.aspect_ratio !== "match" ? before.aspect_ratio : "3:4");
   const [count, setCount] = useState(1);
+  const [resolution, setResolution] = useState<"auto" | "1K" | "2K">("auto");
   const [seed, setSeed] = useState(typeof before.seed === "number" ? String(before.seed) : "");
   const [more, setMore] = useState(Boolean(seed));
 
@@ -167,6 +168,7 @@ export function AdvancedPanel({
         prompt: prompt.trim(),
         aspect_ratio: aspect,
         count: mode === "edit" ? 1 : count,
+        resolution,
         face_refine: Boolean(lora) && faceRefine,
         face_only: false,
         area: mode === "edit" ? target : "photo",
@@ -414,6 +416,7 @@ export function AdvancedPanel({
                         ))}
                       </div>
                       <Segmented label={t("gen.imageCount")} value={count} onChange={setCount} options={[1, 2, 3, 4].map((n) => ({ value: n, label: String(n) }))} />
+
                     </div>
                   )}
                   <div className="row" style={{ gap: 10, alignItems: "flex-start" }}>
@@ -429,6 +432,20 @@ export function AdvancedPanel({
                   <button type="button" className="link-button tiny" onClick={() => setMore((v) => !v)} aria-expanded={more}>
                     {t("gen.moreSettings")} <ChevronDown size={13} style={{ transform: more ? "rotate(180deg)" : undefined }} />
                   </button>
+                  {more ? (
+                    <Field label={t("gen.resolution")} hint={t("ad.resolutionHint")}>
+                      <Segmented
+                        label={t("gen.resolution")}
+                        value={resolution}
+                        onChange={setResolution}
+                        options={[
+                          { value: "auto", label: t("ad.resolutionAuto") },
+                          { value: "2K", label: "2K" },
+                          { value: "1K", label: "1K" },
+                        ]}
+                      />
+                    </Field>
+                  ) : null}
                   {more ? (
                     <Field label={t("gen.seed")} hint={t("en.seedHint")}>
                       <div className="input-wrap">

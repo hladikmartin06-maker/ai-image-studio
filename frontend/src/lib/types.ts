@@ -814,6 +814,7 @@ export interface AdvancedBody {
   prompt: string;
   aspect_ratio: string;
   count: number;
+  resolution: "auto" | "1K" | "2K";
   face_refine: boolean;
   face_only: boolean;
   area: "photo" | "face" | "head" | "hair" | "body";

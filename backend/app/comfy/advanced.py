@@ -30,6 +30,8 @@ from app.services.generation import GenerationRejected
 from app.services.safety import ADULT_OFF, PromptRefused, check_prompt, is_explicit
 from app.services.worker import worker
 
+AUTO_2K_PIXELS = 1_800_000
+
 
 class AdvancedBody(BaseModel):
     connection_id: uuid.UUID
@@ -41,6 +43,10 @@ class AdvancedBody(BaseModel):
     # Text to image only: the shape and how many.
     aspect_ratio: str = "3:4"
     count: int = Field(default=1, ge=1, le=4)
+    # "auto": text to image at 2K (real skin texture, a closer likeness than 1K; ~20 s
+    # instead of 6 s on an L40S); an edit at 2K when the photo has AUTO_2K_PIXELS or more
+    # (sharper, ~75 s instead of ~15 s), else 1K.
+    resolution: str = Field(default="auto", pattern="^(auto|1K|2K)$")
     # With a character LoRA: its face redrawn close up when it is small (k2edit.face_*).
     face_refine: bool = True
     # Edit only the face: the face is cropped, edited at 1024 px and put back; the rest of
@@ -211,6 +217,10 @@ async def create_advanced_generation(
         }
 
     seed = body.seed if body.seed is not None else secrets.randbelow(krea2.SEED_MAX)
+    tier = body.resolution
+    if tier == "auto":
+        big = source and source["width"] * source["height"] >= AUTO_2K_PIXELS
+        tier = "2K" if not source or big else "1K"
     count = 1 if source else body.count
     if square:
         width = height = k2edit.FACE_PX
@@ -218,7 +228,7 @@ async def create_advanced_generation(
         note = k2edit.FACE_ONLY_NOTE if area == "face" else k2edit.HEAD_NOTE
         final = f"{final.rstrip()} {note}"
     elif source:
-        width, height = krea2.size_for_source(source["width"], source["height"], "1K")
+        width, height = krea2.size_for_source(source["width"], source["height"], tier)
     if source:
         workflow = k2edit.build_edit(
             image=enhance.INPUT_PLACEHOLDER,
@@ -235,7 +245,7 @@ async def create_advanced_generation(
             ),
         )
     else:
-        width, height = krea2.size_for(body.aspect_ratio, "1K")
+        width, height = krea2.size_for(body.aspect_ratio, tier)
         workflow = krea2.build_workflow(
             variant="turbo",
             unet=k2edit.TURBO.filename,
@@ -271,7 +281,8 @@ async def create_advanced_generation(
             source_height=source["height"],
         )
     else:
-        settings.update(aspect_ratio=body.aspect_ratio, resolution="1K")
+        settings.update(aspect_ratio=body.aspect_ratio)
+    settings["resolution"] = tier if not square else "1K"
     gen = Generation(
         user_id=user.id,
         client_request_id=body.client_request_id,

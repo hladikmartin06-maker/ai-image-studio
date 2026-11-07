@@ -537,23 +537,37 @@ What the studio does:
    redrawn at 1024 px by Turbo image to image with the LoRA at denoise 0.4 and pasted back
    through a feathered ellipse — only when it is small (under 30 % of the shorter side).
 3. **Untouched parts** (default on): where the edit changed nothing (per-pixel difference of
-   the lightly blurred images over 0.07, opened 9 px, grown 16 px, feathered 8 px), the
-   original's pixels come back, at the original's size (at most 1.5× the edit's).
+   the lightly blurred images over 0.07, opened 9 px, closed 41 px, holes under 2 % of the
+   picture filled, grown 17 px, feathered 8 px), the original's pixels come back, at the
+   original's size (at most 1.5× the edit's). Without the closing and filling, a new beige
+   beanie over blond hair let strands of the old hair through where the colours were alike.
 4. **Face only**: the face square (any size) is edited at 1024 px (`ref_boost` 1; "Strong"
    0.6) and pasted back; nothing else changes. SAM 3.1 finds the hands in the square (a
    preview the studio fetches) and the paste keeps them as they were, and the instruction
    ends "Change only the face. Do not add hands." — without these a kiss grew a floating hand
    and a finger at the lips was cut off by the new mouth (seen on the owner's photos).
-5. **Body**: one part (bust, butt, waist and hips, belly, legs, arms) is found by SAM 3.1 from
+5. **Head** (glasses, sunglasses, a cap or beanie, earrings, makeup): a square 3.5× the face,
+   reaching down by half a face, is edited at 1024 px (`ref_boost` 4) and only what changed
+   goes back (the change mask below, faded at the square's edges, hands kept). On 5 photos
+   with small or medium faces, earrings appeared only this way and glasses came out at
+   their real size (on the whole photo they were missing or oversized).
+6. **Hair** (colour, a bob, a ponytail, curls): SAM 3.1 "hair" on the whole photo, let go
+   like Body. A small person's new colour or cut barely changed on the whole photo at 4.
+7. **Body**: one part (bust, butt, waist and hips, belly, legs, arms) is found by SAM 3.1 from
    two words (e.g. "breasts" + "chest"; one word alone missed parts or found the wrong one —
    "buttocks" marked the chest on a woman seen from the front), the masks added and grown
    40 px; the edit gets `ref_boost` 0.05 there only (`ref_boost_mask`), 1 elsewhere. SAM 3.1
    is Enhance photo's file `sam3.1_multiplex_fp16.safetensors` (1.75 GB, same source), part of
-   the one-click install; its nodes are built into ComfyUI 0.35.
-6. **Text to image**: Krea 2 Turbo + the LoRA (trigger word added), then the face step.
-7. **Improve instruction** (optional): the user's AI provider (cheapest tier) rewrites the
+   the one-click install; its nodes are built into ComfyUI 0.35. In every region edit SAM's
+   "face" is taken out of the let-go part (MaskComposite subtract): with a grown hair mask
+   the face changed too — likeness of the edited face to the original's (SFace, 12 hair
+   edits) 0.62 without, 0.79 with the face held.
+8. **Text to image**: Krea 2 Turbo + the LoRA (trigger word added), then the face step. In
+   edits the face step's prompt repeats the user's instruction: an edited smile drifted
+   back towards the LoRA's usual look otherwise (same likeness, 0.655, either way).
+9. **Improve instruction** (optional): the user's AI provider (cheapest tier) rewrites the
    words as one clear English instruction and says what it works on (whole photo, face,
-   body + part), shown for checking; "Use" sets the instruction and that choice. It writes
+   head, hair, body + part), shown for checking; "Use" sets the instruction and that choice. It writes
    "bust", not "breasts": the studio's safety rules treat "breasts" as explicit (18+ switch).
    Tokens recorded as `purpose="advanced"`; effort-aware models get 1,500 tokens (with 400
    the answer was cut off by the model's own reasoning).

@@ -84,10 +84,12 @@ Integrations and Settings.
   - **Advanced** — Krea 2 Turbo with your own LoRA, on the same GPU as Krea 2 (one-click
     install: Krea 2 Turbo, an edit LoRA and SAM 3.1, ≈ 21 GB). **Edit a photo**: choose a
     photo, write what to change, and pick **What to change**: *Whole photo* (expression,
-    pose, clothes, background, light — the rest stays), *Face only* (expressions such as a
-    wink, a kiss, surprise, laughing, close up; hands and everything else stay exactly), or
-    *Body* (one part: bust, butt, waist and hips, belly, legs, arms — say how much:
-    "slightly", "noticeably", "much larger" or "smaller"; pose, face and background stay).
+    pose, clothes, background, light — the rest stays), *Face* (expressions such as a wink,
+    a kiss, surprise, laughing, close up; hands and everything else stay exactly), *Head*
+    (glasses, sunglasses, a cap or beanie, earrings, makeup — edited close up, so they fit
+    even when the person is small), *Hair* (colour or style), or *Body* (one part: bust,
+    butt, waist and hips, belly, legs, arms — say how much: "slightly", "noticeably", "much
+    larger" or "smaller"; pose, face and background stay).
     Pick your character's LoRA and the person becomes your character (her face, and her hair
     when the AI model has hair colour and style filled in), with a small face redrawn close
     up. **Change strength** Strong lets bigger changes through (a new pose, hard

@@ -401,6 +401,7 @@ async def test_character_face_is_redrawn_close_up(user: Api, monkeypatch):
                 "prompt": "standing on a beach",
                 "count": 2,
                 "aspect_ratio": "3:4",
+                "resolution": "1K",
                 "lora": {"version_id": version_id, "strength": 1.0},
             },
         )
@@ -410,6 +411,7 @@ async def test_character_face_is_redrawn_close_up(user: Api, monkeypatch):
         assert len(fake.prompts) == before + 1
         sent = list(fake.prompts.values())[-1]["prompt"]
         assert sent["6"]["inputs"]["batch_size"] == 2
+        assert (sent["6"]["inputs"]["width"], sent["6"]["inputs"]["height"]) == (880, 1184)
         assert sent["4"]["inputs"]["text"] == "tla, standing on a beach"
         assert done["mode"] == "text-to-image" and not done["comfy"].get("input")
         bad = await user.post(
@@ -698,3 +700,54 @@ def test_head_square_and_crop_paste():
     assert out.getpixel((cx, cy))[0] > 200  # the change came back
     assert out.getpixel((10, 10)) == (0, 0, 255)
     assert out.getpixel((left + 3, top + 3)) == (0, 0, 255)
+
+
+def test_keep_unchanged_uses_the_whole_edit_for_a_new_background():
+    src = Image.new("RGB", (400, 300), (240, 240, 240))  # a white sky…
+    src.paste((40, 90, 40), (0, 0, 60, 300))  # …with a tree at the edge
+    edit = Image.new("RGB", (400, 300), (30, 30, 200))  # a whole new scene…
+    edit.paste((242, 242, 242), (200, 0, 400, 300))  # …partly as white as the old sky
+    result, changed = k2edit.keep_unchanged(_png(src), _png(edit))
+    assert changed > k2edit.KEEP_MAX_CHANGE
+    assert Image.open(io.BytesIO(result)).convert("RGB").tobytes() == edit.tobytes()
+
+
+async def test_auto_resolution_follows_the_photo(user: Api):
+    from app.comfy import krea2
+
+    fake = FakeComfy(
+        files={**KREA_FILES, "loras": [*KREA_FILES["loras"], EDIT_FILE]},
+        custom_nodes=list(k2edit.NODES),
+    )
+    ComfyClient.transport = fake.transport()
+    comfy_runner.POLL_INITIAL = 0.01
+    comfy_runner.POLL_MAX = 0.02
+    try:
+        conn = await _ready_connection(user)
+        for size, tier in (((2000, 1500), "2K"), ((800, 600), "1K")):
+            ref = (
+                await user.post(
+                    "/api/reference-images",
+                    files={"file": ("me.png", png_bytes(*size), "image/png")},
+                )
+            ).json()
+            r = await user.post(
+                "/api/comfy/advanced",
+                json={
+                    "connection_id": conn["id"],
+                    "image": {"kind": "reference", "id": ref["id"]},
+                    "prompt": "Make her smile.",
+                },
+            )
+            assert r.status_code == 201, r.text
+            gen = await wait_done(user, r.json()["id"])
+            assert gen["settings"]["resolution"] == tier
+            sent = list(fake.prompts.values())[-1]["prompt"]
+            w, h = krea2.size_for_source(*size, tier)
+            assert (sent["6"]["inputs"]["width"], sent["6"]["inputs"]["height"]) == (w, h)
+    finally:
+        ComfyClient.transport = None
+        async with SessionLocal() as db:
+            await db.execute(ComfyConnection.__table__.delete())
+            await db.execute(Generation.__table__.delete().where(Generation.provider == "comfyui"))
+            await db.commit()

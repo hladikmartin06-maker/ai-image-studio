@@ -424,6 +424,10 @@ KEEP_CLOSE = 41
 KEEP_HOLE = 0.02
 KEEP_GROW = 17
 KEEP_FEATHER = 8.0
+# Over this share changed (a new background), the edit is used whole: mixing in the few
+# "unchanged" bits of the old scene left e.g. the white sky and a tree's edge behind a new
+# white studio wall (seen on the studio's runs).
+KEEP_MAX_CHANGE = 0.5
 
 
 def change_mask(src: Any, out: Any) -> Any:
@@ -480,6 +484,11 @@ def keep_unchanged(original: bytes, edited: bytes) -> tuple[bytes, float]:
     size = (round(src.width * scale), round(src.height * scale))
     if size != src.size:
         src = src.resize(size, Image.LANCZOS)
+    if changed > KEEP_MAX_CHANGE:
+        result = out.resize(size, Image.LANCZOS)
+        buf = io.BytesIO()
+        result.save(buf, "PNG")
+        return buf.getvalue(), changed
     result = Image.composite(
         out.resize(size, Image.LANCZOS), src, mask.resize(size, Image.BILINEAR)
     )
