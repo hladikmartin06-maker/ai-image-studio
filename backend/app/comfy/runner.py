@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import io
 import json
 import logging
 import time
@@ -19,7 +20,7 @@ from typing import Any
 
 from sqlalchemy import select, update
 
-from app.comfy import enhance
+from app.comfy import enhance, k2edit
 from app.comfy.client import (
     ComfyClient,
     ComfyError,
@@ -263,6 +264,7 @@ async def run(worker: Any, gen: Generation) -> None:
         if not images:
             raise RunFailed("generation_failed", "The workflow finished without saving an image.")
         datas = [await client.view(i["filename"], i["subfolder"], i["type"]) for i in images]
+        datas = await _advanced_finish(client, gen, task, datas)
         # 18+ runs (Krea 2 switch, or an 18+ photo) are marked, so they can be blurred.
         adult = bool((gen.comfy_meta or {}).get("adult"))
         await worker.store_outputs(gen, task, datas, [True] * len(datas) if adult else [])
@@ -295,6 +297,74 @@ async def run(worker: Any, gen: Generation) -> None:
         if listener is not None:
             listener.cancel()
     await _publish(gen.id)
+
+
+async def _refine_face(
+    client: ComfyClient, gen: Generation, task: Any, data: bytes, face: dict, index: int
+) -> bytes:
+    """Advanced with a character LoRA: the main face redrawn close up (k2edit.face_*)."""
+    from PIL import Image as PILImage
+
+    from app.services import faces
+
+    try:
+        box = await faces.face_box(data)
+        size = await asyncio.to_thread(lambda: PILImage.open(io.BytesIO(data)).size)
+    except Exception:  # noqa: BLE001 - no face models or an unreadable image: keep the edit
+        log.warning("Advanced face pass skipped for %s", gen.id, exc_info=True)
+        return data
+    square = k2edit.face_square(box, *size) if box else None
+    if square is None:
+        return data
+    crop = await asyncio.to_thread(k2edit.face_crop, data, square)
+    try:
+        name = await client.upload_image(
+            crop, f"studio-{gen.id.hex[:12]}-face{index}.png", "image/png"
+        )
+        workflow = k2edit.face_graph(
+            image=name,
+            lora=face["lora"],
+            strength=float(face["strength"]),
+            who=face["who"],
+            seed=int((gen.settings or {}).get("seed") or 0) + index,
+        )
+        prompt_id = str(uuid.uuid4())
+        await client.submit(workflow, prompt_id, str(gen.id))
+        entry = await _poll(client, gen, task, prompt_id)
+        images = history_outputs(entry)
+        if not images:
+            return data
+        patch = await client.view(images[0]["filename"], images[0]["subfolder"], images[0]["type"])
+    except RunFailed as exc:
+        if exc.code in ("cancelled", "timeout"):
+            raise
+        log.warning("Advanced face pass failed for %s: %s", gen.id, exc.message)
+        return data
+    except ComfyError as exc:
+        log.warning("Advanced face pass failed for %s: %s", gen.id, exc.message)
+        return data
+    return await asyncio.to_thread(k2edit.face_paste, data, patch, square)
+
+
+async def _advanced_finish(
+    client: ComfyClient, gen: Generation, task: Any, datas: list[bytes]
+) -> list[bytes]:
+    """Advanced: the character's face redrawn close up, then the untouched parts of the
+    photo put back from the original (k2edit)."""
+    meta = gen.comfy_meta or {}
+    if meta.get("family") != k2edit.FAMILY:
+        return datas
+    face = meta.get("face")
+    if face:
+        datas = [await _refine_face(client, gen, task, d, face, i) for i, d in enumerate(datas)]
+    source = meta.get("input")
+    if not meta.get("keep_unchanged") or not source:
+        return datas
+    try:
+        original = await asyncio.to_thread(storage.absolute(source["file_path"]).read_bytes)
+    except OSError:
+        return datas  # the photo was deleted meanwhile: the edit as it came
+    return [(await asyncio.to_thread(k2edit.keep_unchanged, original, d))[0] for d in datas]
 
 
 async def after_finish(gen_id: uuid.UUID) -> None:

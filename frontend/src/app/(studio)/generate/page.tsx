@@ -14,6 +14,7 @@ import {
   SettingsControls,
 } from "@/components/generate/controls";
 import { openAssistant } from "@/components/assistant/drawer";
+import { AdvancedPanel } from "@/components/comfy/advanced-panel";
 import { EnhancePanel, type EnhancePhoto } from "@/components/comfy/enhance-panel";
 import { ComfyPanel } from "@/components/comfy/generate-panel";
 import {
@@ -59,10 +60,12 @@ import type {
   Variant,
 } from "@/lib/types";
 
-type Engine = "hosted" | "comfy" | "enhance";
+type Engine = "hosted" | "comfy" | "enhance" | "advanced";
 
 /** Enhance photo runs are ComfyUI runs of the PGUpscaler workflow. */
 const isEnhance = (gen: Generation) => gen.provider === "comfyui" && gen.comfy?.family === "pgupscaler";
+/** Advanced photo edits are ComfyUI runs of the Krea 2 edit workflow. */
+const isAdvanced = (gen: Generation) => gen.provider === "comfyui" && gen.comfy?.family === "k2edit";
 
 interface Draft {
   model: ModelKey;
@@ -200,9 +203,10 @@ export default function GeneratePage() {
     const params = new URLSearchParams(window.location.search);
     if (params.get("lora") || params.get("engine") === "comfy") return "comfy";
     if (params.get("engine") === "enhance") return "enhance";
+    if (params.get("engine") === "advanced") return "advanced";
     try {
       const saved = localStorage.getItem("studio:engine");
-      return saved === "comfy" || saved === "enhance" ? saved : "hosted";
+      return saved === "comfy" || saved === "enhance" || saved === "advanced" ? saved : "hosted";
     } catch {
       return "hosted";
     }
@@ -217,6 +221,8 @@ export default function GeneratePage() {
     photo: null,
     gen: null,
   });
+  // What Advanced starts with: an earlier Advanced run's settings.
+  const [advancedStart, setAdvancedStart] = useState<{ key: string; gen: Generation | null }>({ key: "draft", gen: null });
   const setEngine = useCallback((value: Engine) => {
     setEngineState(value);
     try {
@@ -264,6 +270,13 @@ export default function GeneratePage() {
           if (isEnhance(gen)) {
             setEnhanceStart({ key: gen.id, photo: null, gen });
             setEngine("enhance");
+            setDraft(defaults);
+            router.replace("/generate");
+            return;
+          }
+          if (isAdvanced(gen)) {
+            setAdvancedStart({ key: gen.id, gen });
+            setEngine("advanced");
             setDraft(defaults);
             router.replace("/generate");
             return;
@@ -511,6 +524,12 @@ export default function GeneratePage() {
       toast.success(t("gen.loaded"));
       return;
     }
+    if (isAdvanced(gen)) {
+      setAdvancedStart({ key: `${gen.id}:${Date.now()}`, gen });
+      setEngine("advanced");
+      toast.success(t("gen.loaded"));
+      return;
+    }
     if (gen.provider === "comfyui") {
       setComfyLoad(gen);
       setEngine("comfy");
@@ -618,6 +637,7 @@ export default function GeneratePage() {
         { value: "hosted", label: t("k2.engineHosted") },
         { value: "comfy", label: t("k2.engineComfy") },
         { value: "enhance", label: t("k2.engineEnhance") },
+        { value: "advanced", label: t("k2.engineAdvanced") },
       ]}
     />
   );
@@ -638,6 +658,16 @@ export default function GeneratePage() {
       {engineSwitch}
     </div>
   );
+
+  if (engine === "advanced") {
+    return (
+      <div className="studio">
+        <AdvancedPanel key={advancedStart.key} header={comfyHeader} initialPhoto={null} initial={advancedStart.gen} />
+        {resultsSection}
+        {viewerNode}
+      </div>
+    );
+  }
 
   if (engine === "enhance") {
     return (

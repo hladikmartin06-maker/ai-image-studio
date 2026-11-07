@@ -21,3 +21,4 @@ frontend/.env*.local
 
 # Background run state (pid files, logs) of scripts/start.sh
 .run/
+/advanced-lab/

@@ -16,7 +16,7 @@ from urllib.parse import urlsplit
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.comfy import enhance, krea2
+from app.comfy import enhance, k2edit, krea2
 from app.comfy.client import ComfyClient, ComfyError
 from app.gpu.agent_client import AgentClient, AgentError
 from app.models import ComfyConnection, Lora, LoraVersion
@@ -131,6 +131,7 @@ async def inspect(conn: ComfyConnection) -> dict[str, Any]:
         "files": {k: v[:500] for k, v in files.items()},
         "krea2": krea2.detect(info),
         "enhance": enhance.detect(info),
+        "k2edit": k2edit.detect(info),
         "file_capability": file_capability(conn),
         "checked_at": datetime.now(UTC).isoformat(),
     }

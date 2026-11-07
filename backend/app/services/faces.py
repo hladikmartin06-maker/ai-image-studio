@@ -233,6 +233,28 @@ def _score(features: list[Any], refs: list[Any]) -> float:
     return max(float((f * r).sum()) for f in features for r in refs)
 
 
+def _box_of(engine: Any, data: bytes) -> tuple[float, float, float, float] | None:
+    import numpy as np
+
+    image = engine.cv2.imdecode(np.frombuffer(data, np.uint8), engine.cv2.IMREAD_COLOR)
+    if image is None:
+        return None
+    h, w = image.shape[:2]
+    with engine.lock:
+        engine.detector.setInputSize((w, h))
+        _, found = engine.detector.detect(image)
+    if found is None or len(found) == 0:
+        return None
+    face = main_face(found)
+    return float(face[0]), float(face[1]), float(face[2]), float(face[3])
+
+
+async def face_box(data: bytes) -> tuple[float, float, float, float] | None:
+    """The main face's box (x, y, width, height in pixels of the image), or None."""
+    engine = await _get_engine()
+    return await asyncio.to_thread(_box_of, engine, data)
+
+
 async def compare(images: list[Path], references: list[Path]) -> dict[str, Any]:
     engine = await _get_engine()
 

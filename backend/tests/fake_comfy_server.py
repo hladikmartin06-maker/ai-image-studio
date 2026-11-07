@@ -46,6 +46,8 @@ NODES = [
     # Krea 2 image to image (built-in nodes).
     "ImageScale",
     "RepeatLatentBatch",
+    # Advanced (Krea 2 edit graph).
+    "EmptySD3LatentImage",
     # Built-in nodes of the Enhance photo workflow (PGUpscaler; ComfyUI >= 0.30).
     "LoadImage",
     "ImageScaleToTotalPixels",
@@ -105,8 +107,11 @@ class FakeComfy:
         polls: int = 2,
         models_dir: str = "",
         scan: bool = False,
+        custom_nodes: list[str] | None = None,
     ):
         self.files = {k: list(v) for k, v in (files or KREA_FILES).items()}
+        # Nodes of a custom node pack (Advanced: comfyui-krea2edit).
+        self.custom_nodes = list(custom_nodes or [])
         # Like ComfyUI, also list the files in <models_dir>/models/loras (sub folders too).
         self.models_dir = models_dir
         # Started by the agent: every model folder is read from disk (downloads show up).
@@ -164,6 +169,8 @@ class FakeComfy:
             "ckpt_name": combo(self.listed("checkpoints"))
         }
         info["FaceDetailer"] = {"input": {"required": {}}, "python_module": "custom_nodes.impact"}
+        for name in self.custom_nodes:
+            info[name] = {"input": {"required": {}}, "python_module": "custom_nodes.krea2edit"}
         return info
 
     # --- request handling (shared by the HTTP server and the httpx MockTransport)

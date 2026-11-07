@@ -287,7 +287,7 @@ class ModalSDK:
         command = [*spec.entrypoint, *spec.command] or ["sleep", "infinity"]
         volumes: dict[str, Any] = {}
         if spec.volume_name:
-            volumes["/workspace"] = modal.Volume.from_name(
+            volumes[spec.volume_path] = modal.Volume.from_name(
                 spec.volume_name, create_if_missing=True, client=client
             )
         secrets = [modal.Secret.from_dict(spec.secret_env)] if spec.secret_env else None

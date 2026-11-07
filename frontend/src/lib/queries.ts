@@ -21,6 +21,7 @@ import type {
   Catalog,
   Conversation,
   ConversationDetail,
+  AdvancedBody,
   EnhanceBody,
   Generation,
   GPUProvider,
@@ -849,7 +850,7 @@ export function useComfyPower() {
 }
 
 export function useInstallKrea2Model() {
-  return useComfyMutation(({ id, ...body }: { id: string; variant: "turbo" | "raw" | "pgupscaler"; filename?: string | null }) =>
+  return useComfyMutation(({ id, ...body }: { id: string; variant: "turbo" | "raw" | "pgupscaler" | "k2edit"; filename?: string | null }) =>
     api<ComfyConnection>(`/api/comfy/connections/${id}/models/install`, { body }),
   );
 }
@@ -920,6 +921,29 @@ export function useEnhancePhoto() {
       qc.invalidateQueries({ queryKey: keys.generations });
       qc.invalidateQueries({ queryKey: ["jobs"] });
     },
+  });
+}
+
+export function useAdvancedEdit() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: AdvancedBody) =>
+      api<Generation>("/api/comfy/advanced", { body: body as unknown as Record<string, unknown> }),
+    onSuccess: (gen) => {
+      upsertGeneration(qc, gen);
+      qc.invalidateQueries({ queryKey: keys.generations });
+      qc.invalidateQueries({ queryKey: ["jobs"] });
+    },
+  });
+}
+
+export function useAdvancedPrompt() {
+  return useMutation({
+    mutationFn: (body: { text: string; mode: "edit" | "text" }) =>
+      api<{ prompt: string; provider: string; model: string; input_tokens: number | null; output_tokens: number | null }>(
+        "/api/comfy/advanced/prompt",
+        { body },
+      ),
   });
 }
 

@@ -138,8 +138,9 @@ class WorkloadSpec:
     timeout_minutes: int = 60
     # Sensitive environment (tokens): RunPod env, a Modal Secret on Modal.
     secret_env: dict[str, str] = field(default_factory=dict)
-    # Modal: a persistent Volume mounted at /workspace (RunPod: volume_gb at /workspace).
+    # Modal: a persistent Volume mounted at volume_path (RunPod: volume_gb at /workspace).
     volume_name: str | None = None
+    volume_path: str = "/workspace"
     # Modal: add Python / apt packages to a registry image (modal.Image methods).
     image_python: str | None = None
     image_apt: list[str] = field(default_factory=list)

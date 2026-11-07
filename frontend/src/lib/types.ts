@@ -195,6 +195,9 @@ export interface GenerationSettings {
   // Enhance photo (PGUpscaler)
   strength?: number;
   face_only?: boolean;
+  // Advanced: untouched parts kept from the original; the character's face redrawn close up
+  keep_unchanged?: boolean;
+  face_refine?: boolean;
   upscale?: number;
   source_width?: number;
   source_height?: number;
@@ -653,6 +656,7 @@ export interface ComfyInfo {
   files?: Record<string, string[]>;
   krea2?: Krea2Detection;
   enhance?: EnhanceDetection;
+  k2edit?: AdvancedDetection;
   agent?: AgentHealth | null;
   checked_at?: string;
 }
@@ -686,8 +690,8 @@ export interface ComfyDeploy {
   // Krea 2 model download on the GPU (after connecting).
   model_job?: {
     id: string;
-    // A Krea 2 variant, or "pgupscaler" (Enhance photo).
-    variant: "turbo" | "raw" | "pgupscaler";
+    // A Krea 2 variant, "pgupscaler" (Enhance photo) or "k2edit" (Advanced).
+    variant: "turbo" | "raw" | "pgupscaler" | "k2edit";
     filename: string;
     files: string[];
     status: "running" | "completed" | "failed";
@@ -781,6 +785,40 @@ export interface EnhanceBody {
   client_request_id: string;
 }
 
+/** Generate › Advanced: Krea 2 Turbo edit nodes and files on a ComfyUI. */
+export interface AdvancedDetection {
+  missing_nodes: string[];
+  missing_files: string[];
+  edit_loras: Record<string, boolean>;
+  ready: boolean;
+}
+
+export interface AdvancedCatalog {
+  name: string;
+  model_key: string;
+  files: { folder: string; filename: string; size: number }[];
+  total_bytes: number;
+  edit_lora: string;
+  edit_license: string;
+  repo: string;
+  max_prompt: number;
+}
+
+export interface AdvancedBody {
+  connection_id: string;
+  // None = a new photo from the prompt (text to image).
+  image: { kind: "reference" | "image"; id: string } | null;
+  prompt: string;
+  aspect_ratio: string;
+  count: number;
+  face_refine: boolean;
+  lora: { version_id: string; strength: number } | null;
+  keep_unchanged: boolean;
+  adult: boolean;
+  seed: number | null;
+  client_request_id: string;
+}
+
 export interface ComfyCatalog {
   krea2: {
     architecture: Record<string, string | string[]>;
@@ -794,6 +832,7 @@ export interface ComfyCatalog {
     content: "sfw" | "sfw+nsfw";
   };
   enhance: EnhanceCatalog;
+  advanced: AdvancedCatalog;
   deploy_images: Record<string, string>;
   model_folders: string[];
 }

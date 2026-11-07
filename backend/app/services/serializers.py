@@ -13,7 +13,7 @@ from app.catalog import (
     resolve_variant,
     size_label,
 )
-from app.comfy import enhance
+from app.comfy import enhance, k2edit
 from app.comfy.krea2 import MODEL_KEYS
 from app.models import Generation, Image, ProviderTask, ReferenceImage
 
@@ -29,6 +29,8 @@ def model_name(key: str) -> str:
     comfy = MODEL_KEYS.get(key)
     if comfy:
         return comfy.name
+    if key == k2edit.MODEL_KEY:
+        return k2edit.NAME
     return enhance.NAME if key == enhance.MODEL_KEY else key
 
 

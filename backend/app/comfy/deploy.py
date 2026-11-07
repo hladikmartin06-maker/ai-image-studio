@@ -24,7 +24,7 @@ from typing import Any
 
 from sqlalchemy import func, select
 
-from app.comfy import enhance, krea2
+from app.comfy import custom_nodes, enhance, k2edit, krea2
 from app.comfy.client import ComfyError
 from app.comfy.service import agent_for, assoc, client_for, inspect
 from app.db import SessionLocal
@@ -71,6 +71,10 @@ BOOT_LIMIT = {"runpod": timedelta(minutes=30), "modal": timedelta(minutes=45)}
 
 POLL_EVERY = timedelta(seconds=10)
 MODAL_VOLUME = "ais-comfyui"
+# Where that Volume is mounted. Not /workspace: the ComfyUI image has files there (its WORKDIR
+# /workspace/runpod-slim), and a Modal sandbox whose Volume is mounted over a non-empty image
+# folder ends at once with exit code 1 and no output (measured 2026-11-07, image 1.4.1).
+MODAL_MOUNT = "/studio"
 # A session: from the start request until the GPU is stopped. Its time limit (default 2 h)
 # and optional spending limit stop the GPU, like inactivity does.
 DEFAULT_SESSION_MINUTES = 120
@@ -160,7 +164,12 @@ def image_plan(
 
 
 def spec_for(
-    conn: ComfyConnection, token: str, hf: str | None, image: str, cuda: list[str]
+    conn: ComfyConnection,
+    token: str,
+    hf: str | None,
+    image: str,
+    cuda: list[str],
+    nodes: str | None = None,
 ) -> WorkloadSpec:
     d = conn.deploy or {}
     provider = d["provider"]
@@ -170,6 +179,11 @@ def spec_for(
     # The agent finds ComfyUI in $STUDIO_WORKSPACE/runpod-slim/ComfyUI (COMFY_SUBDIR).
     env = agent_env(token, port=COMFY_AGENT_PORT)
     env.pop("STUDIO_AGENT_TOKEN")
+    if provider == "modal":
+        env["STUDIO_WORKSPACE"] = MODAL_MOUNT
+    if nodes:
+        # Custom ComfyUI nodes, unpacked before ComfyUI starts (comfy/custom_nodes.py).
+        env["STUDIO_NODES_CODE"] = nodes
     return WorkloadSpec(
         name=f"ais-comfyui-{str(conn.id)[:8]}",
         image=image,
@@ -185,14 +199,14 @@ def spec_for(
         entrypoint=["/bin/bash", "-c"],
         # Modal: ComfyUI straight from the image, models on the Volume (see COMFY_BOOT_MODAL).
         command=[COMFY_BOOT_MODAL if provider == "modal" else COMFY_BOOT],
-        # Modal: the image's WORKDIR (/workspace/runpod-slim) is hidden by the Volume mounted
-        # at /workspace, so the sandbox starts in /.
+        # Modal: the sandbox starts in / (not the image's WORKDIR).
         workdir="/" if provider == "modal" else None,
         # Modal: the sandbox ends itself after the session (+10 min, at most 24 h).
         timeout_minutes=min(session_minutes(d) + 10, 1440),
-        # Modal: one named Volume at /workspace keeps ComfyUI and every downloaded model for
-        # all of the user's Modal GPUs, so only the first start is slow.
+        # Modal: one named Volume (at MODAL_MOUNT) keeps every downloaded model for all of
+        # the user's Modal GPUs, so only the first start is slow.
         volume_name=MODAL_VOLUME if provider == "modal" else None,
+        volume_path=MODAL_MOUNT,
         cpu=SANDBOX_CPU if provider == "modal" else None,
         memory_mb=SANDBOX_MEMORY_MB if provider == "modal" else None,
         clear_entrypoint=provider == "modal",
@@ -230,8 +244,9 @@ async def _create(db, conn: ComfyConnection, token: str, hf: str | None):
             f"{cloud.title()} Cloud right now",
         )
     last: GPUError | None = None
+    nodes = await custom_nodes.packed()
     for image, cuda in plan:
-        spec = spec_for(conn, token, hf, image, cuda)
+        spec = spec_for(conn, token, hf, image, cuda, nodes)
         try:
             workload = await gpu_service.launch(db, conn.user_id, provider, spec, "comfyui")
             return workload, image, cuda
@@ -638,6 +653,10 @@ async def install_model(db, conn: ComfyConnection, variant: str, filename: str |
         # Enhance photo: the six PGUpscaler files from its Hugging Face repository.
         files = enhance.downloads()
         sizes = {f.filename: f.size / 1e9 for f in enhance.FILES}
+    elif variant == k2edit.FAMILY:
+        # Advanced: Krea 2 Turbo's files plus the edit LoRA (checked by SHA-256 on the GPU).
+        files = k2edit.downloads()
+        sizes = k2edit.sizes_gb()
     else:
         spec = krea2.VARIANTS.get(variant)
         if spec is None or not spec.known_files:
@@ -703,6 +722,13 @@ async def _advance_model_job(db, conn: ComfyConnection, d: dict[str, Any]) -> No
         if job_info["variant"] == enhance.FAMILY:
             seen = info.get("enhance") or {}
             installed = bool(seen) and not seen.get("missing_files")
+        elif job_info["variant"] == k2edit.FAMILY:
+            seen = info.get("k2edit") or {}
+            installed = (
+                bool(seen)
+                and not seen.get("missing_files")
+                and bool((seen.get("edit_loras") or {}).get(k2edit.DEFAULT_EDIT))
+            )
         else:
             seen = (info.get("krea2") or {}).get("variants", {}).get(job_info["variant"])
             installed = bool((seen or {}).get("installed"))

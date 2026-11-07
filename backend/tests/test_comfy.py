@@ -4,6 +4,7 @@ cancel and recovery, LoRA placement, deployment on RunPod through the real agent
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import re
 import uuid
@@ -641,21 +642,35 @@ def test_agent_downloads_only_from_hugging_face(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(agent.DownloadJob, "RETRY_PAUSE", 0)
     url = f"http://127.0.0.1:{server.server_address[1]}/file"
     dest = comfy / "models" / "diffusion_models" / "model.safetensors"
+    good = hashlib.sha256(payload).hexdigest()
+    other = comfy / "models" / "loras" / "other.safetensors"
     try:
         job = agent.DownloadJob(
             "models-t",
             "models",
             [
-                (url, str(comfy / "models" / "vae" / "have.safetensors"), "have.safetensors"),
-                (url, str(dest), "model.safetensors"),
+                (url, str(comfy / "models" / "vae" / "have.safetensors"), "have.safetensors", None),
+                (url, str(dest), "model.safetensors", good),
             ],
         )
         for _ in range(200):
             if job.status != "running":
                 break
             time.sleep(0.02)
+        # A file whose SHA-256 does not match is deleted, never renamed into place.
+        bad = agent.DownloadJob("models-u", "models", [(url, str(other), "other", "0" * 64)])
+        for _ in range(200):
+            if bad.status != "running":
+                break
+            time.sleep(0.02)
     finally:
         server.shutdown()
+    assert bad.status == "failed" and bad.error["code"] == "checksum"
+    assert not other.exists() and not Path(str(other) + ".part").exists()
+    with pytest.raises(ValueError):
+        agent.model_targets(
+            [{"url": "https://huggingface.co/a/b", "folder": "vae", "filename": "a", "sha256": "x"}]
+        )
     info = job.json()
     assert info["status"] == "completed", (info, Path(job.log_path).read_text())
     assert dest.read_bytes() == payload and not Path(str(dest) + ".part").exists()
@@ -668,7 +683,7 @@ def test_agent_downloads_only_from_hugging_face(tmp_path: Path, monkeypatch):
     }
     assert info["bytes_done"] == info["bytes_total"] == len(payload) + 10
     # The plain-HTTP test server is not huggingface.co: the token was never sent to it.
-    assert state["auth"] == [None, None]
+    assert set(state["auth"]) == {None}
     assert "retrying" in Path(job.log_path).read_text()
 
 
