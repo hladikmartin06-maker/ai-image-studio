@@ -690,6 +690,8 @@ async def test_head_and_hair_areas(user: Api, monkeypatch):
 def test_head_square_and_crop_paste():
     left, top, side = k2edit.head_square((180, 60, 40, 48), 400, 600)
     assert side == 168 and top > 0  # 3.5x the face, reaching down to the shoulders
+    # A big face: no close-up (the whole photo is edited instead).
+    assert k2edit.head_square((100, 100, 200, 240), 400, 600) is None
     img = Image.new("RGB", (400, 600), (0, 0, 255))
     edit = Image.new("RGB", (1024, 1024), (0, 0, 255))
     edit.paste((255, 0, 0), (400, 300, 620, 420))  # glasses in the middle of the square
@@ -751,3 +753,16 @@ async def test_auto_resolution_follows_the_photo(user: Api):
             await db.execute(ComfyConnection.__table__.delete())
             await db.execute(Generation.__table__.delete().where(Generation.provider == "comfyui"))
             await db.commit()
+
+
+def test_keep_unchanged_keeps_thin_new_things():
+    """Wire-rimmed glasses: a thin new line must come through whole."""
+    from PIL import ImageDraw
+
+    src = Image.new("RGB", (400, 400), (120, 100, 90))
+    edit = src.copy()
+    ImageDraw.Draw(edit).ellipse((100, 150, 220, 250), outline=(230, 190, 60), width=2)
+    result, _ = k2edit.keep_unchanged(_png(src), _png(edit))
+    out = Image.open(io.BytesIO(result)).convert("RGB")
+    for x, y in ((160, 150), (160, 249), (100, 200), (219, 200)):  # top, bottom, left, right
+        assert out.getpixel((x, y))[2] < 100, (x, y)  # gold, not the old skin

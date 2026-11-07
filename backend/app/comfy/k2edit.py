@@ -419,7 +419,7 @@ def build_edit(
 # one-pixel shift or VAE texture is not a change), opened to drop thin lines and specks,
 # grown and feathered. Thresholds from the studio's own runs (docs/PROVIDERS.md, Advanced).
 KEEP_THRESHOLD = 0.07
-KEEP_OPEN = 9
+KEEP_SPECK = 0.00015
 KEEP_CLOSE = 41
 KEEP_HOLE = 0.02
 KEEP_GROW = 17
@@ -432,8 +432,8 @@ KEEP_MAX_CHANGE = 0.5
 
 def change_mask(src: Any, out: Any) -> Any:
     """Where the edit changed the photo (PIL "L", the edit's size): the per-pixel difference
-    of the two lightly blurred images over KEEP_THRESHOLD, opened (drops one-pixel shifts and
-    texture), closed, with small holes filled — a new beige beanie over blond hair left
+    of the two lightly blurred images over KEEP_THRESHOLD, specks dropped, closed, with small
+    holes filled — a new beige beanie over blond hair left
     strands of the old hair where the colours were alike (seen on the owner's photos) —
     then grown and feathered."""
     import cv2
@@ -447,7 +447,12 @@ def change_mask(src: Any, out: Any) -> Any:
 
     diff = np.abs(soft(src.resize((w, h), Image.LANCZOS)) - soft(out)).mean(axis=2)
     m = ((diff > KEEP_THRESHOLD) * 255).astype(np.uint8)
-    m = cv2.morphologyEx(m, cv2.MORPH_OPEN, np.ones((KEEP_OPEN, KEEP_OPEN), np.uint8))
+    # Specks (texture, a pixel's shift) go; thin new things stay: an opening dropped the wire
+    # rims of new glasses and kept only their hinges (seen on the studio's runs).
+    count, labels, stats, _ = cv2.connectedComponentsWithStats(m, connectivity=8)
+    small = [i for i in range(1, count) if stats[i, cv2.CC_STAT_AREA] < KEEP_SPECK * w * h]
+    if small:
+        m[np.isin(labels, small)] = 0
     disk = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (KEEP_CLOSE, KEEP_CLOSE))
     m = cv2.morphologyEx(m, cv2.MORPH_CLOSE, disk)
     # Holes inside a changed area are changed too, unless large (a whole person kept
@@ -546,6 +551,7 @@ def upright(data: bytes) -> bytes:
 HEAD_EXPAND = 3.5
 HEAD_DOWN = 0.5
 HEAD_NOTE = "Do not add hands."
+HEAD_MAX_SHARE = 0.6
 
 
 def head_square(
@@ -553,9 +559,11 @@ def head_square(
 ) -> tuple[int, int, int] | None:
     x, y, w, h = box
     size = max(w, h)
-    if size < FACE_MIN_PX:
-        return None
     side = int(round(min(size * HEAD_EXPAND, width, height)))
+    # A big face gains nothing from a close-up, and a square almost as wide as the photo cut
+    # through the hair at its edge (the edit had moved the hair): edit the whole photo then.
+    if size < FACE_MIN_PX or side > HEAD_MAX_SHARE * min(width, height):
+        return None
     cx, cy = x + w / 2, y + h / 2 + HEAD_DOWN * h
     left = int(round(min(max(cx - side / 2, 0), width - side)))
     top = int(round(min(max(cy - side / 2, 0), height - side)))

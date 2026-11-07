@@ -91,7 +91,7 @@ async def _hair(db: AsyncSession, user: User, lora: Any) -> str:
     return " ".join(str(look.get(k) or "").strip() for k in ("hairstyle", "hair_color")).strip()
 
 
-async def _face_square(source: dict[str, Any], area: str = "face") -> tuple[int, int, int]:
+async def _face_square(source: dict[str, Any], area: str = "face") -> tuple[int, int, int] | None:
     """Where the face (or the head, area "head") is in the user's photo (YuNet on this Mac),
     as the square to edit."""
     import asyncio
@@ -110,12 +110,9 @@ async def _face_square(source: dict[str, Any], area: str = "face") -> tuple[int,
         raise GenerationRejected(
             "face_check_failed", "The face could not be found on this Mac right now.", 409
         ) from exc
-    if not box:
-        square = None
-    elif area == "head":
-        square = k2edit.head_square(box, *size)
-    else:
-        square = k2edit.face_square(box, *size, any_size=True)
+    if area == "head" and box:
+        return k2edit.head_square(box, *size)  # None for a big face: the whole photo
+    square = k2edit.face_square(box, *size, any_size=True) if box else None
     if square is None:
         raise GenerationRejected(
             "no_face", "No face was found in this photo (or it is too small).", 422
@@ -174,6 +171,8 @@ async def create_advanced_generation(
     square = None
     if source and area in ("face", "head"):
         square = await _face_square(source, area)
+        if square is None:  # head: a big face is edited on the whole photo
+            area = "photo"
 
     loras: list[tuple[str, float]] = []
     lora_meta = None
