@@ -46,6 +46,9 @@ class AdvancedBody(BaseModel):
     # Edit only the face: the face is cropped, edited at 1024 px and put back; the rest of
     # the photo stays exactly as it was (expressions, makeup, a smile on a small face).
     face_only: bool = False
+    # What the edit works on: "photo" (all of it), "face" (= face_only), "head" (glasses,
+    # earrings, a hat: the head edited close up), "hair" (SAM finds it), "body" (body_part).
+    area: str = Field(default="photo", pattern="^(photo|face|head|hair|body)$")
     # How far the edit may go: "strong" for a new pose, or hard expressions with Face only.
     strength: str = Field(default="normal", pattern="^(normal|strong)$")
     # Body: change the shape of one part only (k2edit.BODY_PARTS: bust, butt, waist, …).
@@ -82,8 +85,9 @@ async def _hair(db: AsyncSession, user: User, lora: Any) -> str:
     return " ".join(str(look.get(k) or "").strip() for k in ("hairstyle", "hair_color")).strip()
 
 
-async def _face_square(source: dict[str, Any]) -> tuple[int, int, int]:
-    """Where the face is in the user's photo (YuNet on this Mac), as the square to edit."""
+async def _face_square(source: dict[str, Any], area: str = "face") -> tuple[int, int, int]:
+    """Where the face (or the head, area "head") is in the user's photo (YuNet on this Mac),
+    as the square to edit."""
     import asyncio
     import io
 
@@ -100,7 +104,12 @@ async def _face_square(source: dict[str, Any]) -> tuple[int, int, int]:
         raise GenerationRejected(
             "face_check_failed", "The face could not be found on this Mac right now.", 409
         ) from exc
-    square = k2edit.face_square(box, *size, any_size=True) if box else None
+    if not box:
+        square = None
+    elif area == "head":
+        square = k2edit.head_square(box, *size)
+    else:
+        square = k2edit.face_square(box, *size, any_size=True)
     if square is None:
         raise GenerationRejected(
             "no_face", "No face was found in this photo (or it is too small).", 422
@@ -141,20 +150,24 @@ async def create_advanced_generation(
         )
     if body.image is None and body.aspect_ratio not in krea2.ASPECT_RATIOS:
         raise GenerationRejected("invalid_parameter", "Unsupported aspect ratio.")
+    area = "face" if body.face_only else "body" if body.body_part else body.area
+    if area == "body" and not body.body_part:
+        raise GenerationRejected("invalid_parameter", "Choose the body part to change.")
     if body.body_part is not None and body.body_part not in k2edit.BODY_PARTS:
         raise GenerationRejected("invalid_parameter", "Unknown body part.")
     if body.body_part and body.face_only:
         raise GenerationRejected("invalid_parameter", "Choose either Face only or Body.")
-    if (body.face_only or body.body_part) and not detection.get("sam"):
+    if area != "photo" and not detection.get("sam"):
         raise GenerationRejected(
             "missing_models",
-            "Face only and Body need SAM 3.1: install the Advanced models again (one click).",
+            "Face, head, hair and body edits need SAM 3.1: install the Advanced models again "
+            "(one click).",
             409,
         )
     source = await source_input(db, user, body.image) if body.image else None
     square = None
-    if source and body.face_only:
-        square = await _face_square(source)
+    if source and area in ("face", "head"):
+        square = await _face_square(source, area)
 
     loras: list[tuple[str, float]] = []
     lora_meta = None
@@ -182,6 +195,8 @@ async def create_advanced_generation(
                 "lora": lora_filename(lora, version),
                 "strength": body.lora.strength,
                 "who": f"{lora.trigger_word} {lora.class_word}".strip(),
+                # Edits only: the instruction, so the expression it asked for stays.
+                "note": prompt if source else "",
             }
         lora_version_id = version.id
         lora_meta = {
@@ -200,7 +215,8 @@ async def create_advanced_generation(
     if square:
         width = height = k2edit.FACE_PX
         face = None  # the face is already edited close up
-        final = f"{final.rstrip()} {k2edit.FACE_ONLY_NOTE}"
+        note = k2edit.FACE_ONLY_NOTE if area == "face" else k2edit.HEAD_NOTE
+        final = f"{final.rstrip()} {note}"
     elif source:
         width, height = krea2.size_for_source(source["width"], source["height"], "1K")
     if source:
@@ -212,9 +228,11 @@ async def create_advanced_generation(
             seed=seed,
             edit_lora=k2edit.DEFAULT_EDIT,
             loras=loras,
-            region=body.body_part if source else None,
+            region=body.body_part if area == "body" else "hair" if area == "hair" else None,
             keep_hands=bool(square),
-            **k2edit.settings_for(character=bool(loras), strength=body.strength, face=bool(square)),
+            **k2edit.settings_for(
+                character=bool(loras), strength=body.strength, face=area == "face"
+            ),
         )
     else:
         width, height = krea2.size_for(body.aspect_ratio, "1K")
@@ -245,7 +263,8 @@ async def create_advanced_generation(
     if source:
         settings.update(
             change=body.strength,
-            face_only=bool(square),
+            face_only=area == "face",
+            area=area,
             **({"body_part": body.body_part} if body.body_part else {}),
             keep_unchanged=body.keep_unchanged,
             source_width=source["width"],
@@ -281,7 +300,8 @@ async def create_advanced_generation(
             "keep_unchanged": bool(source) and body.keep_unchanged,
             **({"input": source} if source else {}),
             "face": face,
-            "face_only": list(square) if square else None,
+            "face_only": list(square) if square and area == "face" else None,
+            "head_crop": list(square) if square and area == "head" else None,
             "adult": adult,
         },
         tasks=[ProviderTask(index=0, images_requested=count)],
@@ -322,12 +342,14 @@ REWRITE_SYSTEM = {
         "background, and where the light falls; for a body change say how much (e.g. "
         "'much larger') and say 'bust' rather than 'breasts'. Keep words such as trigger "
         "words verbatim. End with: Keep everything else unchanged. "
-        'Answer with JSON only: {"instruction": "...", "target": "photo" | "face" | "body", '
-        '"part": "..."}. target is "face" when only the face changes (expression, eyes, '
-        'gaze, mouth, makeup), "body" when the shape or size of the body changes (bust, '
-        'buttocks, hips, waist, weight, muscles), else "photo". With "body", part is one of '
-        '"bust", "butt", "waist", "belly", "legs", "arms". If the request involves anyone '
-        "under 18, answer exactly: REFUSED"
+        'Answer with JSON only: {"instruction": "...", "target": "...", "part": "..."}. '
+        'target is "face" when only the facial expression changes (eyes, gaze, mouth, a '
+        'smile, a wink), "head" for things added on the head or face (glasses, sunglasses, '
+        'a hat or cap, earrings, makeup, piercings), "hair" for the hair colour or style, '
+        '"body" when the shape or size of the body changes (bust, buttocks, hips, waist, '
+        'weight, muscles), else "photo" (several things, pose, clothes, background, light). '
+        'With "body", part is one of "bust", "butt", "waist", "belly", "legs", "arms". '
+        "If the request involves anyone under 18, answer exactly: REFUSED"
     ),
     "text": (
         "You rewrite a user's image idea (any language) as one detailed English prompt for a "
@@ -358,7 +380,7 @@ def parse_rewrite(text: str) -> tuple[str, str | None, str | None]:
             part = data.get("part")
             return (
                 " ".join(data["instruction"].split()),
-                target if target in ("photo", "face", "body") else None,
+                target if target in ("photo", "face", "head", "hair", "body") else None,
                 part if target == "body" and part in k2edit.BODY_PARTS else None,
             )
     return " ".join(raw.split()).strip().strip('"'), None, None

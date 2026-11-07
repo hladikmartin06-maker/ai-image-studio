@@ -942,7 +942,7 @@ export function useAdvancedPrompt() {
     mutationFn: (body: { text: string; mode: "edit" | "text" }) =>
       api<{
         prompt: string;
-        target: "photo" | "face" | "body" | null;
+        target: "photo" | "face" | "head" | "hair" | "body" | null;
         body_part: string | null;
         provider: string;
         model: string;

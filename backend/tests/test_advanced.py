@@ -387,7 +387,9 @@ async def test_character_face_is_redrawn_close_up(user: Api, monkeypatch):
         # The face: Krea 2 Turbo image to image of the crop with the same LoRA.
         assert face["20"]["inputs"]["lora_name"] == lora_file
         assert face["7"]["inputs"]["denoise"] == k2edit.FACE_DENOISE
-        assert face["4"]["inputs"]["text"].startswith("close-up photo of tla woman")
+        assert face["4"]["inputs"]["text"] == (
+            "close-up photo of tla woman, natural skin texture. Make her smile."
+        )
         assert face["10"]["inputs"]["image"] in fake.uploads
         # No face found (or too big): one prompt only. Text to image: a batch, no photo.
         boxes[0] = None
@@ -561,10 +563,11 @@ async def test_body_part_frees_only_that_part(user: Api):
         words = sorted(
             n["inputs"]["text"] for n in sent.values() if n["class_type"] == "CLIPTextEncode"
         )
-        assert words == ["breasts", "chest"]
+        assert words == ["breasts", "chest", "face"]
         assert sent["13"]["inputs"]["ref_boost"] == k2edit.REGION_BOOST
-        assert sent["13"]["inputs"]["ref_boost_mask"] == ["43", 0]
+        assert sent["13"]["inputs"]["ref_boost_mask"] == ["45", 0]
         assert sent["43"]["inputs"]["mask"] == ["70", 0]  # both words added together
+        assert sent["45"]["inputs"]["operation"] == "subtract"  # minus the face
     finally:
         ComfyClient.transport = None
         async with SessionLocal() as db:
@@ -598,3 +601,100 @@ def test_rewrite_answer_is_parsed():
     )
     assert parse_rewrite("Make her smile.") == ("Make her smile.", None, None)
     assert parse_rewrite('{"instruction": 5}')[1] is None
+
+
+def test_keep_unchanged_fills_holes_in_a_change():
+    """A new beanie the colour of the old hair: strands of the same colour inside the new
+    beanie must not come back from the original."""
+    src = Image.new("RGB", (400, 400), (30, 30, 30))
+    src.paste((200, 180, 140), (195, 120, 205, 260))  # a blond strand
+    edit = src.copy()
+    edit.paste((200, 180, 140), (120, 100, 280, 280))  # a beige beanie over it
+    for x in range(120, 280, 6):  # knit texture
+        edit.paste((150, 130, 100), (x, 100, x + 2, 280))
+    result, _ = k2edit.keep_unchanged(_png(src), _png(edit))
+    out = Image.open(io.BytesIO(result)).convert("RGB")
+    assert out.tobytes() != src.tobytes()
+    # Inside the beanie, where the strand was, the edit's own (textured) pixels.
+    assert out.getpixel((198, 200)) == edit.getpixel((198, 200))
+    assert out.getpixel((10, 10)) == src.getpixel((10, 10))
+
+
+async def test_head_and_hair_areas(user: Api, monkeypatch):
+    from app.services import faces
+
+    fake = FakeComfy(
+        files={
+            **KREA_FILES,
+            "loras": [*KREA_FILES["loras"], EDIT_FILE],
+            "checkpoints": [k2edit.SAM3.filename],
+        },
+        custom_nodes=list(k2edit.NODES),
+    )
+    ComfyClient.transport = fake.transport()
+    comfy_runner.POLL_INITIAL = 0.01
+    comfy_runner.POLL_MAX = 0.02
+
+    async def box(_data: bytes):
+        return (180.0, 60.0, 40.0, 48.0)  # a small face
+
+    monkeypatch.setattr(faces, "face_box", box)
+    try:
+        conn = await _ready_connection(user)
+        ref = (
+            await user.post(
+                "/api/reference-images",
+                files={"file": ("me.png", png_bytes(400, 600, (10, 200, 10)), "image/png")},
+            )
+        ).json()
+        base = {"connection_id": conn["id"], "image": {"kind": "reference", "id": ref["id"]}}
+        head = await user.post(
+            "/api/comfy/advanced",
+            json={**base, "prompt": "Add black eyeglasses.", "area": "head"},
+        )
+        assert head.status_code == 201, head.text
+        gen = await wait_done(user, head.json()["id"])
+        assert gen["status"] == "completed" and gen["settings"]["area"] == "head", gen
+        sent = list(fake.prompts.values())[-1]["prompt"]
+        crop = Image.open(io.BytesIO(fake.uploads[sent["10"]["inputs"]["image"]]))
+        assert crop.size == (1024, 1024)  # the head square, edited close up
+        assert sent["4"]["inputs"]["prompt"].endswith(k2edit.HEAD_NOTE)
+        assert sent["13"]["inputs"]["ref_boost"] == 4.0
+        image = gen["images"][0]
+        assert (image["width"], image["height"]) == (400, 600)  # back in the whole photo
+        hair = await user.post(
+            "/api/comfy/advanced",
+            json={**base, "prompt": "Dye her hair copper red.", "area": "hair"},
+        )
+        assert hair.status_code == 201, hair.text
+        assert (await wait_done(user, hair.json()["id"]))["status"] == "completed"
+        sent = list(fake.prompts.values())[-1]["prompt"]
+        texts = [n["inputs"]["text"] for n in sent.values() if n["class_type"] == "CLIPTextEncode"]
+        assert (
+            texts == ["hair", "face"] and sent["13"]["inputs"]["ref_boost"] == k2edit.REGION_BOOST
+        )
+        no_part = await user.post(
+            "/api/comfy/advanced", json={**base, "prompt": "Bigger.", "area": "body"}
+        )
+        assert no_part.status_code == 400
+    finally:
+        ComfyClient.transport = None
+        async with SessionLocal() as db:
+            await db.execute(ComfyConnection.__table__.delete())
+            await db.execute(Generation.__table__.delete().where(Generation.provider == "comfyui"))
+            await db.commit()
+
+
+def test_head_square_and_crop_paste():
+    left, top, side = k2edit.head_square((180, 60, 40, 48), 400, 600)
+    assert side == 168 and top > 0  # 3.5x the face, reaching down to the shoulders
+    img = Image.new("RGB", (400, 600), (0, 0, 255))
+    edit = Image.new("RGB", (1024, 1024), (0, 0, 255))
+    edit.paste((255, 0, 0), (400, 300, 620, 420))  # glasses in the middle of the square
+    out = Image.open(
+        io.BytesIO(k2edit.crop_paste(_png(img), _png(edit), (left, top, side)))
+    ).convert("RGB")
+    cx, cy = left + side * 510 // 1024, top + side * 360 // 1024
+    assert out.getpixel((cx, cy))[0] > 200  # the change came back
+    assert out.getpixel((10, 10)) == (0, 0, 255)
+    assert out.getpixel((left + 3, top + 3)) == (0, 0, 255)

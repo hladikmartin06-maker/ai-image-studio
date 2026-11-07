@@ -108,7 +108,8 @@ async def _with_input(client: ComfyClient, gen: Generation) -> dict[str, Any]:
         raise RunFailed("not_found", "The photo to enhance is no longer on this Mac.") from exc
     ext = {"image/png": "png", "image/webp": "webp"}.get(source.get("mime_type"), "jpg")
     mime = source.get("mime_type") or "image/jpeg"
-    square = (gen.comfy_meta or {}).get("face_only")
+    meta = gen.comfy_meta or {}
+    square = meta.get("face_only") or meta.get("head_crop")
     if square:
         # Advanced, face only: just the face, cropped on this Mac (k2edit.face_crop).
         data = await asyncio.to_thread(k2edit.face_crop, data, tuple(square))
@@ -331,6 +332,7 @@ async def _refine_face(
             strength=float(face["strength"]),
             who=face["who"],
             seed=int((gen.settings or {}).get("seed") or 0) + index,
+            note=str(face.get("note") or ""),
         )
         prompt_id = str(uuid.uuid4())
         await client.submit(workflow, prompt_id, str(gen.id))
@@ -376,6 +378,18 @@ async def _advanced_finish(
     if meta.get("family") != k2edit.FAMILY:
         return datas
     source = meta.get("input")
+    head = meta.get("head_crop")
+    if head and source:
+        # Head: what changed in the edited square goes back into the original photo.
+        try:
+            original = await asyncio.to_thread(storage.absolute(source["file_path"]).read_bytes)
+        except OSError as exc:
+            raise RunFailed("not_found", "The photo is no longer on this Mac.") from exc
+        hands = await _hands(client, entry or {})
+        return [
+            await asyncio.to_thread(k2edit.crop_paste, original, d, tuple(head), hands)
+            for d in datas
+        ]
     square = meta.get("face_only")
     if square and source:
         # Face only: the edited face goes back into the original photo; nothing else changes.

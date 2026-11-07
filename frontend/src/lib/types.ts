@@ -200,6 +200,7 @@ export interface GenerationSettings {
   face_refine?: boolean;
   change?: "normal" | "strong";
   body_part?: string;
+  area?: string;
   upscale?: number;
   source_width?: number;
   source_height?: number;
@@ -815,6 +816,7 @@ export interface AdvancedBody {
   count: number;
   face_refine: boolean;
   face_only: boolean;
+  area: "photo" | "face" | "head" | "hair" | "body";
   body_part: string | null;
   strength: "normal" | "strong";
   lora: { version_id: string; strength: number } | null;

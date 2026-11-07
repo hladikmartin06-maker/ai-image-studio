@@ -24,7 +24,8 @@ import {
 import type { Generation } from "@/lib/types";
 
 type Mode = "edit" | "text";
-type Target = "photo" | "face" | "body";
+type Target = "photo" | "face" | "head" | "hair" | "body";
+const TARGETS: Target[] = ["photo", "face", "head", "hair", "body"];
 const BODY_PARTS = ["bust", "butt", "waist", "belly", "legs", "arms"] as const;
 type BodyPart = (typeof BODY_PARTS)[number];
 
@@ -71,7 +72,9 @@ export function AdvancedPanel({
   const [loraVersionId, setLoraVersionId] = useState(initial?.comfy?.lora?.version_id ?? "");
   const [strength, setStrength] = useState(initial?.comfy?.lora?.strength ?? 1);
   const [keep, setKeep] = useState(before.keep_unchanged !== false);
-  const [target, setTarget] = useState<Target>(before.face_only ? "face" : before.body_part ? "body" : "photo");
+  const [target, setTarget] = useState<Target>(
+    before.face_only ? "face" : before.body_part ? "body" : TARGETS.includes(before.area as Target) ? (before.area as Target) : "photo",
+  );
   const [part, setPart] = useState<BodyPart>((before.body_part as BodyPart) ?? "bust");
   const [change, setChange] = useState<"normal" | "strong">(before.change === "strong" ? "strong" : "normal");
   const [faceRefine, setFaceRefine] = useState(initial ? before.face_refine === true : true);
@@ -165,7 +168,8 @@ export function AdvancedPanel({
         aspect_ratio: aspect,
         count: mode === "edit" ? 1 : count,
         face_refine: Boolean(lora) && faceRefine,
-        face_only: mode === "edit" && target === "face",
+        face_only: false,
+        area: mode === "edit" ? target : "photo",
         body_part: mode === "edit" && target === "body" ? part : null,
         strength: change,
         lora,
@@ -365,11 +369,7 @@ export function AdvancedPanel({
                           value={target}
                           block
                           onChange={setTarget}
-                          options={[
-                            { value: "photo", label: t("ad.target.photo") },
-                            { value: "face", label: t("ad.target.face") },
-                            { value: "body", label: t("ad.target.body") },
-                          ]}
+                          options={TARGETS.map((v) => ({ value: v, label: t(`ad.target.${v}`) }))}
                         />
                       </Field>
                       {target === "body" ? (
@@ -380,7 +380,7 @@ export function AdvancedPanel({
                             </button>
                           ))}
                         </div>
-                      ) : (
+                      ) : target === "hair" ? null : (
                         <Field label={t("ad.changeStrength")} hint={t(change === "strong" ? (target === "face" ? "ad.changeStrongFaceHint" : "ad.changeStrongHint") : "ad.changeNormalHint")}>
                           <Segmented
                             label={t("ad.changeStrength")}

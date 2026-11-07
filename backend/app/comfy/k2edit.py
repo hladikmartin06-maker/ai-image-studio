@@ -96,6 +96,9 @@ BODY_PARTS: dict[str, tuple[str, ...]] = {
     "legs": ("legs", "thighs"),
     "arms": ("arms", "shoulders"),
 }
+# Hair: SAM 3.1 finds it on the whole photo and the edit is let go there (like Body): a new
+# colour or a short cut on a small person changed little at ref_boost 4 (measured).
+HAIR_WORDS = ("hair",)
 HANDS_NODE = "64"
 SAM_NODES = ("SAM3_Detect", "GrowMask", "MaskComposite", "MaskToImage", "PreviewImage")
 # "strong": ref_boost 0.6 lets bigger changes through (body shape, a new pose) while the
@@ -345,7 +348,7 @@ def build_edit(
         # Only that part of the photo (SAM 3.1 finds it from the words, grown a little so a
         # bigger shape has room) is let go: the edit hardly looks at it there, and keeps the
         # rest as at ref_boost 1. Two words per part (BODY_PARTS), added together.
-        words = BODY_PARTS.get(region, (region,))
+        words = HAIR_WORDS if region == "hair" else BODY_PARTS.get(region, (region,))
         masks = [_sam(wf, str(50 + 3 * i), word, src) for i, word in enumerate(words)]
         mask = masks[0]
         for i, other in enumerate(masks[1:]):
@@ -365,7 +368,19 @@ def build_edit(
             "class_type": "GrowMask",
             "inputs": {"mask": mask, "expand": REGION_GROW, "tapered_corners": True},
         }
-        patch |= {"ref_boost": REGION_BOOST, "ref_boost_mask": ["43", 0]}
+        # The face is never in the let-go part (a grown hair mask reached it and the face
+        # changed with a new hair colour): it stays held as at ref_boost 1.
+        wf["45"] = {
+            "class_type": "MaskComposite",
+            "inputs": {
+                "destination": ["43", 0],
+                "source": _sam(wf, "80", "face", src),
+                "x": 0,
+                "y": 0,
+                "operation": "subtract",
+            },
+        }
+        patch |= {"ref_boost": REGION_BOOST, "ref_boost_mask": ["45", 0]}
     if keep_hands:
         # The hands of the photo (SAM 3.1), shown as a preview the studio fetches: the face
         # paste keeps them as they were (face_paste).
@@ -405,8 +420,44 @@ def build_edit(
 # grown and feathered. Thresholds from the studio's own runs (docs/PROVIDERS.md, Advanced).
 KEEP_THRESHOLD = 0.07
 KEEP_OPEN = 9
-KEEP_GROW = 16
+KEEP_CLOSE = 41
+KEEP_HOLE = 0.02
+KEEP_GROW = 17
 KEEP_FEATHER = 8.0
+
+
+def change_mask(src: Any, out: Any) -> Any:
+    """Where the edit changed the photo (PIL "L", the edit's size): the per-pixel difference
+    of the two lightly blurred images over KEEP_THRESHOLD, opened (drops one-pixel shifts and
+    texture), closed, with small holes filled — a new beige beanie over blond hair left
+    strands of the old hair where the colours were alike (seen on the owner's photos) —
+    then grown and feathered."""
+    import cv2
+    import numpy as np
+    from PIL import Image, ImageFilter
+
+    w, h = out.size
+
+    def soft(im: Image.Image) -> Any:
+        return np.asarray(im.filter(ImageFilter.GaussianBlur(2)), dtype=np.float32) / 255
+
+    diff = np.abs(soft(src.resize((w, h), Image.LANCZOS)) - soft(out)).mean(axis=2)
+    m = ((diff > KEEP_THRESHOLD) * 255).astype(np.uint8)
+    m = cv2.morphologyEx(m, cv2.MORPH_OPEN, np.ones((KEEP_OPEN, KEEP_OPEN), np.uint8))
+    disk = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (KEEP_CLOSE, KEEP_CLOSE))
+    m = cv2.morphologyEx(m, cv2.MORPH_CLOSE, disk)
+    # Holes inside a changed area are changed too, unless large (a whole person kept
+    # inside a new background stays the original's).
+    outer, _ = cv2.findContours(m, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    filled = np.zeros_like(m)
+    cv2.drawContours(filled, outer, -1, 255, -1)
+    count, labels, stats, _ = cv2.connectedComponentsWithStats(cv2.subtract(filled, m))
+    for i in range(1, count):
+        if stats[i, cv2.CC_STAT_AREA] < KEEP_HOLE * w * h:
+            m[labels == i] = 255
+    grow = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (KEEP_GROW, KEEP_GROW))
+    m = cv2.dilate(m, grow)
+    return Image.fromarray(m, "L").filter(ImageFilter.GaussianBlur(KEEP_FEATHER))
 
 
 def keep_unchanged(original: bytes, edited: bytes) -> tuple[bytes, float]:
@@ -415,21 +466,12 @@ def keep_unchanged(original: bytes, edited: bytes) -> tuple[bytes, float]:
     import io
 
     import numpy as np
-    from PIL import Image, ImageFilter, ImageOps
+    from PIL import Image, ImageOps
 
     src = ImageOps.exif_transpose(Image.open(io.BytesIO(original))).convert("RGB")
     out = Image.open(io.BytesIO(edited)).convert("RGB")
     w, h = out.size
-
-    def soft(im: Image.Image) -> Any:
-        return np.asarray(im.filter(ImageFilter.GaussianBlur(2)), dtype=np.float32) / 255
-
-    diff = np.abs(soft(src.resize((w, h), Image.LANCZOS)) - soft(out)).mean(axis=2)
-    mask = Image.fromarray(((diff > KEEP_THRESHOLD) * 255).astype(np.uint8), "L")
-    mask = mask.filter(ImageFilter.MinFilter(KEEP_OPEN)).filter(ImageFilter.MaxFilter(KEEP_OPEN))
-    mask = mask.filter(ImageFilter.MaxFilter(2 * KEEP_GROW + 1))
-    mask = mask.filter(ImageFilter.MinFilter(2 * (KEEP_GROW // 2) + 1))
-    mask = mask.filter(ImageFilter.GaussianBlur(KEEP_FEATHER))
+    mask = change_mask(src, out)
     changed = float(np.asarray(mask, dtype=np.float32).mean() / 255)
     # The original's size, but never smaller than the edit and at most 1.5x it (a huge upload
     # would make the redrawn parts look soft next to the untouched ones).
@@ -459,6 +501,7 @@ FACE_PX = 1024
 FACE_DENOISE = 0.4
 FACE_MAX_SHARE = 0.3
 FACE_MIN_PX = 24
+FACE_NOTE_MAX = 400
 
 
 def face_square(
@@ -485,6 +528,55 @@ def upright(data: bytes) -> bytes:
 
     buf = io.BytesIO()
     ImageOps.exif_transpose(Image.open(io.BytesIO(data))).convert("RGB").save(buf, "PNG")
+    return buf.getvalue()
+
+
+# Head: glasses, earrings, a hat, makeup. The head and shoulders (a square 3.5x the face,
+# reaching down) are edited at 1024 px and only what changed is put back, so small
+# accessories on a small person come out at their real size (measured, PROVIDERS.md).
+HEAD_EXPAND = 3.5
+HEAD_DOWN = 0.5
+HEAD_NOTE = "Do not add hands."
+
+
+def head_square(
+    box: tuple[float, float, float, float], width: int, height: int
+) -> tuple[int, int, int] | None:
+    x, y, w, h = box
+    size = max(w, h)
+    if size < FACE_MIN_PX:
+        return None
+    side = int(round(min(size * HEAD_EXPAND, width, height)))
+    cx, cy = x + w / 2, y + h / 2 + HEAD_DOWN * h
+    left = int(round(min(max(cx - side / 2, 0), width - side)))
+    top = int(round(min(max(cy - side / 2, 0), height - side)))
+    return left, top, side
+
+
+def crop_paste(
+    data: bytes, edit: bytes, square: tuple[int, int, int], keep: bytes | None = None
+) -> bytes:
+    """Head: the edited square goes back where it changed something (change_mask), fading out
+    at the square's edges; `keep` (hands) stays the photo's own."""
+    import io
+
+    from PIL import Image, ImageChops, ImageFilter, ImageOps
+
+    left, top, side = square
+    img = ImageOps.exif_transpose(Image.open(io.BytesIO(data))).convert("RGB")
+    patch = Image.open(io.BytesIO(edit)).convert("RGB")
+    old = img.crop((left, top, left + side, top + side))
+    mask = change_mask(old, patch).resize((side, side), Image.BILINEAR)
+    border = max(4, side // 25)
+    edge = Image.new("L", (side, side), 0)
+    edge.paste(255, (border, border, side - border, side - border))
+    mask = ImageChops.multiply(mask, edge.filter(ImageFilter.GaussianBlur(border / 2)))
+    if keep:
+        hands = Image.open(io.BytesIO(keep)).convert("L").resize((side, side), Image.BILINEAR)
+        mask = ImageChops.subtract(mask, hands.filter(ImageFilter.MaxFilter(5)))
+    img.paste(Image.composite(patch.resize((side, side), Image.LANCZOS), old, mask), (left, top))
+    buf = io.BytesIO()
+    img.save(buf, "PNG")
     return buf.getvalue()
 
 
@@ -528,13 +620,21 @@ def face_paste(
     return buf.getvalue()
 
 
-def face_graph(*, image: str, lora: str, strength: float, who: str, seed: int) -> dict[str, Any]:
+def face_graph(
+    *, image: str, lora: str, strength: float, who: str, seed: int, note: str = ""
+) -> dict[str, Any]:
+    """The face step's graph; `note` is the user's instruction, so an expression the edit
+    made (a smile, a kiss) is asked for again instead of drifting back to the LoRA's usual
+    look (same likeness in the studio's tests, PROVIDERS.md)."""
+    text = f"close-up photo of {who}, natural skin texture"
+    if note.strip():
+        text = f"{text}. {note.strip()[:FACE_NOTE_MAX]}"
     return krea2.build_workflow(
         variant="turbo",
         unet=TURBO.filename,
         text_encoder=krea2.TEXT_ENCODER.filename,
         vae=krea2.VAE.filename,
-        prompt=f"close-up photo of {who}, natural skin texture",
+        prompt=text,
         negative_prompt="",
         width=FACE_PX,
         height=FACE_PX,
