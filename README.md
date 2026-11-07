@@ -82,19 +82,22 @@ Integrations and Settings.
     The image viewer compares before and after (slider or side by side); every image viewer
     has an "Enhance photo" button.
   - **Advanced** — Krea 2 Turbo with your own LoRA, on the same GPU as Krea 2 (one-click
-    install: Krea 2 Turbo + an edit LoRA, ≈ 19 GB). **Edit a photo**: choose a photo, write
-    what to change (expression, pose, body, clothes, background, light) and everything else
-    stays; pick your character's LoRA and the person becomes your character (her face, and her
-    hair when the AI model has hair colour and style filled in), with the face redrawn close
-    up when it is small. **Change strength**: Normal keeps the photo as close as possible,
-    Strong lets bigger changes through (body shape, a new pose). **Face only** edits just the
-    face close up (a smile, eyes, makeup) and puts it back. **Untouched parts exactly from the
-    original** (on by default) keeps the photo's own pixels where nothing changed. The model
-    reads English: **Improve instruction** has your connected AI write it in clear English for
-    you to check. **From text**: a new photo with your LoRA. About 30 s per edit on an L40S.
-    The viewer shows before/after, face match with your character, and "Edit (Advanced)" to
-    edit a result again. Edit LoRA license: free for personal, non-commercial use; commercial
-    use needs a license from its author (see docs/PROVIDERS.md › Advanced).
+    install: Krea 2 Turbo, an edit LoRA and SAM 3.1, ≈ 21 GB). **Edit a photo**: choose a
+    photo, write what to change, and pick **What to change**: *Whole photo* (expression,
+    pose, clothes, background, light — the rest stays), *Face only* (expressions such as a
+    wink, a kiss, surprise, laughing, close up; hands and everything else stay exactly), or
+    *Body* (one part: bust, butt, waist and hips, belly, legs, arms — say how much:
+    "slightly", "noticeably", "much larger" or "smaller"; pose, face and background stay).
+    Pick your character's LoRA and the person becomes your character (her face, and her hair
+    when the AI model has hair colour and style filled in), with a small face redrawn close
+    up. **Change strength** Strong lets bigger changes through (a new pose, hard
+    expressions). **Untouched parts exactly from the original** (on by default) keeps the
+    photo's own pixels where nothing changed. The model reads English: **Improve
+    instruction** has your connected AI write it in clear English and choose What to change
+    for you to check. **From text**: a new photo with your LoRA. About 25–35 s per edit on an
+    L40S. The viewer shows before/after, face match with your character, and "Edit
+    (Advanced)" to edit a result again. Edit LoRA license: free for personal, non-commercial
+    use; commercial use needs a license from its author (docs/PROVIDERS.md › Advanced).
 - **AI Models** — your own fictional adult characters with up to 200 photos (shown across the
   whole page, primary photo first). The profile (description, age, hair, face, body, style, …)
   is optional and opens in a window. Select one on Generate: its description is added to the

@@ -268,7 +268,7 @@ async def run(worker: Any, gen: Generation) -> None:
         if not images:
             raise RunFailed("generation_failed", "The workflow finished without saving an image.")
         datas = [await client.view(i["filename"], i["subfolder"], i["type"]) for i in images]
-        datas = await _advanced_finish(client, gen, task, datas)
+        datas = await _advanced_finish(client, gen, task, datas, entry)
         # 18+ runs (Krea 2 switch, or an 18+ photo) are marked, so they can be blurred.
         adult = bool((gen.comfy_meta or {}).get("adult"))
         await worker.store_outputs(gen, task, datas, [True] * len(datas) if adult else [])
@@ -350,8 +350,25 @@ async def _refine_face(
     return await asyncio.to_thread(k2edit.face_paste, data, patch, square)
 
 
+async def _hands(client: ComfyClient, entry: dict[str, Any]) -> bytes | None:
+    """Face only: the hands SAM found in the face square (a preview of the run), if any."""
+    images = ((entry.get("outputs") or {}).get(k2edit.HANDS_NODE) or {}).get("images") or []
+    if not images:
+        return None
+    try:
+        return await client.view(
+            images[0]["filename"], images[0].get("subfolder", ""), images[0].get("type", "temp")
+        )
+    except ComfyError:
+        return None
+
+
 async def _advanced_finish(
-    client: ComfyClient, gen: Generation, task: Any, datas: list[bytes]
+    client: ComfyClient,
+    gen: Generation,
+    task: Any,
+    datas: list[bytes],
+    entry: dict[str, Any] | None = None,
 ) -> list[bytes]:
     """Advanced: the character's face redrawn close up, then the untouched parts of the
     photo put back from the original (k2edit)."""
@@ -366,8 +383,10 @@ async def _advanced_finish(
             original = await asyncio.to_thread(storage.absolute(source["file_path"]).read_bytes)
         except OSError as exc:
             raise RunFailed("not_found", "The photo is no longer on this Mac.") from exc
+        hands = await _hands(client, entry or {})
         return [
-            await asyncio.to_thread(k2edit.face_paste, original, d, tuple(square)) for d in datas
+            await asyncio.to_thread(k2edit.face_paste, original, d, tuple(square), hands)
+            for d in datas
         ]
     face = meta.get("face")
     if face:

@@ -24,6 +24,9 @@ import {
 import type { Generation } from "@/lib/types";
 
 type Mode = "edit" | "text";
+type Target = "photo" | "face" | "body";
+const BODY_PARTS = ["bust", "butt", "waist", "belly", "legs", "arms"] as const;
+type BodyPart = (typeof BODY_PARTS)[number];
 
 /** Slovak or Czech words: the edit model mainly reads English (a Slovak "smile" changed
  * nothing in the studio's tests), so the panel suggests "Improve instruction". */
@@ -47,7 +50,13 @@ export function AdvancedPanel({
   const install = useInstallKrea2Model();
   const edit = useAdvancedEdit();
   const improve = useAdvancedPrompt();
-  const [suggestion, setSuggestion] = useState<{ text: string; model: string; tokens: number | null } | null>(null);
+  const [suggestion, setSuggestion] = useState<{
+    text: string;
+    model: string;
+    tokens: number | null;
+    target: Target | null;
+    part: BodyPart | null;
+  } | null>(null);
   const loras = useLoras("", true);
   const submitting = useRef(false);
   const before = initial?.settings ?? {};
@@ -62,7 +71,8 @@ export function AdvancedPanel({
   const [loraVersionId, setLoraVersionId] = useState(initial?.comfy?.lora?.version_id ?? "");
   const [strength, setStrength] = useState(initial?.comfy?.lora?.strength ?? 1);
   const [keep, setKeep] = useState(before.keep_unchanged !== false);
-  const [faceOnly, setFaceOnly] = useState(before.face_only === true);
+  const [target, setTarget] = useState<Target>(before.face_only ? "face" : before.body_part ? "body" : "photo");
+  const [part, setPart] = useState<BodyPart>((before.body_part as BodyPart) ?? "bust");
   const [change, setChange] = useState<"normal" | "strong">(before.change === "strong" ? "strong" : "normal");
   const [faceRefine, setFaceRefine] = useState(initial ? before.face_refine === true : true);
   const [adult, setAdult] = useState(before.adult === true);
@@ -113,7 +123,13 @@ export function AdvancedPanel({
     try {
       const r = await improve.mutateAsync({ text: prompt.trim(), mode });
       const tokens = r.input_tokens !== null && r.output_tokens !== null ? r.input_tokens + r.output_tokens : null;
-      setSuggestion({ text: r.prompt, model: r.model, tokens });
+      setSuggestion({
+        text: r.prompt,
+        model: r.model,
+        tokens,
+        target: r.target,
+        part: r.body_part && (BODY_PARTS as readonly string[]).includes(r.body_part) ? (r.body_part as BodyPart) : null,
+      });
     } catch (e) {
       toast.error(e instanceof ApiError ? e.message : t("errors.generic"));
     }
@@ -149,7 +165,8 @@ export function AdvancedPanel({
         aspect_ratio: aspect,
         count: mode === "edit" ? 1 : count,
         face_refine: Boolean(lora) && faceRefine,
-        face_only: mode === "edit" && faceOnly,
+        face_only: mode === "edit" && target === "face",
+        body_part: mode === "edit" && target === "body" ? part : null,
         strength: change,
         lora,
         keep_unchanged: keep,
@@ -273,6 +290,14 @@ export function AdvancedPanel({
                     <div className="col" style={{ gap: 8, marginTop: 10 }}>
                       <div className="hint">{t("ad.suggestion")}</div>
                       <div className="small" style={{ whiteSpace: "pre-wrap" }}>{suggestion.text}</div>
+                      {mode === "edit" && suggestion.target ? (
+                        <div className="tiny subtle">
+                          {t("ad.suggestionTarget", {
+                            target: t(`ad.target.${suggestion.target}`),
+                            part: suggestion.part ? ` · ${t(`ad.part.${suggestion.part}`)}` : "",
+                          })}
+                        </div>
+                      ) : null}
                       <div className="tiny subtle">
                         {suggestion.tokens !== null ? t("ad.suggestionTokens", { model: suggestion.model, n: suggestion.tokens }) : suggestion.model}
                       </div>
@@ -282,6 +307,8 @@ export function AdvancedPanel({
                           variant="primary"
                           onClick={() => {
                             setPrompt(suggestion.text);
+                            if (mode === "edit" && suggestion.target) setTarget(suggestion.target);
+                            if (suggestion.part) setPart(suggestion.part);
                             setSuggestion(null);
                           }}
                         >
@@ -332,26 +359,42 @@ export function AdvancedPanel({
                 <div className="col gap-16">
                   {mode === "edit" ? (
                     <>
-                      <Field label={t("ad.changeStrength")} hint={t(change === "strong" ? "ad.changeStrongHint" : "ad.changeNormalHint")}>
+                      <Field label={t("ad.targetLabel")} hint={t(`ad.target.${target}Hint`)}>
                         <Segmented
-                          label={t("ad.changeStrength")}
-                          value={change}
+                          label={t("ad.targetLabel")}
+                          value={target}
                           block
-                          onChange={setChange}
+                          onChange={setTarget}
                           options={[
-                            { value: "normal", label: t("ad.changeNormal") },
-                            { value: "strong", label: t("ad.changeStrong") },
+                            { value: "photo", label: t("ad.target.photo") },
+                            { value: "face", label: t("ad.target.face") },
+                            { value: "body", label: t("ad.target.body") },
                           ]}
                         />
                       </Field>
-                      <div className="row" style={{ gap: 10, alignItems: "flex-start" }}>
-                        <Switch checked={faceOnly} onChange={setFaceOnly} label={t("ad.faceOnly")} />
-                        <div>
-                          <div className="small">{t("ad.faceOnly")}</div>
-                          <div className="hint">{t("ad.faceOnlyHint")}</div>
+                      {target === "body" ? (
+                        <div className="chips">
+                          {BODY_PARTS.map((p) => (
+                            <button key={p} type="button" className="chip" aria-pressed={part === p} onClick={() => setPart(p)}>
+                              {t(`ad.part.${p}`)}
+                            </button>
+                          ))}
                         </div>
-                      </div>
-                      {faceOnly ? null : (
+                      ) : (
+                        <Field label={t("ad.changeStrength")} hint={t(change === "strong" ? (target === "face" ? "ad.changeStrongFaceHint" : "ad.changeStrongHint") : "ad.changeNormalHint")}>
+                          <Segmented
+                            label={t("ad.changeStrength")}
+                            value={change}
+                            block
+                            onChange={setChange}
+                            options={[
+                              { value: "normal", label: t("ad.changeNormal") },
+                              { value: "strong", label: t("ad.changeStrong") },
+                            ]}
+                          />
+                        </Field>
+                      )}
+                      {target === "face" ? null : (
                         <div className="row" style={{ gap: 10, alignItems: "flex-start" }}>
                           <Switch checked={keep} onChange={setKeep} label={t("ad.keep")} />
                           <div>

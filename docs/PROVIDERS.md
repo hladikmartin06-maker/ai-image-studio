@@ -539,12 +539,24 @@ What the studio does:
 3. **Untouched parts** (default on): where the edit changed nothing (per-pixel difference of
    the lightly blurred images over 0.07, opened 9 px, grown 16 px, feathered 8 px), the
    original's pixels come back, at the original's size (at most 1.5× the edit's).
-4. **Face only**: the face square (any size) is edited at 1024 px and pasted back; nothing
-   else changes.
-5. **Text to image**: Krea 2 Turbo + the LoRA (trigger word added), then the face step.
-6. **Improve instruction** (optional): the user's AI provider (cheapest tier) rewrites the
-   words as one clear English instruction, shown for checking; tokens recorded as
-   `purpose="advanced"`.
+4. **Face only**: the face square (any size) is edited at 1024 px (`ref_boost` 1; "Strong"
+   0.6) and pasted back; nothing else changes. SAM 3.1 finds the hands in the square (a
+   preview the studio fetches) and the paste keeps them as they were, and the instruction
+   ends "Change only the face. Do not add hands." — without these a kiss grew a floating hand
+   and a finger at the lips was cut off by the new mouth (seen on the owner's photos).
+5. **Body**: one part (bust, butt, waist and hips, belly, legs, arms) is found by SAM 3.1 from
+   two words (e.g. "breasts" + "chest"; one word alone missed parts or found the wrong one —
+   "buttocks" marked the chest on a woman seen from the front), the masks added and grown
+   40 px; the edit gets `ref_boost` 0.05 there only (`ref_boost_mask`), 1 elsewhere. SAM 3.1
+   is Enhance photo's file `sam3.1_multiplex_fp16.safetensors` (1.75 GB, same source), part of
+   the one-click install; its nodes are built into ComfyUI 0.35.
+6. **Text to image**: Krea 2 Turbo + the LoRA (trigger word added), then the face step.
+7. **Improve instruction** (optional): the user's AI provider (cheapest tier) rewrites the
+   words as one clear English instruction and says what it works on (whole photo, face,
+   body + part), shown for checking; "Use" sets the instruction and that choice. It writes
+   "bust", not "breasts": the studio's safety rules treat "breasts" as explicit (18+ switch).
+   Tokens recorded as `purpose="advanced"`; effort-aware models get 1,500 tokens (with 400
+   the answer was cut off by the model's own reasoning).
 
 The two graphs in ComfyUI's API format, as the studio sends them (example values):
 `docs/advanced/advanced_edit_api.json` (the edit) and `docs/advanced/advanced_face_api.json`
@@ -572,20 +584,30 @@ results checked by eye on contact sheets and with the studio's SFace face match)
 - Gaze ("look into the camera") did not change on the whole photo at 2–4 nor on the face crop
   at 2–4; it did on the face crop at 0.3–0.6 (Face only + Strong).
 - Hands checked close up on pose edits and text to image: five fingers, no extra limbs seen.
+- Body (6 photos × bust / butt / waist): the whole person freed except the face (SAM
+  "woman" minus a face oval) changed the pose (a seated woman turned round to show her
+  butt); the part masks kept the pose. Sizes follow the words: "slightly" < "noticeably" <
+  "much larger", and "smaller" works. A part that is not visible does not change (correct),
+  and a slimmer waist stays subtle on a kneeling side view.
+- Hard expressions on the face crop (4 faces × 8): wink, surprise, angry, laugh worked at
+  `ref_boost` 2 and 1; kiss and tongue need 1 or less; one raised eyebrow and a lip bite stay
+  weak even at 0.3–0.6, where the face starts to look like another person (0.4 → 0.6 for
+  "Strong"). With a character LoRA the face step brings her identity back.
 - Speed: text to image 5.7 s (1 MP, warm; 17 s with the first model load); an edit 14–18 s on
-  the GPU. Ten edits in a row through the studio (character LoRA + face step + composite,
+  the GPU; Face only and Body about 22–28 s end to end (SAM adds 1–3 s). Ten edits in a row through the studio (character LoRA + face step + composite,
   each started after the previous one ended): average 31.9 s, median 34.1 s, 90th percentile
   37.9 s (end to end, uploads and downloads through Modal included). A new LoRA's first run
   adds its upload (230–340 MB). VRAM in use about 19 GB of 48 GB. Cold start: the first
   sandbox about 2 minutes (Modal builds the image once), later starts ready in about 30 s;
-  the first model download (Turbo, text encoder, VAE, edit LoRA, ~19 GB) about 3 minutes,
+  the first model download (Turbo, text encoder, VAE, edit LoRA, SAM 3.1, ~21 GB) about 3–4 minutes,
   once per Volume; the first run then loads the model (+11 s).
 - Cost: Modal billed 2.17 USD for one full hour of the L40S sandbox (GPU + CPU + memory as
   used) — about 0.02 USD per edit at 32 s when the GPU is kept busy. The studio's estimate
   (1.95 + 0.445 per hour) uses Modal's function CPU/memory rates; the workspace also lists
   sandbox rates (CPU 0.1419 per core-hour, memory 0.024 per GiB-hour), not used here.
 
-Known limits: a partial mirror reflection at the photo's edge can keep the old look (a second
+Known limits: one raised eyebrow and a lip bite are weak; a slimmer waist on side views is
+subtle; a partial mirror reflection at the photo's edge can keep the old look (a second
 edit of the result fixes it: "Change the blonde hair at the right edge, the reflection…");
 text/stickers drawn over the photo can be half removed where the edit changed things; body
 shape needs "Strong"; instructions should be English (Improve instruction); the edit works at

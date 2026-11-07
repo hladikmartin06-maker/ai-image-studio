@@ -168,10 +168,12 @@ repositories.
   the GPU's start command, `comfy/custom_nodes.py`); or text to image. With a character LoRA
   the instruction asks for the character first (hair from the AI model when filled in) and
   a small face is redrawn close up (YuNet on the Mac, denoise 0.4); untouched parts keep the
-  original's pixels (on by default); "Face only" edits the face crop; "Strong" = lower
-  `ref_boost` for body shape / new pose. The instruction can be rewritten in English by the
-  user's AI provider (shown before use). Same safety rules and 18+ switch as Krea 2. No other
-  models or nodes (no upscaler). Measured facts and limits in `docs/PROVIDERS.md` › Advanced.
+  original's pixels (on by default); "Face only" edits the face crop and keeps the photo's
+  hands (SAM 3.1); "Body" frees one part found by SAM 3.1 (two words per part, `ref_boost`
+  0.05 there); "Strong" = lower `ref_boost` (new pose, hard expressions). The instruction can
+  be rewritten in English by the user's AI provider, which also picks what to change (shown
+  before use). Same safety rules and 18+ switch as Krea 2. SAM 3.1 is Enhance photo's file; no
+  other models or nodes (no upscaler). Measured facts and limits in `docs/PROVIDERS.md` › Advanced.
   Modal mounts the ComfyUI Volume at `/studio` (a mount over `/workspace` kills the sandbox).
 - Hugging Face: token in Integrations › Hugging Face, checked with `whoami-v2` and the Krea 2
   repositories' `auth-check` (`services/huggingface.py`). Accepting the license is the user's

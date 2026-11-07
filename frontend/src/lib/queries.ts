@@ -940,7 +940,15 @@ export function useAdvancedEdit() {
 export function useAdvancedPrompt() {
   return useMutation({
     mutationFn: (body: { text: string; mode: "edit" | "text" }) =>
-      api<{ prompt: string; provider: string; model: string; input_tokens: number | null; output_tokens: number | null }>(
+      api<{
+        prompt: string;
+        target: "photo" | "face" | "body" | null;
+        body_part: string | null;
+        provider: string;
+        model: string;
+        input_tokens: number | null;
+        output_tokens: number | null;
+      }>(
         "/api/comfy/advanced/prompt",
         { body },
       ),

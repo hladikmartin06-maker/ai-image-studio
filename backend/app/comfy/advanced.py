@@ -46,8 +46,10 @@ class AdvancedBody(BaseModel):
     # Edit only the face: the face is cropped, edited at 1024 px and put back; the rest of
     # the photo stays exactly as it was (expressions, makeup, a smile on a small face).
     face_only: bool = False
-    # How far the edit may go: "strong" for body shape or a new pose (k2edit.settings_for).
+    # How far the edit may go: "strong" for a new pose, or hard expressions with Face only.
     strength: str = Field(default="normal", pattern="^(normal|strong)$")
+    # Body: change the shape of one part only (k2edit.BODY_PARTS: bust, butt, waist, …).
+    body_part: str | None = Field(default=None, max_length=20)
     # The owner's character LoRA (Krea 2, usable on Turbo).
     lora: LoraUse | None = None
     # Untouched parts keep the original's own pixels (k2edit.keep_unchanged).
@@ -139,6 +141,16 @@ async def create_advanced_generation(
         )
     if body.image is None and body.aspect_ratio not in krea2.ASPECT_RATIOS:
         raise GenerationRejected("invalid_parameter", "Unsupported aspect ratio.")
+    if body.body_part is not None and body.body_part not in k2edit.BODY_PARTS:
+        raise GenerationRejected("invalid_parameter", "Unknown body part.")
+    if body.body_part and body.face_only:
+        raise GenerationRejected("invalid_parameter", "Choose either Face only or Body.")
+    if (body.face_only or body.body_part) and not detection.get("sam"):
+        raise GenerationRejected(
+            "missing_models",
+            "Face only and Body need SAM 3.1: install the Advanced models again (one click).",
+            409,
+        )
     source = await source_input(db, user, body.image) if body.image else None
     square = None
     if source and body.face_only:
@@ -188,6 +200,7 @@ async def create_advanced_generation(
     if square:
         width = height = k2edit.FACE_PX
         face = None  # the face is already edited close up
+        final = f"{final.rstrip()} {k2edit.FACE_ONLY_NOTE}"
     elif source:
         width, height = krea2.size_for_source(source["width"], source["height"], "1K")
     if source:
@@ -199,7 +212,9 @@ async def create_advanced_generation(
             seed=seed,
             edit_lora=k2edit.DEFAULT_EDIT,
             loras=loras,
-            **k2edit.settings_for(character=bool(loras), strength=body.strength),
+            region=body.body_part if source else None,
+            keep_hands=bool(square),
+            **k2edit.settings_for(character=bool(loras), strength=body.strength, face=bool(square)),
         )
     else:
         width, height = krea2.size_for(body.aspect_ratio, "1K")
@@ -231,6 +246,7 @@ async def create_advanced_generation(
         settings.update(
             change=body.strength,
             face_only=bool(square),
+            **({"body_part": body.body_part} if body.body_part else {}),
             keep_unchanged=body.keep_unchanged,
             source_width=source["width"],
             source_height=source["height"],
@@ -299,14 +315,19 @@ async def create_advanced_generation(
 REWRITE_SYSTEM = {
     "edit": (
         "You rewrite a user's photo-editing request (any language) as one clear English "
-        "instruction for an instruction-based image editor, at most 60 words. Output only "
-        "the instruction. "
-        "Keep the user's intent exactly and add nothing they did not ask for. Be concrete: "
-        "name the body parts, pose (what each arm, hand and leg does, how much of the person "
-        "is visible), facial expression, clothing (the new outfit and what is gone), "
-        "background, and where the light falls. Keep words such as trigger words verbatim. "
-        "End with: Keep everything else unchanged. If the request involves anyone under 18, "
-        "answer exactly: REFUSED"
+        "instruction for an instruction-based image editor, at most 60 words. Keep the "
+        "user's intent exactly and add nothing they did not ask for. Be concrete: name the "
+        "body parts, pose (what each arm, hand and leg does, how much of the person is "
+        "visible), facial expression, clothing (the new outfit and what is gone), "
+        "background, and where the light falls; for a body change say how much (e.g. "
+        "'much larger') and say 'bust' rather than 'breasts'. Keep words such as trigger "
+        "words verbatim. End with: Keep everything else unchanged. "
+        'Answer with JSON only: {"instruction": "...", "target": "photo" | "face" | "body", '
+        '"part": "..."}. target is "face" when only the face changes (expression, eyes, '
+        'gaze, mouth, makeup), "body" when the shape or size of the body changes (bust, '
+        'buttocks, hips, waist, weight, muscles), else "photo". With "body", part is one of '
+        '"bust", "butt", "waist", "belly", "legs", "arms". If the request involves anyone '
+        "under 18, answer exactly: REFUSED"
     ),
     "text": (
         "You rewrite a user's image idea (any language) as one detailed English prompt for a "
@@ -317,6 +338,30 @@ REWRITE_SYSTEM = {
         "words verbatim. If the request involves anyone under 18, answer exactly: REFUSED"
     ),
 }
+
+
+def parse_rewrite(text: str) -> tuple[str, str | None, str | None]:
+    """The instruction and its target from the model's JSON answer; plain text (or broken
+    JSON) is taken as the instruction alone."""
+    import json
+    import re
+
+    raw = text.strip()
+    found = re.search(r"\{.*\}", raw, re.DOTALL)
+    if found:
+        try:
+            data = json.loads(found.group(0))
+        except ValueError:
+            data = None
+        if isinstance(data, dict) and isinstance(data.get("instruction"), str):
+            target = data.get("target")
+            part = data.get("part")
+            return (
+                " ".join(data["instruction"].split()),
+                target if target in ("photo", "face", "body") else None,
+                part if target == "body" and part in k2edit.BODY_PARTS else None,
+            )
+    return " ".join(raw.split()).strip().strip('"'), None, None
 
 
 class RewriteBody(BaseModel):
@@ -378,7 +423,11 @@ async def rewrite_prompt(db: AsyncSession, user: User, body: RewriteBody) -> dic
                 parts.append(event.text)
     except AIError as exc:
         raise GenerationRejected(exc.code, exc.message, 502) from exc
-    out = " ".join("".join(parts).split()).strip().strip('"')
+    out, target, part = (
+        parse_rewrite("".join(parts))
+        if body.mode == "edit"
+        else (" ".join("".join(parts).split()).strip().strip('"'), None, None)
+    )
     if usage is not None:
         db.add(
             AIUsageEvent(
@@ -402,6 +451,9 @@ async def rewrite_prompt(db: AsyncSession, user: User, body: RewriteBody) -> dic
         raise GenerationRejected(exc.code, exc.message, 422) from exc
     return {
         "prompt": out[: k2edit.MAX_PROMPT],
+        # What the edit should work on: "photo", "face" (Face only) or "body" (body shape).
+        "target": target,
+        "body_part": part,
         "provider": provider,
         "model": str(model),
         "input_tokens": usage.input_tokens if usage else None,

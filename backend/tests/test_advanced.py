@@ -91,6 +91,7 @@ def test_downloads_are_pinned_and_detection():
         "qwen3vl_4b_fp8_scaled.safetensors",
         "qwen_image_vae.safetensors",
         "krea2_turbo_fp8_scaled.safetensors",
+        "sam3.1_multiplex_fp16.safetensors",
         EDIT_FILE,
     ]
     edit = files[-1]
@@ -441,7 +442,11 @@ async def test_face_only_edits_just_the_face(user: Api, monkeypatch):
     from app.services import faces
 
     fake = FakeComfy(
-        files={**KREA_FILES, "loras": [*KREA_FILES["loras"], EDIT_FILE]},
+        files={
+            **KREA_FILES,
+            "loras": [*KREA_FILES["loras"], EDIT_FILE],
+            "checkpoints": [k2edit.SAM3.filename],
+        },
         custom_nodes=list(k2edit.NODES),
     )
     ComfyClient.transport = fake.transport()
@@ -474,6 +479,10 @@ async def test_face_only_edits_just_the_face(user: Api, monkeypatch):
         assert sent["6"]["inputs"]["width"] == sent["6"]["inputs"]["height"] == 1024
         uploaded = Image.open(io.BytesIO(fake.uploads[sent["10"]["inputs"]["image"]]))
         assert uploaded.size == (1024, 1024)  # the face crop, not the photo
+        # Hard expressions: the crop is held loosely; hands are found to be kept as they were.
+        assert sent["13"]["inputs"]["ref_boost"] == 1.0
+        assert sent["61"]["class_type"] == "SAM3_Detect" and sent["60"]["inputs"]["text"] == "hand"
+        assert sent["4"]["inputs"]["prompt"].endswith(k2edit.FACE_ONLY_NOTE)
         image = gen["images"][0]
         assert (image["width"], image["height"]) == (400, 500)  # back in the whole photo
         found[0] = None
@@ -512,3 +521,80 @@ def test_documented_workflows_match_the_code():
     )
     assert json.loads((docs / "advanced_edit_api.json").read_text()) == edit
     assert json.loads((docs / "advanced_face_api.json").read_text()) == face
+
+
+async def test_body_part_frees_only_that_part(user: Api):
+    fake = FakeComfy(
+        files={
+            **KREA_FILES,
+            "loras": [*KREA_FILES["loras"], EDIT_FILE],
+            "checkpoints": [k2edit.SAM3.filename],
+        },
+        custom_nodes=list(k2edit.NODES),
+    )
+    ComfyClient.transport = fake.transport()
+    comfy_runner.POLL_INITIAL = 0.01
+    comfy_runner.POLL_MAX = 0.02
+    try:
+        conn = await _ready_connection(user)
+        ref = (
+            await user.post(
+                "/api/reference-images",
+                files={"file": ("me.png", png_bytes(64, 80), "image/png")},
+            )
+        ).json()
+        body = {
+            "connection_id": conn["id"],
+            "image": {"kind": "reference", "id": ref["id"]},
+            "prompt": "Make her bust much larger.",
+            "body_part": "bust",
+        }
+        bad = await user.post("/api/comfy/advanced", json={**body, "body_part": "nose"})
+        assert bad.status_code == 400
+        both = await user.post("/api/comfy/advanced", json={**body, "face_only": True})
+        assert both.status_code == 400
+        r = await user.post("/api/comfy/advanced", json=body)
+        assert r.status_code == 201, r.text
+        gen = await wait_done(user, r.json()["id"])
+        assert gen["status"] == "completed" and gen["settings"]["body_part"] == "bust"
+        sent = list(fake.prompts.values())[-1]["prompt"]
+        words = sorted(
+            n["inputs"]["text"] for n in sent.values() if n["class_type"] == "CLIPTextEncode"
+        )
+        assert words == ["breasts", "chest"]
+        assert sent["13"]["inputs"]["ref_boost"] == k2edit.REGION_BOOST
+        assert sent["13"]["inputs"]["ref_boost_mask"] == ["43", 0]
+        assert sent["43"]["inputs"]["mask"] == ["70", 0]  # both words added together
+    finally:
+        ComfyClient.transport = None
+        async with SessionLocal() as db:
+            await db.execute(ComfyConnection.__table__.delete())
+            await db.execute(Generation.__table__.delete().where(Generation.provider == "comfyui"))
+            await db.commit()
+
+
+def test_face_paste_keeps_the_hands():
+    img = Image.new("RGB", (400, 400), (0, 0, 255))
+    patch = _png(Image.new("RGB", (1024, 1024), (255, 0, 0)))
+    hands = Image.new("L", (1024, 1024), 0)
+    hands.paste(255, (480, 480, 600, 600))  # a finger in the middle of the square
+    out = Image.open(
+        io.BytesIO(k2edit.face_paste(_png(img), patch, (100, 100, 200), _png(hands)))
+    ).convert("RGB")
+    assert out.getpixel((200, 200)) == (0, 0, 255)  # the finger: the photo's own pixels
+    assert out.getpixel((160, 200))[0] > 240  # the rest of the face: the new one
+
+
+def test_rewrite_answer_is_parsed():
+    from app.comfy.advanced import parse_rewrite
+
+    assert parse_rewrite(
+        '```json\n{"instruction": "Make her bust  larger.", "target": "body", "part": "bust"}\n```'
+    ) == ("Make her bust larger.", "body", "bust")
+    assert parse_rewrite('{"instruction": "Smile.", "target": "face", "part": "bust"}') == (
+        "Smile.",
+        "face",
+        None,
+    )
+    assert parse_rewrite("Make her smile.") == ("Make her smile.", None, None)
+    assert parse_rewrite('{"instruction": 5}')[1] is None

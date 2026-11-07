@@ -46,8 +46,10 @@ NODES = [
     # Krea 2 image to image (built-in nodes).
     "ImageScale",
     "RepeatLatentBatch",
-    # Advanced (Krea 2 edit graph).
+    # Advanced (Krea 2 edit graph; SAM masks for Face only and Body).
     "EmptySD3LatentImage",
+    "MaskComposite",
+    "PreviewImage",
     # Built-in nodes of the Enhance photo workflow (PGUpscaler; ComfyUI >= 0.30).
     "LoadImage",
     "ImageScaleToTotalPixels",

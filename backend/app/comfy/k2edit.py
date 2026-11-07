@@ -25,7 +25,7 @@ import re
 from dataclasses import dataclass
 from typing import Any
 
-from app.comfy import krea2
+from app.comfy import enhance, krea2
 
 FAMILY = "k2edit"
 MODEL_KEY = "krea2-advanced"
@@ -79,14 +79,42 @@ EDIT_LORAS = {
 DEFAULT_EDIT = "general_v2"
 
 
+# A region edit (body shape: "breasts", "buttocks", "waist and hips"): SAM 3.1 (built-in
+# nodes, the same file as Enhance photo) finds the part; ref_boost 0.05 only there. Measured:
+# much stronger than ref_boost 0.6 on the whole photo, the rest stays (PROVIDERS.md).
+SAM3 = enhance.SAM3
+REGION_BOOST = 0.05
+REGION_GROW = 40
+REGION_THRESHOLD = 0.4
+# Body parts the user can pick (Body), as SAM words; one word alone missed parts often in the
+# studio's tests ("breasts" found nothing on a photo where "chest" did).
+BODY_PARTS: dict[str, tuple[str, ...]] = {
+    "bust": ("breasts", "chest"),
+    "butt": ("buttocks", "hips"),
+    "waist": ("waist", "hips"),
+    "belly": ("belly", "waist"),
+    "legs": ("legs", "thighs"),
+    "arms": ("arms", "shoulders"),
+}
+HANDS_NODE = "64"
+SAM_NODES = ("SAM3_Detect", "GrowMask", "MaskComposite", "MaskToImage", "PreviewImage")
 # "strong": ref_boost 0.6 lets bigger changes through (body shape, a new pose) while the
 # scene still holds; at 2-4 the body barely changes (measured, PROVIDERS.md).
 STRENGTHS = ("normal", "strong")
 
 
-def settings_for(character: bool, strength: str = "normal") -> dict[str, Any]:
-    boost = 0.6 if strength == "strong" else 2.0 if character else 4.0
+def settings_for(character: bool, strength: str = "normal", face: bool = False) -> dict[str, Any]:
+    """Face only (the face crop): 1 keeps the person, 0.6 for hard expressions (one eyebrow,
+    gaze); the whole photo: 4 (2 with a character LoRA), 0.6 strong (measured)."""
+    if face:
+        boost = 0.6 if strength == "strong" else 1.0
+    else:
+        boost = 0.6 if strength == "strong" else 2.0 if character else 4.0
     return {"steps": 8, "ref_boost": boost, "grounding_px": 768}
+
+
+# Face only: the crop's mouth may grow a hand (a kiss) that the oval paste would cut off.
+FACE_ONLY_NOTE = "Change only the face. Do not add hands."
 
 
 NODES = ("Krea2EditModelPatch", "Krea2EditGroundedEncode")
@@ -102,6 +130,8 @@ def _files(keys: tuple[str, ...]) -> list[tuple[str, str, str, float, str | None
         (f.url, f.folder, f.filename, f.size_gb, None)
         for f in (krea2.TEXT_ENCODER, krea2.VAE, TURBO)
     ]
+    # SAM 3.1 (Face only keeps the hands; Body finds the part): Enhance photo's file.
+    out.append((SAM3.url, SAM3.folder, SAM3.filename, SAM3.size / 1e9, None))
     for key in keys:
         e = EDIT_LORAS[key]
         out.append((e.url, "loras", e.filename, e.size / 1e9, e.sha256))
@@ -150,6 +180,7 @@ def detect(object_info: dict[str, Any]) -> dict[str, Any]:
     encoders = choices("CLIPLoader", "clip_name")
     vaes = choices("VAELoader", "vae_name")
     loras = choices("LoraLoaderModelOnly", "lora_name")
+    sam = SAM3.filename in choices("CheckpointLoaderSimple", "ckpt_name")
     edit = {k: e.filename in loras for k, e in EDIT_LORAS.items()}
     missing_nodes = [n for n in REQUIRED_NODES if n not in object_info]
     missing_files = [
@@ -165,12 +196,32 @@ def detect(object_info: dict[str, Any]) -> dict[str, Any]:
         "missing_nodes": missing_nodes,
         "missing_files": missing_files,
         "edit_loras": edit,
+        # Face only and Body need SAM 3.1 (and its nodes, built into ComfyUI 0.35).
+        "sam": sam and all(n in object_info for n in SAM_NODES),
         "ready": not missing_nodes and not missing_files and edit[DEFAULT_EDIT],
     }
 
 
 def names(prompt: str, trigger: str) -> bool:
     return re.search(rf"(?<!\w){re.escape(trigger)}(?!\w)", prompt, re.IGNORECASE) is not None
+
+
+def _sam(wf: dict[str, Any], node: str, words: str, image: list[Any]) -> list[Any]:
+    """SAM 3.1 (loaded at node "40") finding `words` in the image; returns the mask's link."""
+    text, detect = node, str(int(node) + 1)
+    wf[text] = {"class_type": "CLIPTextEncode", "inputs": {"clip": ["40", 1], "text": words}}
+    wf[detect] = {
+        "class_type": "SAM3_Detect",
+        "inputs": {
+            "model": ["40", 0],
+            "image": image,
+            "conditioning": [text, 0],
+            "threshold": REGION_THRESHOLD,
+            "refine_iterations": 2,
+            "individual_masks": False,
+        },
+    }
+    return [detect, 0]
 
 
 def with_character(prompt: str, trigger: str, class_word: str, hair: str = "") -> str:
@@ -202,6 +253,8 @@ def build_edit(
     image_b: str | None = None,
     ref_position: str = REF_POSITIONS[0],
     prefix: str = "ai-image-studio-advanced",
+    region: str | None = None,
+    keep_hands: bool = False,
 ) -> dict[str, Any]:
     """The API-format edit graph: the photo (scaled to width x height) is the reference the
     edit LoRA keeps, the instruction is encoded together with it, the owner's LoRAs follow the
@@ -286,6 +339,39 @@ def build_edit(
         wf["32"] = {"class_type": "VAEEncode", "inputs": {"pixels": person, "vae": ["3", 0]}}
         patch |= {"source_latent_b": ["32", 0], "source_image_b": person}
         encode["image_b"] = person
+    if region or keep_hands:
+        wf["40"] = {"class_type": "CheckpointLoaderSimple", "inputs": {"ckpt_name": SAM3.filename}}
+    if region:
+        # Only that part of the photo (SAM 3.1 finds it from the words, grown a little so a
+        # bigger shape has room) is let go: the edit hardly looks at it there, and keeps the
+        # rest as at ref_boost 1. Two words per part (BODY_PARTS), added together.
+        words = BODY_PARTS.get(region, (region,))
+        masks = [_sam(wf, str(50 + 3 * i), word, src) for i, word in enumerate(words)]
+        mask = masks[0]
+        for i, other in enumerate(masks[1:]):
+            node = str(70 + i)
+            wf[node] = {
+                "class_type": "MaskComposite",
+                "inputs": {
+                    "destination": mask,
+                    "source": other,
+                    "x": 0,
+                    "y": 0,
+                    "operation": "add",
+                },
+            }
+            mask = [node, 0]
+        wf["43"] = {
+            "class_type": "GrowMask",
+            "inputs": {"mask": mask, "expand": REGION_GROW, "tapered_corners": True},
+        }
+        patch |= {"ref_boost": REGION_BOOST, "ref_boost_mask": ["43", 0]}
+    if keep_hands:
+        # The hands of the photo (SAM 3.1), shown as a preview the studio fetches: the face
+        # paste keeps them as they were (face_paste).
+        hands = _sam(wf, "60", "hand", src)
+        wf["63"] = {"class_type": "MaskToImage", "inputs": {"mask": hands}}
+        wf[HANDS_NODE] = {"class_type": "PreviewImage", "inputs": {"images": ["63", 0]}}
     wf["13"] = {"class_type": "Krea2EditModelPatch", "inputs": patch}
     wf["4"] = {"class_type": "Krea2EditGroundedEncode", "inputs": encode}
     # CFG 1 (Turbo): the negative is not used, so it is not encoded.
@@ -415,10 +501,15 @@ def face_crop(data: bytes, square: tuple[int, int, int]) -> bytes:
     return buf.getvalue()
 
 
-def face_paste(data: bytes, patch: bytes, square: tuple[int, int, int]) -> bytes:
+def face_paste(
+    data: bytes, patch: bytes, square: tuple[int, int, int], keep: bytes | None = None
+) -> bytes:
+    """The redrawn face square pasted back through a feathered ellipse; `keep` (a mask of the
+    square, white = keep the photo's own pixels, e.g. the hands SAM found) is left as it was,
+    so a finger at the lips is never cut off by the new mouth."""
     import io
 
-    from PIL import Image, ImageDraw, ImageFilter, ImageOps
+    from PIL import Image, ImageChops, ImageDraw, ImageFilter, ImageOps
 
     left, top, side = square
     img = ImageOps.exif_transpose(Image.open(io.BytesIO(data))).convert("RGB")
@@ -426,7 +517,12 @@ def face_paste(data: bytes, patch: bytes, square: tuple[int, int, int]) -> bytes
     mask = Image.new("L", (side, side), 0)
     pad = int(side * 0.12)
     ImageDraw.Draw(mask).ellipse((pad, pad, side - pad, side - pad), fill=255)
-    img.paste(face, (left, top), mask.filter(ImageFilter.GaussianBlur(side * 0.06)))
+    mask = mask.filter(ImageFilter.GaussianBlur(side * 0.06))
+    if keep:
+        hands = Image.open(io.BytesIO(keep)).convert("L").resize((side, side), Image.BILINEAR)
+        hands = hands.filter(ImageFilter.MaxFilter(5)).filter(ImageFilter.GaussianBlur(3))
+        mask = ImageChops.subtract(mask, hands)
+    img.paste(face, (left, top), mask)
     buf = io.BytesIO()
     img.save(buf, "PNG")
     return buf.getvalue()
