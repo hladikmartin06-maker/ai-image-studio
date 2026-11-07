@@ -27,27 +27,19 @@
     "1",
     0
    ],
-   "lora_name": "your_character_lora.safetensors",
+   "lora_name": "krea2_general_edit_v2_r128.safetensors",
    "strength_model": 1.0
   }
  },
- "4": {
-  "class_type": "CLIPTextEncode",
+ "21": {
+  "class_type": "LoraLoaderModelOnly",
   "inputs": {
-   "text": "close-up photo of lmxx2 woman, natural skin texture",
-   "clip": [
-    "2",
+   "model": [
+    "20",
     0
-   ]
-  }
- },
- "5": {
-  "class_type": "ConditioningZeroOut",
-  "inputs": {
-   "conditioning": [
-    "4",
-    0
-   ]
+   ],
+   "lora_name": "your_character_lora.safetensors",
+   "strength_model": 1.4
   }
  },
  "10": {
@@ -56,7 +48,7 @@
    "image": "face_crop_1024.png"
   }
  },
- "11": {
+ "101": {
   "class_type": "ImageScale",
   "inputs": {
    "image": [
@@ -73,7 +65,7 @@
   "class_type": "VAEEncode",
   "inputs": {
    "pixels": [
-    "11",
+    "101",
     0
    ],
    "vae": [
@@ -83,20 +75,73 @@
   }
  },
  "6": {
-  "class_type": "RepeatLatentBatch",
+  "class_type": "EmptySD3LatentImage",
   "inputs": {
-   "samples": [
+   "width": 1024,
+   "height": 1024,
+   "batch_size": 1
+  }
+ },
+ "13": {
+  "class_type": "Krea2EditModelPatch",
+  "inputs": {
+   "model": [
+    "21",
+    0
+   ],
+   "source_latent": [
     "12",
     0
    ],
-   "amount": 1
+   "ref_boost": 1.0,
+   "ref_boost_a": 1.0,
+   "fit_mode": "fit",
+   "vae": [
+    "3",
+    0
+   ],
+   "source_image": [
+    "101",
+    0
+   ],
+   "target_latent": [
+    "6",
+    0
+   ],
+   "ref_position": "aligned (trained)",
+   "ref_position_a": "aligned (trained)"
+  }
+ },
+ "4": {
+  "class_type": "Krea2EditGroundedEncode",
+  "inputs": {
+   "clip": [
+    "2",
+    0
+   ],
+   "prompt": "Give her the face of lmxx2 woman: her eyes, nose, lips, jaw and skin. Keep everything else in the photo exactly as it is, including anything on her face or in her hair, her makeup, her expression and her head angle.",
+   "image": [
+    "101",
+    0
+   ],
+   "grounding_px": 768,
+   "system_prompt": ""
+  }
+ },
+ "5": {
+  "class_type": "ConditioningZeroOut",
+  "inputs": {
+   "conditioning": [
+    "4",
+    0
+   ]
   }
  },
  "7": {
   "class_type": "KSampler",
   "inputs": {
    "model": [
-    "20",
+    "13",
     0
    ],
    "seed": 7,
@@ -116,14 +161,14 @@
     "6",
     0
    ],
-   "denoise": 0.5
+   "denoise": 1.0
   }
  },
  "8": {
   "class_type": "VAEDecode",
   "inputs": {
    "samples": [
-    "7",
+    "93",
     0
    ],
    "vae": [
@@ -140,6 +185,63 @@
     0
    ],
    "filename_prefix": "ai-image-studio-advanced-face"
+  }
+ },
+ "90": {
+  "class_type": "LoraLoaderModelOnly",
+  "inputs": {
+   "model": [
+    "1",
+    0
+   ],
+   "lora_name": "your_character_lora.safetensors",
+   "strength_model": 1.25
+  }
+ },
+ "91": {
+  "class_type": "CLIPTextEncode",
+  "inputs": {
+   "text": "close-up photo of lmxx2 woman, natural skin texture",
+   "clip": [
+    "2",
+    0
+   ]
+  }
+ },
+ "92": {
+  "class_type": "ConditioningZeroOut",
+  "inputs": {
+   "conditioning": [
+    "91",
+    0
+   ]
+  }
+ },
+ "93": {
+  "class_type": "KSampler",
+  "inputs": {
+   "model": [
+    "90",
+    0
+   ],
+   "seed": 8,
+   "steps": 8,
+   "cfg": 1.0,
+   "sampler_name": "euler",
+   "scheduler": "simple",
+   "positive": [
+    "91",
+    0
+   ],
+   "negative": [
+    "92",
+    0
+   ],
+   "latent_image": [
+    "7",
+    0
+   ],
+   "denoise": 0.4
   }
  }
 }

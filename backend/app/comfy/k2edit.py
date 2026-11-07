@@ -535,7 +535,13 @@ def keep_unchanged(original: bytes, edited: bytes) -> tuple[bytes, float]:
 # the studio's runs: face likeness to the character's photos up (docs/PROVIDERS.md).
 FACE_EXPAND = 2.2
 FACE_PX = 1024
-FACE_DENOISE = 0.5
+FACE_DENOISE = 0.4
+FACE_EDIT_LORA = 1.4
+FACE_SWAP = (
+    "Give her the face of {who}: her eyes, nose, lips, jaw and skin. Keep everything else in"
+    " the photo exactly as it is, including anything on her face or in her hair, her makeup,"
+    " her expression and her head angle."
+)
 # The character's LoRA is applied this much stronger in the face step (at most FACE_LORA_MAX).
 FACE_LORA_BOOST = 1.25
 FACE_LORA_MAX = 1.5
@@ -678,11 +684,17 @@ def face_crop(data: bytes, square: tuple[int, int, int]) -> bytes:
 
 
 def face_paste(
-    data: bytes, patch: bytes, square: tuple[int, int, int], keep: bytes | None = None
+    data: bytes,
+    patch: bytes,
+    square: tuple[int, int, int],
+    keep: bytes | None = None,
+    box: tuple[float, float, float, float] | None = None,
 ) -> bytes:
-    """The redrawn face square pasted back through a feathered ellipse; `keep` (a mask of the
-    square, white = keep the photo's own pixels, e.g. the hands SAM found) is left as it was,
-    so a finger at the lips is never cut off by the new mouth."""
+    """The redrawn face square pasted back. With `box` (the face's box in the photo) only a
+    feathered oval around the face is taken: the whole square's ellipse also carried the
+    face step's redraw of the background next to the head (a grey smudge in a beach sky).
+    `keep` (a mask of the square, white = the photo's own pixels, e.g. the hands SAM found)
+    stays as it was, so a finger at the lips is never cut off by the new mouth."""
     import io
 
     from PIL import Image, ImageChops, ImageDraw, ImageFilter, ImageOps
@@ -691,9 +703,16 @@ def face_paste(
     img = ImageOps.exif_transpose(Image.open(io.BytesIO(data))).convert("RGB")
     face = Image.open(io.BytesIO(patch)).convert("RGB").resize((side, side), Image.LANCZOS)
     mask = Image.new("L", (side, side), 0)
-    pad = int(side * 0.12)
-    ImageDraw.Draw(mask).ellipse((pad, pad, side - pad, side - pad), fill=255)
-    mask = mask.filter(ImageFilter.GaussianBlur(side * 0.06))
+    if box:
+        x, y, w, h = box
+        x, y = x - left, y - top
+        oval = (x - 0.12 * w, y - 0.18 * h, x + 1.12 * w, y + 1.1 * h)
+        ImageDraw.Draw(mask).ellipse(oval, fill=255)
+        mask = mask.filter(ImageFilter.GaussianBlur(max(3.0, 0.08 * w)))
+    else:
+        pad = int(side * 0.12)
+        ImageDraw.Draw(mask).ellipse((pad, pad, side - pad, side - pad), fill=255)
+        mask = mask.filter(ImageFilter.GaussianBlur(side * 0.06))
     if keep:
         hands = Image.open(io.BytesIO(keep)).convert("L").resize((side, side), Image.BILINEAR)
         hands = hands.filter(ImageFilter.MaxFilter(5)).filter(ImageFilter.GaussianBlur(3))
@@ -707,27 +726,50 @@ def face_paste(
 def face_graph(
     *, image: str, lora: str, strength: float, who: str, seed: int, note: str = ""
 ) -> dict[str, Any]:
-    """The face step's graph; `note` is the user's instruction, so an expression the edit
-    made (a smile, a kiss) is asked for again instead of drifting back to the LoRA's usual
-    look (same likeness in the studio's tests, PROVIDERS.md)."""
-    text = f"close-up photo of {who}, natural skin texture"
-    if note.strip():
-        text = f"{text}. {note.strip()[:FACE_NOTE_MAX]}"
-    return krea2.build_workflow(
-        variant="turbo",
-        unet=TURBO.filename,
-        text_encoder=krea2.TEXT_ENCODER.filename,
-        vae=krea2.VAE.filename,
-        prompt=text,
-        negative_prompt="",
+    """The face step in one graph: the edit LoRA with the character LoRA (FACE_EDIT_LORA x)
+    gives the crop her face while keeping what it shows — the expression (a laugh, closed
+    eyes, a tongue out), makeup, things on the face; then Turbo with the character LoRA alone
+    (FACE_LORA_BOOST x) redraws it lightly (FACE_DENOISE) from that latent for likeness. A
+    plain image to image at denoise 0.5 erased laughs, closed eyes and tongues on the
+    owner's photos (PROVIDERS.md). `note` (the user's instruction) steers the second part."""
+    wf = build_edit(
+        image=image,
+        prompt=FACE_SWAP.format(who=who),
         width=FACE_PX,
         height=FACE_PX,
         seed=seed,
-        steps=8,
-        cfg=1.0,
-        batch=1,
-        loras=[(lora, strength)],
+        edit_lora=DEFAULT_EDIT,
+        loras=[(lora, min(FACE_LORA_MAX, strength * FACE_EDIT_LORA))],
+        ref_boost=1.0,
         prefix="ai-image-studio-advanced-face",
-        image=image,
-        denoise=FACE_DENOISE,
     )
+    text = f"close-up photo of {who}, natural skin texture"
+    if note.strip():
+        text = f"{text}. {note.strip()[:FACE_NOTE_MAX]}"
+    wf["90"] = {
+        "class_type": "LoraLoaderModelOnly",
+        "inputs": {
+            "model": ["1", 0],
+            "lora_name": lora,
+            "strength_model": min(FACE_LORA_MAX, strength * FACE_LORA_BOOST),
+        },
+    }
+    wf["91"] = {"class_type": "CLIPTextEncode", "inputs": {"text": text, "clip": ["2", 0]}}
+    wf["92"] = {"class_type": "ConditioningZeroOut", "inputs": {"conditioning": ["91", 0]}}
+    wf["93"] = {
+        "class_type": "KSampler",
+        "inputs": {
+            "model": ["90", 0],
+            "seed": seed + 1,
+            "steps": 8,
+            "cfg": 1.0,
+            "sampler_name": "euler",
+            "scheduler": "simple",
+            "positive": ["91", 0],
+            "negative": ["92", 0],
+            "latent_image": ["7", 0],
+            "denoise": FACE_DENOISE,
+        },
+    }
+    wf["8"]["inputs"]["samples"] = ["93", 0]
+    return wf

@@ -384,16 +384,25 @@ async def test_character_face_is_redrawn_close_up(user: Api, monkeypatch):
         assert edit["21"]["inputs"]["lora_name"] == lora_file
         assert edit["21"]["inputs"]["strength_model"] == 1.1
         assert edit["13"]["inputs"]["ref_boost"] == 2.0
-        # The face: Krea 2 Turbo image to image of the crop with the same LoRA.
-        assert face["20"]["inputs"]["lora_name"] == lora_file
-        assert face["7"]["inputs"]["denoise"] == k2edit.FACE_DENOISE
-        assert face["4"]["inputs"]["text"] == (
-            "close-up photo of tla woman, natural skin texture. Make her smile."
+        # The face: the edit LoRA with her LoRA gives the crop her face (keeping what it
+        # shows), then Turbo with her LoRA alone redraws it lightly from that latent.
+        assert face["21"]["inputs"]["lora_name"] == lora_file
+        assert face["21"]["inputs"]["strength_model"] == min(
+            k2edit.FACE_LORA_MAX, 1.1 * k2edit.FACE_EDIT_LORA
         )
-        assert face["10"]["inputs"]["image"] in fake.uploads
-        assert face["20"]["inputs"]["strength_model"] == min(
+        assert face["13"]["inputs"]["ref_boost"] == 1.0
+        assert face["4"]["inputs"]["prompt"].startswith("Give her the face of tla woman")
+        assert face["90"]["inputs"]["model"] == ["1", 0]
+        assert face["90"]["inputs"]["strength_model"] == min(
             k2edit.FACE_LORA_MAX, 1.1 * k2edit.FACE_LORA_BOOST
         )
+        assert face["93"]["inputs"]["latent_image"] == ["7", 0]
+        assert face["93"]["inputs"]["denoise"] == k2edit.FACE_DENOISE
+        assert face["91"]["inputs"]["text"] == (
+            "close-up photo of tla woman, natural skin texture. Make her smile."
+        )
+        assert face["8"]["inputs"]["samples"] == ["93", 0]
+        assert face["10"]["inputs"]["image"] in fake.uploads
         # No face found (or too big): one prompt only. Text to image: a batch, no photo.
         boxes[0] = None
         before = len(fake.prompts)
@@ -901,3 +910,13 @@ async def test_reflection_gets_a_second_pass(user: Api, monkeypatch):
 def test_places_in_words():
     assert k2edit.place(0.9, 0.5) == "right edge" and k2edit.place(0.1, 0.5) == "left edge"
     assert k2edit.place(0.5, 0.5) == "middle" and k2edit.place(0.5, 0.1) == "top"
+
+
+def test_face_paste_with_a_box_takes_only_the_face():
+    img = Image.new("RGB", (400, 400), (0, 0, 255))
+    patch = _png(Image.new("RGB", (1024, 1024), (255, 0, 0)))
+    out = Image.open(
+        io.BytesIO(k2edit.face_paste(_png(img), patch, (100, 100, 220), None, (170, 160, 80, 100)))
+    ).convert("RGB")
+    assert out.getpixel((210, 210))[0] > 240  # the face
+    assert out.getpixel((120, 300)) == (0, 0, 255)  # inside the square, beside the face

@@ -371,7 +371,7 @@ async def _refine_face(
         workflow = k2edit.face_graph(
             image=name,
             lora=face["lora"],
-            strength=min(k2edit.FACE_LORA_MAX, float(face["strength"]) * k2edit.FACE_LORA_BOOST),
+            strength=float(face["strength"]),
             who=face["who"],
             seed=int((gen.settings or {}).get("seed") or 0) + index,
             note=str(face.get("note") or ""),
@@ -391,7 +391,7 @@ async def _refine_face(
     except ComfyError as exc:
         log.warning("Advanced face pass failed for %s: %s", gen.id, exc.message)
         return data
-    return await asyncio.to_thread(k2edit.face_paste, data, patch, square)
+    return await asyncio.to_thread(k2edit.face_paste, data, patch, square, None, box)
 
 
 async def _hands(client: ComfyClient, entry: dict[str, Any]) -> bytes | None:

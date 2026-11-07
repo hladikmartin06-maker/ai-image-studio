@@ -534,9 +534,15 @@ What the studio does:
 2. **With a character LoRA** the instruction starts with "Turn the woman into
    `<trigger> <class>`[, with `<hair>` hair]." (hair from the AI model's appearance when filled
    in); when the instruction mentions hair, the hair (SAM 3.1) is let go too. Afterwards the
-   main face (YuNet on the Mac), at any size, is cropped as a square 2.2× its size, redrawn at
-   1024 px by Turbo image to image with the LoRA at 1.25× its strength, denoise 0.5, the
-   user's instruction repeated, and pasted back through a feathered ellipse. When the photo
+   main face (YuNet on the Mac), at any size, is cropped as a square 2.2× its size and at
+   1024 px goes through one graph: the edit LoRA with the character LoRA ×1.4 (`ref_boost`
+   1, "Give her the face of … keep … her expression …") gives it her face while keeping what
+   the crop shows, then Turbo with the character LoRA ×1.25 alone redraws that latent at
+   denoise 0.4 with the user's instruction. Only an oval around the face box is pasted back.
+   On 10 photos (the owner's and three made like his latest): a plain image to image at
+   denoise 0.5 erased a laugh, closed eyes and a tongue out (likeness 0.73); this keeps them
+   (likeness 0.71); the edit alone, 0.64; pasting the whole square's ellipse carried a grey
+   smudge into a beach sky. Lost on the way: heart-shaped eye patches. When the photo
    shows another face (her mirror reflection), a second pass edits the whole result with
    "The person at the right edge … is the same woman (her reflection): turn her into … like
    the woman in the middle. <the user's instruction>" (switch "Her mirror reflection too",
