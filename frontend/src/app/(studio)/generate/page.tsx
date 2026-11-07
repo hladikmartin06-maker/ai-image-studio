@@ -222,7 +222,10 @@ export default function GeneratePage() {
     gen: null,
   });
   // What Advanced starts with: an earlier Advanced run's settings.
-  const [advancedStart, setAdvancedStart] = useState<{ key: string; gen: Generation | null }>({ key: "draft", gen: null });
+  const [advancedStart, setAdvancedStart] = useState<{ key: string; gen: Generation | null; photo?: EnhancePhoto }>({
+    key: "draft",
+    gen: null,
+  });
   const setEngine = useCallback((value: Engine) => {
     setEngineState(value);
     try {
@@ -237,9 +240,16 @@ export default function GeneratePage() {
 
   // "Enhance photo" in an image viewer, on this page or before it opened.
   useEffect(() => {
-    const start = (photo: EnhancePhoto) => {
-      setEngine("enhance");
-      setEnhanceStart({ key: `${photo.kind}:${photo.id}:${Date.now()}`, photo, gen: null });
+    const start = (photo: EnhancePhoto & { target?: "enhance" | "advanced" }) => {
+      const key = `${photo.kind}:${photo.id}:${Date.now()}`;
+      const picked = { kind: photo.kind, id: photo.id, thumb_url: photo.thumb_url };
+      if (photo.target === "advanced") {
+        setEngine("advanced");
+        setAdvancedStart({ key, gen: null, photo: picked });
+      } else {
+        setEngine("enhance");
+        setEnhanceStart({ key, photo: picked, gen: null });
+      }
       setViewer(null);
     };
     const pending = takePendingEnhance();
@@ -662,7 +672,7 @@ export default function GeneratePage() {
   if (engine === "advanced") {
     return (
       <div className="studio">
-        <AdvancedPanel key={advancedStart.key} header={comfyHeader} initialPhoto={null} initial={advancedStart.gen} />
+        <AdvancedPanel key={advancedStart.key} header={comfyHeader} initialPhoto={advancedStart.photo ?? null} initial={advancedStart.gen} />
         {resultsSection}
         {viewerNode}
       </div>

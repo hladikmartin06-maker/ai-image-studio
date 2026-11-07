@@ -108,7 +108,10 @@ def test_downloads_are_pinned_and_detection():
 
 def test_character_is_named_once():
     assert k2edit.with_character("Make her smile.", "lmxx2", "woman") == (
-        "Make her smile. The woman is lmxx2 woman."
+        "Turn the woman into lmxx2 woman. Make her smile."
+    )
+    assert k2edit.with_character("Smile.", "lmxx2", "woman", "long straight black") == (
+        "Turn the woman into lmxx2 woman, with long straight black hair. Smile."
     )
     assert k2edit.with_character("Turn her into LMXX2 woman", "lmxx2", "woman") == (
         "Turn her into LMXX2 woman"
@@ -255,6 +258,10 @@ async def test_advanced_edit_runs_and_keeps_the_original(user: Api):
         # The fake's result is 96x128; the photo was smaller, so the result is the edit's size.
         image = gen["images"][0]
         assert (image["width"], image["height"]) == (102, 128)
+        assert sent["13"]["inputs"]["ref_boost"] == 4.0
+        strong = await user.post("/api/comfy/advanced", json={**body, "strength": "strong"})
+        assert (await wait_done(user, strong.json()["id"]))["settings"]["change"] == "strong"
+        assert list(fake.prompts.values())[-1]["prompt"]["13"]["inputs"]["ref_boost"] == 0.6
         # Off: the edit as it came from ComfyUI.
         raw = await user.post("/api/comfy/advanced", json={**body, "keep_unchanged": False})
         done = await wait_done(user, raw.json()["id"])
@@ -369,7 +376,7 @@ async def test_character_face_is_redrawn_close_up(user: Api, monkeypatch):
         assert r.status_code == 201, r.text
         gen = await wait_done(user, r.json()["id"])
         assert gen["status"] == "completed", gen
-        assert gen["final_prompt"] == "Make her smile. The woman is tla woman."
+        assert gen["final_prompt"] == "Turn the woman into tla woman. Make her smile."
         assert gen["settings"]["face_refine"] is True
         edit, face = [p["prompt"] for p in list(fake.prompts.values())[-2:]]
         # The edit: the character LoRA after the edit LoRA, ref_boost 2 (room for her face).
@@ -428,3 +435,80 @@ def test_face_square_rules():
     assert out.getpixel((200, 200))[0] > 240  # the middle of the face: the new one
     assert out.getpixel((105, 105)) == (0, 0, 255)  # the square's corner: untouched
     assert out.getpixel((10, 10)) == (0, 0, 255)
+
+
+async def test_face_only_edits_just_the_face(user: Api, monkeypatch):
+    from app.services import faces
+
+    fake = FakeComfy(
+        files={**KREA_FILES, "loras": [*KREA_FILES["loras"], EDIT_FILE]},
+        custom_nodes=list(k2edit.NODES),
+    )
+    ComfyClient.transport = fake.transport()
+    comfy_runner.POLL_INITIAL = 0.01
+    comfy_runner.POLL_MAX = 0.02
+    found: list = [(100.0, 80.0, 60.0, 70.0)]
+
+    async def box(_data: bytes):
+        return found[0]
+
+    monkeypatch.setattr(faces, "face_box", box)
+    try:
+        conn = await _ready_connection(user)
+        photo = png_bytes(400, 500, (10, 200, 10))
+        ref = (
+            await user.post("/api/reference-images", files={"file": ("me.png", photo, "image/png")})
+        ).json()
+        body = {
+            "connection_id": conn["id"],
+            "image": {"kind": "reference", "id": ref["id"]},
+            "prompt": "Make her smile widely.",
+            "face_only": True,
+        }
+        r = await user.post("/api/comfy/advanced", json=body)
+        assert r.status_code == 201, r.text
+        gen = await wait_done(user, r.json()["id"])
+        assert gen["status"] == "completed", gen
+        assert gen["settings"]["face_only"] is True
+        sent = list(fake.prompts.values())[-1]["prompt"]
+        assert sent["6"]["inputs"]["width"] == sent["6"]["inputs"]["height"] == 1024
+        uploaded = Image.open(io.BytesIO(fake.uploads[sent["10"]["inputs"]["image"]]))
+        assert uploaded.size == (1024, 1024)  # the face crop, not the photo
+        image = gen["images"][0]
+        assert (image["width"], image["height"]) == (400, 500)  # back in the whole photo
+        found[0] = None
+        none = await user.post("/api/comfy/advanced", json=body)
+        assert none.status_code == 422 and none.json()["error"]["code"] == "no_face"
+    finally:
+        ComfyClient.transport = None
+        async with SessionLocal() as db:
+            await db.execute(ComfyConnection.__table__.delete())
+            await db.execute(Generation.__table__.delete().where(Generation.provider == "comfyui"))
+            await db.commit()
+
+
+def test_documented_workflows_match_the_code():
+    """docs/advanced/*.json are the graphs the studio sends (example values)."""
+    import json
+    from pathlib import Path
+
+    docs = Path(__file__).resolve().parents[2] / "docs" / "advanced"
+    edit = k2edit.build_edit(
+        image="your_photo.png",
+        prompt="Make her smile and change the background to a beach at sunset.",
+        width=880,
+        height=1184,
+        seed=7,
+        edit_lora=k2edit.DEFAULT_EDIT,
+        loras=[("your_character_lora.safetensors", 1.0)],
+        **k2edit.settings_for(character=True),
+    )
+    face = k2edit.face_graph(
+        image="face_crop_1024.png",
+        lora="your_character_lora.safetensors",
+        strength=1.0,
+        who="lmxx2 woman",
+        seed=7,
+    )
+    assert json.loads((docs / "advanced_edit_api.json").read_text()) == edit
+    assert json.loads((docs / "advanced_face_api.json").read_text()) == face

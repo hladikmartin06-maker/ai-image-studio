@@ -44,7 +44,7 @@ Next.js 16 (127.0.0.1:3000) ── /api/* rewrite ──▶ FastAPI (127.0.0.1:8
 | `gpu/` | `base.py` contract, `runpod.py` (REST + GraphQL), `modal_provider.py` (SDK), `registry.py`, `service.py` (credentials, launch + record, cost) |
 | `gpu/agent/` | `studio_agent.py`: stdlib HTTP agent that runs inside a GPU container (files with offsets/ranges, jobs: train / models / download — downloads from huggingface.co only, logs, the container's start log, ComfyUI proxy), sent compressed in the environment; `COMFY_BOOT` starts it in RunPod's ComfyUI image before the image's own `/start.sh` |
 | `gpu/agent_client.py` | client for the agent (chunked resumable upload in 8 MB pieces: a chunk whose answer was lost continues from the size the agent reports with "offset mismatch", one upload per file at a time, size checked at the end; ranged resumable download with SHA-256) |
-| `comfy/` | `client.py` (ComfyUI HTTP API), `krea2.py` (verified facts, file detection, sizes, workflow, LoRA compatibility), `workflows.py` (import, secret scrubbing, bindings, LoRA insertion), `service.py` (connections, inspection, LoRA placement), `generation.py`, `runner.py` (in the job worker), `deploy.py` (ComfyUI on RunPod/Modal) |
+| `comfy/` | `client.py` (ComfyUI HTTP API), `krea2.py` (verified facts, file detection, sizes, workflow, LoRA compatibility), `workflows.py` (import, secret scrubbing, bindings, LoRA insertion), `service.py` (connections, inspection, LoRA placement), `generation.py`, `runner.py` (in the job worker), `deploy.py` (ComfyUI on RunPod/Modal), `k2edit.py` + `advanced.py` (Generate › Advanced: Krea 2 Turbo edit graph, face step, keep-unchanged composite, instruction rewrite), `custom_nodes.py` (pinned comfyui-krea2edit files sent to a rented GPU) |
 | `lora/` | `presets.py` (per-architecture options and presets), `aitoolkit.py` (job file), `dataset.py` (analysis, dHash, packing with crop), `captions.py` (vision captions via the assistant provider), `safetensors_meta.py`, `runner.py` (training state machine), `serial.py` |
 | `services/gpu_runner.py` | background loop that advances training runs and deployments (state in the database) |
 | `services/uploads.py` | chunked uploads (8 MB pieces) for LoRA and model files |
@@ -134,6 +134,10 @@ ComfyUI on a GPU: POST /api/comfy/deployments (confirm_billing) ─▶ pod / san
           ─▶ POST …/models/install: agent job "models" downloads from huggingface.co
           (Krea 2, or variant "pgupscaler" for Enhance photo)
 
+Advanced: POST /api/comfy/advanced ─▶ Generation (model krea2-advanced; k2edit.build_edit or
+          the Turbo text graph) ─▶ the same ComfyUI queue ─▶ runner._advanced_finish (face
+          redrawn close up with the LoRA, untouched parts put back, or the face-only paste)
+          (POST /api/comfy/advanced/prompt: the user's AI provider rewrites the instruction)
 Enhance photo: POST /api/comfy/enhance ─▶ Generation (model pgupscaler, mode image-edit)
           worker: upload the photo (POST /upload/image) ─▶ PGUpscaler workflow (comfy/
           enhance.py, built-in nodes only) ─▶ /prompt ─▶ result saved like Krea 2
@@ -166,7 +170,7 @@ in answers can be applied back to it ("Use in studio", "Apply settings").
 |---|---|
 | `proxy.ts` | refuses requests with a foreign `Host` (DNS rebinding protection) |
 | `app/welcome` | sign in / create account (only with `AUTO_LOGIN=false`; by default the shell signs in automatically through `POST /api/auth/auto`) |
-| `app/(studio)/…` | dashboard, generate (online models, Krea 2 with the ComfyUI choice inside, Enhance photo), ai-models, loras (list + training history; `[id]` photos, captions, training, runs/versions, tests, details), library (generated images or AI model photos), library/history, assistant, integrations (images, AI, GPU, Hugging Face), settings |
+| `app/(studio)/…` | dashboard, generate (online models, Krea 2 with the ComfyUI choice inside, Enhance photo, Advanced), ai-models, loras (list + training history; `[id]` photos, captions, training, runs/versions, tests, details), library (generated images or AI model photos), library/history, assistant, integrations (images, AI, GPU, Hugging Face), settings |
 | `components/comfy`, `components/lora`, `components/studio` | ComfyUI connection bar (This Mac / Rent a GPU), manage window, workflows, Krea 2 panel on Generate; dataset, captions, simplified training form, runs, comparison; shared status, GPU picker |
 | `components/personas` | AI model picker and Generate section, profile form, reference collection, "Add to AI model" |
 | `components/assistant` | chat panel, safe Markdown with prompt/settings action cards, floating drawer |

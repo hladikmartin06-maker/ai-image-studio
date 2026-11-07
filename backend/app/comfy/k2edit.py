@@ -79,8 +79,14 @@ EDIT_LORAS = {
 DEFAULT_EDIT = "general_v2"
 
 
-def settings_for(character: bool) -> dict[str, Any]:
-    return {"steps": 8, "ref_boost": 2.0 if character else 4.0, "grounding_px": 768}
+# "strong": ref_boost 0.6 lets bigger changes through (body shape, a new pose) while the
+# scene still holds; at 2-4 the body barely changes (measured, PROVIDERS.md).
+STRENGTHS = ("normal", "strong")
+
+
+def settings_for(character: bool, strength: str = "normal") -> dict[str, Any]:
+    boost = 0.6 if strength == "strong" else 2.0 if character else 4.0
+    return {"steps": 8, "ref_boost": boost, "grounding_px": 768}
 
 
 NODES = ("Krea2EditModelPatch", "Krea2EditGroundedEncode")
@@ -167,11 +173,17 @@ def names(prompt: str, trigger: str) -> bool:
     return re.search(rf"(?<!\w){re.escape(trigger)}(?!\w)", prompt, re.IGNORECASE) is not None
 
 
-def with_character(prompt: str, trigger: str, class_word: str) -> str:
-    """The instruction with the LoRA's character named, so the LoRA's trigger word is in it."""
+def with_character(prompt: str, trigger: str, class_word: str, hair: str = "") -> str:
+    """The instruction with the LoRA's character asked for first, so the person in the photo
+    becomes the character (a trailing "The woman is ..." changed nothing in the studio's tests
+    when the instruction was about something else, e.g. the background). The edit keeps the
+    photo's hair unless told: `hair` (from the AI model, e.g. "long straight black") is
+    named when known."""
     if names(prompt, trigger):
         return prompt
-    return f"{prompt.rstrip()} The {class_word or 'person'} is {trigger} {class_word}.".strip()
+    who = class_word or "person"
+    look = f", with {hair.strip().rstrip('.')} hair" if hair.strip() else ""
+    return f"Turn the {who} into {trigger} {who}{look}. {prompt.strip()}".strip()
 
 
 def build_edit(
@@ -364,12 +376,13 @@ FACE_MIN_PX = 24
 
 
 def face_square(
-    box: tuple[float, float, float, float], width: int, height: int
+    box: tuple[float, float, float, float], width: int, height: int, any_size: bool = False
 ) -> tuple[int, int, int] | None:
-    """(left, top, side) of the square to redraw around a face box, or None to leave it."""
+    """(left, top, side) of the square to redraw around a face box, or None to leave it
+    (too small, or already big unless any_size)."""
     x, y, w, h = box
     size = max(w, h)
-    if size < FACE_MIN_PX or size > FACE_MAX_SHARE * min(width, height):
+    if size < FACE_MIN_PX or (not any_size and size > FACE_MAX_SHARE * min(width, height)):
         return None
     side = int(round(min(size * FACE_EXPAND, width, height)))
     cx, cy = x + w / 2, y + h / 2
@@ -378,13 +391,24 @@ def face_square(
     return left, top, side
 
 
+def upright(data: bytes) -> bytes:
+    """The photo as PNG, turned the way its EXIF says (what people see)."""
+    import io
+
+    from PIL import Image, ImageOps
+
+    buf = io.BytesIO()
+    ImageOps.exif_transpose(Image.open(io.BytesIO(data))).convert("RGB").save(buf, "PNG")
+    return buf.getvalue()
+
+
 def face_crop(data: bytes, square: tuple[int, int, int]) -> bytes:
     import io
 
-    from PIL import Image
+    from PIL import Image, ImageOps
 
     left, top, side = square
-    img = Image.open(io.BytesIO(data)).convert("RGB")
+    img = ImageOps.exif_transpose(Image.open(io.BytesIO(data))).convert("RGB")
     crop = img.crop((left, top, left + side, top + side)).resize((FACE_PX, FACE_PX), Image.LANCZOS)
     buf = io.BytesIO()
     crop.save(buf, "PNG")
@@ -394,10 +418,10 @@ def face_crop(data: bytes, square: tuple[int, int, int]) -> bytes:
 def face_paste(data: bytes, patch: bytes, square: tuple[int, int, int]) -> bytes:
     import io
 
-    from PIL import Image, ImageDraw, ImageFilter
+    from PIL import Image, ImageDraw, ImageFilter, ImageOps
 
     left, top, side = square
-    img = Image.open(io.BytesIO(data)).convert("RGB")
+    img = ImageOps.exif_transpose(Image.open(io.BytesIO(data))).convert("RGB")
     face = Image.open(io.BytesIO(patch)).convert("RGB").resize((side, side), Image.LANCZOS)
     mask = Image.new("L", (side, side), 0)
     pad = int(side * 0.12)

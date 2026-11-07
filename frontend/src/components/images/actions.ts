@@ -212,10 +212,20 @@ export function useImageActions() {
     [router],
   );
 
+  // Generate › Advanced, editing this image (e.g. a second edit of an Advanced result).
+  const editImage = useCallback(
+    (img: StudioImage) => {
+      if (enhanceInStudio({ kind: "image", id: img.id, thumb_url: img.thumb_url, target: "advanced" }) === "pending")
+        router.push("/generate");
+    },
+    [router],
+  );
+
   return {
     download,
     animateImage,
     enhanceImage,
+    editImage,
     copyPrompt,
     deleteImage,
     regenerateImage,

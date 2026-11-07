@@ -11,6 +11,7 @@ import {
   SlidersHorizontal,
   Sparkles,
   Trash2,
+  Wand2,
   X,
 } from "lucide-react";
 import Link from "next/link";
@@ -188,6 +189,9 @@ export function ImageViewer({
                 </Button>
                 <Button size="sm" icon={<Sparkles />} onClick={() => actions.enhanceImage(image)}>
                   {t("images.enhance")}
+                </Button>
+                <Button size="sm" icon={<Wand2 />} onClick={() => actions.editImage(image)}>
+                  {t("images.editAdvanced")}
                 </Button>
               </>
             )}

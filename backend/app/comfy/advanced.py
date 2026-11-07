@@ -43,6 +43,11 @@ class AdvancedBody(BaseModel):
     count: int = Field(default=1, ge=1, le=4)
     # With a character LoRA: its face redrawn close up when it is small (k2edit.face_*).
     face_refine: bool = True
+    # Edit only the face: the face is cropped, edited at 1024 px and put back; the rest of
+    # the photo stays exactly as it was (expressions, makeup, a smile on a small face).
+    face_only: bool = False
+    # How far the edit may go: "strong" for body shape or a new pose (k2edit.settings_for).
+    strength: str = Field(default="normal", pattern="^(normal|strong)$")
     # The owner's character LoRA (Krea 2, usable on Turbo).
     lora: LoraUse | None = None
     # Untouched parts keep the original's own pixels (k2edit.keep_unchanged).
@@ -61,6 +66,44 @@ async def _existing(db: AsyncSession, user: User, request_id: str | None) -> Gen
         .where(Generation.user_id == user.id, Generation.client_request_id == request_id)
         .options(selectinload(Generation.tasks), selectinload(Generation.images))
     )
+
+
+async def _hair(db: AsyncSession, user: User, lora: Any) -> str:
+    """The hair of the AI model the LoRA belongs to (its appearance), e.g. "long straight
+    black"; empty when not filled in."""
+    from app.services import personas
+
+    if not lora.persona_id:
+        return ""
+    persona = await personas.owned(db, user.id, lora.persona_id)
+    look = (persona.appearance or {}) if persona else {}
+    return " ".join(str(look.get(k) or "").strip() for k in ("hairstyle", "hair_color")).strip()
+
+
+async def _face_square(source: dict[str, Any]) -> tuple[int, int, int]:
+    """Where the face is in the user's photo (YuNet on this Mac), as the square to edit."""
+    import asyncio
+    import io
+
+    from PIL import Image
+
+    from app.services import faces, storage
+
+    try:
+        data = await asyncio.to_thread(storage.absolute(source["file_path"]).read_bytes)
+        upright = await asyncio.to_thread(k2edit.upright, data)
+        size = Image.open(io.BytesIO(upright)).size
+        box = await faces.face_box(upright)
+    except Exception as exc:  # noqa: BLE001 - face models missing or an unreadable photo
+        raise GenerationRejected(
+            "face_check_failed", "The face could not be found on this Mac right now.", 409
+        ) from exc
+    square = k2edit.face_square(box, *size, any_size=True) if box else None
+    if square is None:
+        raise GenerationRejected(
+            "no_face", "No face was found in this photo (or it is too small).", 422
+        )
+    return square
 
 
 async def create_advanced_generation(
@@ -97,6 +140,9 @@ async def create_advanced_generation(
     if body.image is None and body.aspect_ratio not in krea2.ASPECT_RATIOS:
         raise GenerationRejected("invalid_parameter", "Unsupported aspect ratio.")
     source = await source_input(db, user, body.image) if body.image else None
+    square = None
+    if source and body.face_only:
+        square = await _face_square(source)
 
     loras: list[tuple[str, float]] = []
     lora_meta = None
@@ -114,7 +160,9 @@ async def create_advanced_generation(
             )
         loras.append((lora_filename(lora, version), body.lora.strength))
         if source:
-            final = k2edit.with_character(prompt, lora.trigger_word, lora.class_word)
+            final = k2edit.with_character(
+                prompt, lora.trigger_word, lora.class_word, await _hair(db, user, lora)
+            )
         elif not k2edit.names(prompt, lora.trigger_word):
             final = f"{lora.trigger_word}, {prompt}"
         if body.face_refine:
@@ -137,8 +185,12 @@ async def create_advanced_generation(
 
     seed = body.seed if body.seed is not None else secrets.randbelow(krea2.SEED_MAX)
     count = 1 if source else body.count
-    if source:
+    if square:
+        width = height = k2edit.FACE_PX
+        face = None  # the face is already edited close up
+    elif source:
         width, height = krea2.size_for_source(source["width"], source["height"], "1K")
+    if source:
         workflow = k2edit.build_edit(
             image=enhance.INPUT_PLACEHOLDER,
             prompt=final,
@@ -147,7 +199,7 @@ async def create_advanced_generation(
             seed=seed,
             edit_lora=k2edit.DEFAULT_EDIT,
             loras=loras,
-            **k2edit.settings_for(character=bool(loras)),
+            **k2edit.settings_for(character=bool(loras), strength=body.strength),
         )
     else:
         width, height = krea2.size_for(body.aspect_ratio, "1K")
@@ -177,6 +229,8 @@ async def create_advanced_generation(
     }
     if source:
         settings.update(
+            change=body.strength,
+            face_only=bool(square),
             keep_unchanged=body.keep_unchanged,
             source_width=source["width"],
             source_height=source["height"],
@@ -211,6 +265,7 @@ async def create_advanced_generation(
             "keep_unchanged": bool(source) and body.keep_unchanged,
             **({"input": source} if source else {}),
             "face": face,
+            "face_only": list(square) if square else None,
             "adult": adult,
         },
         tasks=[ProviderTask(index=0, images_requested=count)],

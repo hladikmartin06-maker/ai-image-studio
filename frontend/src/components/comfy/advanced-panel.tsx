@@ -25,6 +25,10 @@ import type { Generation } from "@/lib/types";
 
 type Mode = "edit" | "text";
 
+/** Slovak or Czech words: the edit model mainly reads English (a Slovak "smile" changed
+ * nothing in the studio's tests), so the panel suggests "Improve instruction". */
+const NOT_ENGLISH = /[áäčďéíĺľňóôŕšťúýžěřů]|\b(nech|zmeň|zmen|daj|aby|jej|ju|sa|na|je|alebo|ktor)\b/i;
+
 /** Generate › Advanced: Krea 2 Turbo with the owner's LoRA — edit a photo from plain words
  * (an in-context edit LoRA keeps everything not asked for), or a new photo from text. */
 export function AdvancedPanel({
@@ -58,6 +62,8 @@ export function AdvancedPanel({
   const [loraVersionId, setLoraVersionId] = useState(initial?.comfy?.lora?.version_id ?? "");
   const [strength, setStrength] = useState(initial?.comfy?.lora?.strength ?? 1);
   const [keep, setKeep] = useState(before.keep_unchanged !== false);
+  const [faceOnly, setFaceOnly] = useState(before.face_only === true);
+  const [change, setChange] = useState<"normal" | "strong">(before.change === "strong" ? "strong" : "normal");
   const [faceRefine, setFaceRefine] = useState(initial ? before.face_refine === true : true);
   const [adult, setAdult] = useState(before.adult === true);
   const [aspect, setAspect] = useState(before.aspect_ratio && before.aspect_ratio !== "match" ? before.aspect_ratio : "3:4");
@@ -143,6 +149,8 @@ export function AdvancedPanel({
         aspect_ratio: aspect,
         count: mode === "edit" ? 1 : count,
         face_refine: Boolean(lora) && faceRefine,
+        face_only: mode === "edit" && faceOnly,
+        strength: change,
         lora,
         keep_unchanged: keep,
         adult,
@@ -254,6 +262,7 @@ export function AdvancedPanel({
                       onChange={(e) => setPrompt(e.target.value)}
                     />
                   </Field>
+                  {NOT_ENGLISH.test(prompt) && !suggestion ? <div className="hint" style={{ marginTop: 6 }}>{t("ad.notEnglish")}</div> : null}
                   <div className="row wrap" style={{ gap: 10, marginTop: 8 }}>
                     <Button size="sm" icon={<Wand2 />} loading={improve.isPending} onClick={improvePrompt}>
                       {t("ad.improve")}
@@ -322,13 +331,36 @@ export function AdvancedPanel({
 
                 <div className="col gap-16">
                   {mode === "edit" ? (
-                    <div className="row" style={{ gap: 10, alignItems: "flex-start" }}>
-                      <Switch checked={keep} onChange={setKeep} label={t("ad.keep")} />
-                      <div>
-                        <div className="small">{t("ad.keep")}</div>
-                        <div className="hint">{t("ad.keepHint")}</div>
+                    <>
+                      <Field label={t("ad.changeStrength")} hint={t(change === "strong" ? "ad.changeStrongHint" : "ad.changeNormalHint")}>
+                        <Segmented
+                          label={t("ad.changeStrength")}
+                          value={change}
+                          block
+                          onChange={setChange}
+                          options={[
+                            { value: "normal", label: t("ad.changeNormal") },
+                            { value: "strong", label: t("ad.changeStrong") },
+                          ]}
+                        />
+                      </Field>
+                      <div className="row" style={{ gap: 10, alignItems: "flex-start" }}>
+                        <Switch checked={faceOnly} onChange={setFaceOnly} label={t("ad.faceOnly")} />
+                        <div>
+                          <div className="small">{t("ad.faceOnly")}</div>
+                          <div className="hint">{t("ad.faceOnlyHint")}</div>
+                        </div>
                       </div>
-                    </div>
+                      {faceOnly ? null : (
+                        <div className="row" style={{ gap: 10, alignItems: "flex-start" }}>
+                          <Switch checked={keep} onChange={setKeep} label={t("ad.keep")} />
+                          <div>
+                            <div className="small">{t("ad.keep")}</div>
+                            <div className="hint">{t("ad.keepHint")}</div>
+                          </div>
+                        </div>
+                      )}
+                    </>
                   ) : (
                     <div className="col gap-12">
                       <div className="chips">

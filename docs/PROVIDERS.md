@@ -257,7 +257,7 @@ Through the official `modal` SDK (`modal.Client.from_credentials`, documented fo
 Modal on behalf of users). Workloads are **Sandboxes** in the app `ai-image-studio-gpu`,
 tagged `created-by=ai-image-studio` (and `studio-connection=<id>` for ComfyUI):
 `Sandbox.create(*cmd, gpu=…, cpu=4, memory=32768, image=Image.from_registry(…).entrypoint([]),
-volumes={"/workspace": Volume "ais-comfyui"}, encrypted_ports=[8189], secrets=[…], timeout)`,
+volumes={"/studio": Volume "ais-comfyui"} (ComfyUI; see Advanced for why not /workspace), encrypted_ports=[8189], secrets=[…], timeout)`,
 `Sandbox.list(app_id, tags)`, `Sandbox.from_id(...).terminate()`, `sandbox.tunnels()` for the
 HTTPS URLs. Sandboxes cannot be paused: every stop ends one (the Volume stays). GPU names as in
 modal-labs/modal-examples: T4, L4, A10G, L40S, A100-40GB, A100-80GB, H100, H200, B200. SDK
@@ -486,6 +486,116 @@ the image): the same graph in API format, on the same ComfyUI connection as Krea
 - **Not run on a real GPU** and not against huggingface.co (its CDN is blocked in the build
   sandbox, so the files were not downloaded): verified with the fake ComfyUI, which checks
   the nodes, the file names per loader and the uploaded photo, and with the real agent.
+
+# Advanced (Krea 2 Turbo edit, the owner's request of 2026-11-07)
+
+Generate › Advanced: edit a photo from plain words (face, expression, body, pose, clothes,
+background, light) or make a new photo from text, always Krea 2 Turbo with the owner's own
+Krea 2 LoRA for the character. Code: `backend/app/comfy/k2edit.py` (facts, graphs, the
+composite and face helpers), `comfy/advanced.py` (requests), `comfy/custom_nodes.py` (the
+two nodes sent to a rented GPU), `comfy/runner.py` (`_advanced_finish`).
+
+Sources, checked 2026-11-07:
+
+- **Edit LoRA** `huggingface.co/conradlocke/krea2-identity-edit`, revision
+  `f33b26291c640e8ec50b0da420bfee3c9a660daa` (model card, file list with LFS SHA-256).
+  Advanced downloads `krea2_general_edit_v2_r128.safetensors` (914,188,760 bytes, SHA-256
+  `fbca6ab7…6f00`, checked on the GPU before it is renamed into place). The card: in-context
+  edit LoRAs trained on Krea 2 RAW with "dual conditioning (in-context VAE tokens +
+  image-grounded Qwen3-VL encoding)", needing the ComfyUI-Krea2Edit nodes; recommended Turbo,
+  8 steps, CFG 1, `ref_boost` 4, `grounding_px` 768, at most 2 MP; rank-128 files
+  "near-identical quality". **License: V2 files are free for personal / non-commercial use;
+  selling outputs, client work, ads or a service built on it need a license from the author**
+  (contact on the card), plus Krea 2 Community License terms. Identity Edit v1.2 (Krea 2
+  Community License only) was also tested (below) and edits less faithfully.
+- **Nodes** `github.com/lbouaraba/comfyui-krea2edit`, tag v2.0.0, commit
+  `13ef60f20828949becada815d3cbc371eb5ccaab`, Apache-2.0: `__init__.py` (SHA-256
+  `20c89b7a…bf77`) and `pyproject.toml` (`19abb3d5…5ba0`). `Krea2EditModelPatch` and
+  `Krea2EditGroundedEncode`; the example workflow's wiring (UNETLoader → LoraLoaderModelOnly →
+  patch with `source_image`, `vae`, `target_latent`; EmptySD3LatentImage; KSampler euler /
+  simple, CFG 1) is what `build_edit` builds. Its Krea 2 internals match ComfyUI v0.35.0
+  (the image the studio runs). The Mac fetches the two files of the pinned commit, checks
+  them and sends them as a gzipped tar in `STUDIO_NODES_CODE`; the start command unpacks
+  them into `custom_nodes` before ComfyUI starts. Nothing is installed with pip.
+- Krea 2 Turbo, its text encoder and VAE: as for Krea 2 above (Comfy-Org/Krea-2).
+
+**Modal: the Volume is mounted at `/studio`, not `/workspace`** (measured 2026-11-07): with
+the image `runpod/comfyui:1.4.1-comfyuiv0.35.0-cuda12.8`, whose WORKDIR is
+`/workspace/runpod-slim`, a sandbox with the Volume mounted at `/workspace` ended at once
+with exit code 1 and no output (also on CPU, with no environment); mounted elsewhere the same
+command ran. `STUDIO_WORKSPACE=/studio` tells the agent and the start command where it is.
+
+What the studio does:
+
+1. **Edit a photo**: the photo, scaled to its aspect ratio at about 1 MP, is the reference;
+   the instruction is encoded together with it; General Edit V2 at 1.0, then the owner's LoRA
+   (any strength). `ref_boost` 4 without a character LoRA, 2 with one, 0.6 for "Strong"
+   (body shape, a new pose). 8 steps.
+2. **With a character LoRA** the instruction starts with "Turn the woman into
+   `<trigger> <class>`[, with `<hair>` hair]." (hair from the AI model's appearance when filled
+   in). Afterwards the main face (YuNet on the Mac) is cropped as a square 2.2× its size,
+   redrawn at 1024 px by Turbo image to image with the LoRA at denoise 0.4 and pasted back
+   through a feathered ellipse — only when it is small (under 30 % of the shorter side).
+3. **Untouched parts** (default on): where the edit changed nothing (per-pixel difference of
+   the lightly blurred images over 0.07, opened 9 px, grown 16 px, feathered 8 px), the
+   original's pixels come back, at the original's size (at most 1.5× the edit's).
+4. **Face only**: the face square (any size) is edited at 1024 px and pasted back; nothing
+   else changes.
+5. **Text to image**: Krea 2 Turbo + the LoRA (trigger word added), then the face step.
+6. **Improve instruction** (optional): the user's AI provider (cheapest tier) rewrites the
+   words as one clear English instruction, shown for checking; tokens recorded as
+   `purpose="advanced"`.
+
+The two graphs in ComfyUI's API format, as the studio sends them (example values):
+`docs/advanced/advanced_edit_api.json` (the edit) and `docs/advanced/advanced_face_api.json`
+(the face step). A test keeps them equal to the code.
+
+Measured on the studio's own runs (Modal L40S 48 GB, 2026-11-07; the owner's six test photos,
+nine new photos of other fictional adults made with Krea 2, the owner's AI model photos;
+results checked by eye on contact sheets and with the studio's SFace face match):
+
+- General Edit V2 kept the photo best: background, expression, pose ("hands on hips", "cross
+  arms") and outfit changes with everything else the same; Identity Edit V2 was close but left
+  parts of the old background; Identity v1.2 redrew more of the photo.
+- Plain Krea 2 image to image with the LoRA (denoise 0.55 / 0.70) either barely changed the
+  person or lost the pose and scene; the edit LoRA + character LoRA kept pose, outfit and
+  scene while the person became the character.
+- Face likeness to the character's photos (SFace cosine, mean of 6 photos): source photos
+  0.32; edit + LoRA `ref_boost` 4: 0.47, 2: 0.54, 1.5: 0.55, 2 with LoRA 1.25: 0.56; plus the
+  face step (denoise 0.40): 0.64 (0.55: 0.67, expression shifts). Text to image: 0.62 → 0.66
+  with the face step. The persona's own photos agree with each other at about the same level;
+  SFace alone does not decide (AI faces often score high), the sheets were judged by eye.
+- A Slovak instruction ("smile and look at the camera") changed nothing; the same in English
+  worked; the rewrite fixed relighting that was too weak as typed.
+- Body shape ("slimmer", "curvier") barely changed at `ref_boost` 2–4; at 0.4–0.7 it changed
+  visibly with the scene kept ("Strong").
+- Gaze ("look into the camera") did not change on the whole photo at 2–4 nor on the face crop
+  at 2–4; it did on the face crop at 0.3–0.6 (Face only + Strong).
+- Hands checked close up on pose edits and text to image: five fingers, no extra limbs seen.
+- Speed: text to image 5.7 s (1 MP, warm; 17 s with the first model load); an edit 14–18 s on
+  the GPU. Ten edits in a row through the studio (character LoRA + face step + composite,
+  each started after the previous one ended): average 31.9 s, median 34.1 s, 90th percentile
+  37.9 s (end to end, uploads and downloads through Modal included). A new LoRA's first run
+  adds its upload (230–340 MB). VRAM in use about 19 GB of 48 GB. Cold start: the first
+  sandbox about 2 minutes (Modal builds the image once), later starts ready in about 30 s;
+  the first model download (Turbo, text encoder, VAE, edit LoRA, ~19 GB) about 3 minutes,
+  once per Volume; the first run then loads the model (+11 s).
+- Cost: Modal billed 2.17 USD for one full hour of the L40S sandbox (GPU + CPU + memory as
+  used) — about 0.02 USD per edit at 32 s when the GPU is kept busy. The studio's estimate
+  (1.95 + 0.445 per hour) uses Modal's function CPU/memory rates; the workspace also lists
+  sandbox rates (CPU 0.1419 per core-hour, memory 0.024 per GiB-hour), not used here.
+
+Known limits: a partial mirror reflection at the photo's edge can keep the old look (a second
+edit of the result fixes it: "Change the blonde hair at the right edge, the reflection…");
+text/stickers drawn over the photo can be half removed where the edit changed things; body
+shape needs "Strong"; instructions should be English (Improve instruction); the edit works at
+about 1 MP (the face step and the composite add detail where they apply).
+
+Not verified: the other GPUs (only L40S measured; A10G 24 GB should fit at ~19 GB but is
+slower), RunPod (same graph and nodes, not run there in this mission), a ComfyUI on the
+owner's PC (RTX 3070 Ti 8 GB + 32 GB RAM: the fp8 Turbo model alone is 13 GB, so ComfyUI would
+offload to system RAM — expect minutes per edit; GGUF builds exist, e.g.
+`ChrisColeTech/krea2-turbo-edit-GGUF`, but the edit nodes were not tested with them).
 
 # LoRA training (ai-toolkit)
 

@@ -37,9 +37,9 @@ repositories.
   models Wan 3.0 and Wan 3.0 Prime (SFW; WaveSpeed only; video from text, or from a photo as
   the first frame with an optional second photo as the last frame; 2–30 s, sound). Plus
   Krea 2 (RAW, Turbo) on the user's own ComfyUI (`backend/app/comfy/krea2.py` holds the
-  verified facts) and "Enhance photo". No other models or
-  modes. Videos are stored as delivered (MP4), shown with a player, and never used where a
-  photo is needed (references, AI models, LoRA photos, Krea 2, Enhance photo).
+  verified facts), "Enhance photo" and Advanced (Krea 2 Turbo edit, below). No other models
+  or modes. Videos are stored as delivered (MP4), shown with a player, and never used where a
+  photo is needed (references, AI models, LoRA photos, Krea 2, Enhance photo, Advanced).
 - Providers: WaveSpeed and Atlas Cloud only, through `backend/app/providers/` (one adapter
   each, shared contract in `base.py`). The model catalog is `backend/app/catalog.py`: one
   `Variant` per provider endpoint. A UI control exists only when the provider documents that
@@ -159,6 +159,20 @@ repositories.
   pgupscaler` through the agent (one click). The photo is the user's upload, an AI model photo
   or a generated image; it is uploaded to that ComfyUI only for the run. Image viewers have an
   "Enhance photo" action and show its results before/after (slider or side by side).
+- Advanced (Generate › Advanced, the owner's request of 2026-11-07, `comfy/k2edit.py`,
+  `comfy/advanced.py`): Krea 2 Turbo only, with the owner's Krea 2 LoRA; isolated from the
+  Krea 2 tab (its graphs are not changed). Edit a photo from plain words with the in-context
+  edit LoRA `krea2_general_edit_v2_r128` (conradlocke/krea2-identity-edit, pinned revision,
+  SHA-256 checked on the GPU; V2 license = personal / non-commercial, say so in the UI) and
+  the comfyui-krea2edit v2.0.0 nodes (pinned commit, SHA-256 checked on the Mac, sent with
+  the GPU's start command, `comfy/custom_nodes.py`); or text to image. With a character LoRA
+  the instruction asks for the character first (hair from the AI model when filled in) and
+  a small face is redrawn close up (YuNet on the Mac, denoise 0.4); untouched parts keep the
+  original's pixels (on by default); "Face only" edits the face crop; "Strong" = lower
+  `ref_boost` for body shape / new pose. The instruction can be rewritten in English by the
+  user's AI provider (shown before use). Same safety rules and 18+ switch as Krea 2. No other
+  models or nodes (no upscaler). Measured facts and limits in `docs/PROVIDERS.md` › Advanced.
+  Modal mounts the ComfyUI Volume at `/studio` (a mount over `/workspace` kills the sandbox).
 - Hugging Face: token in Integrations › Hugging Face, checked with `whoami-v2` and the Krea 2
   repositories' `auth-check` (`services/huggingface.py`). Accepting the license is the user's
   own click on huggingface.co (no API exists); the studio links there and checks again, and

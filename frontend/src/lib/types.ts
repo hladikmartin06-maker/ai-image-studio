@@ -198,6 +198,7 @@ export interface GenerationSettings {
   // Advanced: untouched parts kept from the original; the character's face redrawn close up
   keep_unchanged?: boolean;
   face_refine?: boolean;
+  change?: "normal" | "strong";
   upscale?: number;
   source_width?: number;
   source_height?: number;
@@ -812,6 +813,8 @@ export interface AdvancedBody {
   aspect_ratio: string;
   count: number;
   face_refine: boolean;
+  face_only: boolean;
+  strength: "normal" | "strong";
   lora: { version_id: string; strength: number } | null;
   keep_unchanged: boolean;
   adult: boolean;

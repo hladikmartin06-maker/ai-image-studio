@@ -87,6 +87,8 @@ export interface EnhanceRequest {
   kind: "reference" | "image";
   id: string;
   thumb_url: string;
+  // "advanced": opens Generate › Advanced (edit this photo) instead of Enhance photo.
+  target?: "enhance" | "advanced";
 }
 
 const ENHANCE_KEY = "studio:pending-enhance";
