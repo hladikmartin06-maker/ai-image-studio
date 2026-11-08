@@ -144,6 +144,14 @@ def asks_for_pose(text: str) -> bool:
     return bool(POSE_WORDS.search(KEEP_WORDS.sub(" ", text)))
 
 
+HAIR_ASK = re.compile(r"\b(hair\w*|vlas\w*)\b", re.IGNORECASE)
+
+
+def asks_for_hair(text: str) -> bool:
+    """Whether the words give her new hair ("… long straight black hair"; not "keep her hair")."""
+    return bool(HAIR_ASK.search(KEEP_WORDS.sub(" ", text)))
+
+
 # A body change asked for on the whole photo ("…, long black hair, a much larger bust and a
 # rounder butt"): there her body is held (her pose), so the shape is changed in a second pass
 # like Body, with the body words alone (body_change). On 8 of the owner's photos (2026-11-08)
@@ -189,8 +197,17 @@ MAX_REGION_WORDS = 6
 # on a mirror; held like this the pose stayed on 11 of 12 photos, the bust clearly bigger,
 # the butt a little (2026-11-08); the twelfth, a selfie arm SAM's "buttocks" took for the butt,
 # became her bust until the butt's words were changed (BODY_PARTS).
-LIMB_WORDS = ("arm", "hand")
-LIMB_GROW = 40  # SAM words in one region (node ids 50-66; the merges use 70+)
+# Her feet too: a foot under a kneeling woman's butt came out melted into it (2026-11-08).
+# The body pass also says the body stays natural, and uses her LoRA at full strength (her own
+# figure): the studio's rewrite of "bigger bust" as "much larger bust" made an already full
+# bust grotesque (the owner's rollers photo); with these words and her LoRA it came out natural
+# on 8 of 8 photos (2026-11-08).
+BODY_NATURAL = "Her body stays natural and realistic, in proportion."
+LIMB_WORDS = ("arm", "hand", "feet")
+LIMB_GROW = 40
+# Put back tight (paste_held): grown 40 px, the old bust's edge beside an arm came back as a
+# pale halo around the new one (the owner's mirror selfie).
+PASTE_GROW = 8
 
 
 _PIECES = re.compile(r",\s*|\s+and\s+", re.IGNORECASE)
@@ -256,6 +273,9 @@ SAM_NODES = (
     "PreviewImage",
     "InvertMask",
     "SetLatentNoiseMask",  # the face step keeps an open mouth (MOUTH_WORDS)
+    "ImageBlur",  # the detail pass (detail_graph)
+    "ImageToMask",
+    "ImageCompositeMasked",
 )
 # "strong": ref_boost 0.6 lets bigger changes through (body shape, a new pose) while the
 # scene still holds; at 2-4 the body barely changes (measured, PROVIDERS.md).
@@ -430,6 +450,64 @@ def _sam(wf: dict[str, Any], node: str, words: str, image: list[Any]) -> list[An
     return [detect, 0]
 
 
+HAIR_NODE = "137"  # where her old hair was (grown), shown for keep_unchanged
+PART_NODE = "189"  # the part a region edit changes, shown for keep_unchanged
+HAIR_BLUR_GROW = 32
+HAIR_BLUR_PASSES = 1
+HAIR_BLUR_BG_PASSES = 3
+HAIR_BLUR_FEATHER = 15  # ImageBlur radius of the blur mask's edge
+HAIR_BLUR_FACE_GAP = 32  # the hair this close to her face stays sharp
+
+
+def _feather(wf: dict[str, Any], node: str, mask: list[Any], radius: int) -> list[Any]:
+    """`mask` with soft edges (nodes node .. node+2); returns the soft mask's link."""
+    a, b, c = node, str(int(node) + 1), str(int(node) + 2)
+    wf[a] = {"class_type": "MaskToImage", "inputs": {"mask": mask}}
+    wf[b] = {
+        "class_type": "ImageBlur",
+        "inputs": {"image": [a, 0], "blur_radius": radius, "sigma": radius / 2},
+    }
+    wf[c] = {"class_type": "ImageToMask", "inputs": {"image": [b, 0], "channel": "red"}}
+    return [c, 0]
+
+
+HAIR_GROW = 48
+
+
+def _show_hair(wf: dict[str, Any], hair: list[Any]) -> None:
+    """The photo's hair (grown) as a preview: there the edit's pixels are always taken
+    (keep_unchanged): fine blond curls over a pale wall differed too little from the new wall
+    and came back as a ghost beside her new black hair (the owner's mirror selfie)."""
+    wf["135"] = {
+        "class_type": "GrowMask",
+        "inputs": {"mask": hair, "expand": HAIR_GROW, "tapered_corners": True},
+    }
+    wf["136"] = {"class_type": "MaskToImage", "inputs": {"mask": ["135", 0]}}
+    wf[HAIR_NODE] = {"class_type": "PreviewImage", "inputs": {"images": ["136", 0]}}
+
+
+def without_masks(workflow: dict[str, Any]) -> dict[str, Any]:
+    """The edit graph without SAM 3.1 and everything that uses it (masks, previews, the blurred
+    reference): the plain photo is the reference, one ref_boost everywhere. The reflection pass
+    edits the whole result this way; a leftover preview of a removed mask made the graph
+    invalid and the reflection stayed as it was."""
+    graph = {k: {**v, "inputs": dict(v["inputs"])} for k, v in workflow.items()}
+    graph["12"]["inputs"]["pixels"] = ["101", 0]
+    graph["13"]["inputs"]["source_image"] = ["101", 0]
+    graph["4"]["inputs"]["image"] = ["101", 0]
+    graph["13"]["inputs"].pop("ref_boost_mask", None)
+    gone = {"40"}
+    changed = True
+    while changed:
+        changed = False
+        for key, node in graph.items():
+            links = [v for v in node["inputs"].values() if isinstance(v, list) and v]
+            if key not in gone and any(str(v[0]) in gone for v in links):
+                gone.add(key)
+                changed = True
+    return {k: v for k, v in graph.items() if k not in gone}
+
+
 def with_character(prompt: str, trigger: str, class_word: str, hair: str = "") -> str:
     """The instruction with the LoRA's character asked for first, so the person in the photo
     becomes the character (a trailing "The woman is ..." changed nothing in the studio's tests
@@ -464,6 +542,7 @@ def build_edit(
     hold_body: bool = False,
     hold_rest: bool = False,
     keep_limbs: bool = False,
+    blur_hair: bool = False,
 ) -> dict[str, Any]:
     """The API-format edit graph: the photo (scaled to width x height) is the reference the
     edit LoRA keeps, the instruction is encoded together with it, the owner's LoRAs follow the
@@ -579,7 +658,154 @@ def build_edit(
                 "operation": "subtract",
             },
         }
-        patch |= {"ref_boost": HOLD_BOOST, "ref_boost_mask": ["128", 0]}
+        # Her hands held too: a hand holding up her hair went with the old hair (2026-11-08).
+        wf["134"] = {
+            "class_type": "GrowMask",
+            "inputs": {"mask": _sam(wf, "132", "hand", src), "expand": 16, "tapered_corners": True},
+        }
+        # Not the hair in her hand (a blond tuft she held up stayed blond in her new hair).
+        wf["138"] = {
+            "class_type": "MaskComposite",
+            "inputs": {
+                "destination": ["134", 0],
+                "source": hair,
+                "x": 0,
+                "y": 0,
+                "operation": "subtract",
+            },
+        }
+        wf["131"] = {
+            "class_type": "MaskComposite",
+            "inputs": {
+                "destination": ["128", 0],
+                "source": ["138", 0],
+                "x": 0,
+                "y": 0,
+                "operation": "add",
+            },
+        }
+        patch |= {"ref_boost": HOLD_BOOST, "ref_boost_mask": ["131", 0]}
+        _show_hair(wf, hair)
+        if blur_hair:
+            # New hair: the old hair (minus her hands and face) blurred in the reference, so
+            # its fine strands are not copied: blond waves over a shoulder came out as thin
+            # dark lines on the skin and blond ends stayed on the floor beside her new hair;
+            # blurred, the skin was clean, a tank top strap came back and a hand holding up
+            # her hair stayed (8 of the owner's photos, 2026-11-08). Grown 32 px, blurred once:
+            # blurred three times, the old brown hair over a forearm came out as dark smudges
+            # on the skin; grown 48 px, a choker beside the hair went.
+            wf["180"] = {
+                "class_type": "GrowMask",
+                "inputs": {"mask": hair, "expand": HAIR_BLUR_GROW, "tapered_corners": True},
+            }
+            wf["181"] = {
+                "class_type": "MaskComposite",
+                "inputs": {
+                    "destination": ["180", 0],
+                    "source": ["138", 0],
+                    "x": 0,
+                    "y": 0,
+                    "operation": "subtract",
+                },
+            }
+            # Not near her face either: blurred up to her cheeks, a smile with teeth closed
+            # (2 of 2 seeds; sharp, it stayed).
+            wf["199"] = {
+                "class_type": "GrowMask",
+                "inputs": {
+                    "mask": ["124", 0],
+                    "expand": HAIR_BLUR_FACE_GAP,
+                    "tapered_corners": True,
+                },
+            }
+            wf["182"] = {
+                "class_type": "MaskComposite",
+                "inputs": {
+                    "destination": ["181", 0],
+                    "source": ["199", 0],
+                    "x": 0,
+                    "y": 0,
+                    "operation": "subtract",
+                },
+            }
+            # Not her accessories (a sleep mask on the hair became a pink headwrap when
+            # blurred; SAM's "accessory" found it, a choker and a necklace, not hair rollers).
+            # ... nor her jewelry ("accessory" missed a charm bracelet by her hair, which then
+            # came out melted).
+            wf["198"] = {
+                "class_type": "MaskComposite",
+                "inputs": {
+                    "destination": _sam(wf, "190", "accessory", src),
+                    "source": _sam(wf, "196", "jewelry", src),
+                    "x": 0,
+                    "y": 0,
+                    "operation": "add",
+                },
+            }
+            wf["192"] = {
+                "class_type": "GrowMask",
+                "inputs": {"mask": ["198", 0], "expand": 8, "tapered_corners": True},
+            }
+            wf["193"] = {
+                "class_type": "MaskComposite",
+                "inputs": {
+                    "destination": ["182", 0],
+                    "source": ["192", 0],
+                    "x": 0,
+                    "y": 0,
+                    "operation": "subtract",
+                },
+            }
+            # Over her (skin, clothes) once; over the background HAIR_BLUR_BG_PASSES times: a
+            # light blob of old hair over a wall, blurred once, came back as a see-through
+            # outline of the old hair.
+            soft = [src]
+            for node in ("183", "185", "186")[: max(HAIR_BLUR_PASSES, HAIR_BLUR_BG_PASSES)]:
+                wf[node] = {
+                    "class_type": "ImageBlur",
+                    "inputs": {"image": soft[-1], "blur_radius": 31, "sigma": 10.0},
+                }
+                soft.append([node, 0])
+            # Soft edges: a hard edge between the blurred old hair and the sharp wall came back
+            # as a thin see-through outline (and a smudge on an elbow).
+            for node, op, soft_node in (("194", "multiply", "210"), ("195", "subtract", "214")):
+                wf[node] = {
+                    "class_type": "MaskComposite",
+                    "inputs": {
+                        "destination": ["193", 0],
+                        "source": ["111", 0],
+                        "x": 0,
+                        "y": 0,
+                        "operation": op,
+                    },
+                }
+                _feather(wf, soft_node, [node, 0], HAIR_BLUR_FEATHER)
+            wf["184"] = {
+                "class_type": "ImageCompositeMasked",
+                "inputs": {
+                    "destination": src,
+                    "source": soft[HAIR_BLUR_PASSES],
+                    "x": 0,
+                    "y": 0,
+                    "resize_source": False,
+                    "mask": ["212", 0],
+                },
+            }
+            wf["187"] = {
+                "class_type": "ImageCompositeMasked",
+                "inputs": {
+                    "destination": ["184", 0],
+                    "source": soft[HAIR_BLUR_BG_PASSES],
+                    "x": 0,
+                    "y": 0,
+                    "resize_source": False,
+                    "mask": ["216", 0],
+                },
+            }
+            blurred = ["187", 0]
+            wf["12"]["inputs"]["pixels"] = blurred
+            patch["source_image"] = blurred
+            encode["image"] = blurred
     if region:
         # Only that part of the photo (SAM 3.1 finds it from the words, grown a little so a
         # bigger shape has room) is let go: the edit hardly looks at it there, and keeps the
@@ -609,6 +835,8 @@ def build_edit(
             "class_type": "GrowMask",
             "inputs": {"mask": mask, "expand": REGION_GROW, "tapered_corners": True},
         }
+        if region == "hair":
+            _show_hair(wf, mask)
         # The face is never in the let-go part (a grown hair mask reached it and the face
         # changed with a new hair colour): it stays held as at ref_boost 1.
         face = _sam(wf, "80", "face", src)
@@ -626,16 +854,26 @@ def build_edit(
         if keep_limbs:
             # Her arms and hands (grown) are never part of the change, so a hand on her cheek
             # or an arm across her chest stays (LIMB_WORDS).
-            arm, hand = (
-                _sam(wf, n, w, src) for n, w in (("160", LIMB_WORDS[0]), ("162", LIMB_WORDS[1]))
-            )
-            wf["164"] = {
-                "class_type": "MaskComposite",
-                "inputs": {"destination": arm, "source": hand, "x": 0, "y": 0, "operation": "add"},
-            }
+            limbs = _sam(wf, "160", LIMB_WORDS[0], src)
+            for node, word in zip(("162", "177"), LIMB_WORDS[1:], strict=True):
+                wf[str(int(node) + 2)] = {
+                    "class_type": "MaskComposite",
+                    "inputs": {
+                        "destination": limbs,
+                        "source": _sam(wf, node, word, src),
+                        "x": 0,
+                        "y": 0,
+                        "operation": "add",
+                    },
+                }
+                limbs = [str(int(node) + 2), 0]
             wf["166"] = {
                 "class_type": "GrowMask",
-                "inputs": {"mask": ["164", 0], "expand": LIMB_GROW, "tapered_corners": True},
+                "inputs": {"mask": limbs, "expand": LIMB_GROW, "tapered_corners": True},
+            }
+            wf["171"] = {
+                "class_type": "GrowMask",
+                "inputs": {"mask": limbs, "expand": PASTE_GROW, "tapered_corners": True},
             }
             wf["165"] = {
                 "class_type": "MaskComposite",
@@ -648,12 +886,12 @@ def build_edit(
                 },
             }
             part = ["165", 0]
-            # What goes back from the photo afterwards (paste_held): her arms and hands
-            # (grown), face and hair.
+            # What goes back from the photo afterwards (paste_held): her arms, hands and feet
+            # (a little grown), face and hair.
             wf["175"] = {
                 "class_type": "MaskComposite",
                 "inputs": {
-                    "destination": ["166", 0],
+                    "destination": ["171", 0],
                     "source": face,
                     "x": 0,
                     "y": 0,
@@ -672,6 +910,11 @@ def build_edit(
             }
             wf["168"] = {"class_type": "MaskToImage", "inputs": {"mask": ["176", 0]}}
             wf[HELD_NODE] = {"class_type": "PreviewImage", "inputs": {"images": ["168", 0]}}
+        # The part to change, shown for keep_unchanged: there the edit's pixels are always
+        # taken. A bigger butt in navy shorts differed too little from the old one, so half the
+        # old shape came back beside the new (the owner's kneeling photo, 2026-11-08).
+        wf["188"] = {"class_type": "MaskToImage", "inputs": {"mask": part}}
+        wf[PART_NODE] = {"class_type": "PreviewImage", "inputs": {"images": ["188", 0]}}
         if hold_rest:
             # Everything but the part held at HOLD_BOOST, the part at 1: the pose stays (a
             # smaller bust stood up a woman lying on a lounger when the part was let go);
@@ -787,18 +1030,25 @@ def change_mask(src: Any, out: Any) -> Any:
     return Image.fromarray(m, "L").filter(ImageFilter.GaussianBlur(KEEP_FEATHER))
 
 
-def keep_unchanged(original: bytes, edited: bytes) -> tuple[bytes, float]:
+def keep_unchanged(
+    original: bytes, edited: bytes, changed_too: list[bytes] | None = None
+) -> tuple[bytes, float]:
     """The edited photo with the unchanged parts taken from the original, as PNG, and the
-    share of the picture the edit changed (0–1)."""
+    share of the picture the edit changed (0–1). `changed_too` (masks, white) are always taken
+    from the edit (where the old hair was, HAIR_NODE; the part a body edit changed,
+    PART_NODE)."""
     import io
 
     import numpy as np
-    from PIL import Image, ImageOps
+    from PIL import Image, ImageChops, ImageFilter, ImageOps
 
     src = ImageOps.exif_transpose(Image.open(io.BytesIO(original))).convert("RGB")
     out = Image.open(io.BytesIO(edited)).convert("RGB")
     w, h = out.size
     mask = change_mask(src, out)
+    for data in changed_too or []:
+        extra = Image.open(io.BytesIO(data)).convert("L").resize((w, h), Image.BILINEAR)
+        mask = ImageChops.lighter(mask, extra.filter(ImageFilter.GaussianBlur(KEEP_FEATHER)))
     changed = float(np.asarray(mask, dtype=np.float32).mean() / 255)
     # The original's size, but never smaller than the edit and at most 1.5x it (a huge upload
     # would make the redrawn parts look soft next to the untouched ones).
@@ -834,14 +1084,17 @@ FACE_PX = 1024
 # 0.35: a smile kept on 6 of 6 seeds and closed eyes on 4 of 6 (at 0.4: 2 of 6, at 0.3: all),
 # likeness 0.71 (0.4: 0.72, 0.3: 0.69; 10 faces x 2 seeds, 2026-11-07).
 FACE_DENOISE = 0.35
-FACE_EDIT_LORA = 1.4
+# Her LoRA x1.5 in both parts of the face step (was 1.4 / 1.25): likeness 0.726 against 0.716
+# and her face more alike across 12 photos (SFace between the results 0.60 against 0.56),
+# laughs and closed eyes kept; a second face step or denoise 0.4 helped less (2026-11-08).
+FACE_EDIT_LORA = 1.5
 FACE_SWAP = (
     "Give her the face of {who}: her eyes, nose, lips, jaw and skin. Keep everything else in"
     " the photo exactly as it is, including anything on her face or in her hair, her makeup,"
     " her expression and her head angle."
 )
 # The character's LoRA is applied this much stronger in the face step (at most FACE_LORA_MAX).
-FACE_LORA_BOOST = 1.25
+FACE_LORA_BOOST = 1.5
 FACE_LORA_MAX = 1.5
 FACE_MAX_SHARE = 0.3
 FACE_MIN_PX = 24
@@ -1112,6 +1365,158 @@ def unturn(
 # both stayed, likeness 0.695 against 0.705 over 5 faces x 2 seeds (2026-11-08).
 MOUTH_WORDS = ("teeth", "tongue")
 MOUTH_GROW = 16
+
+
+# The whole finished photo once more at 2K (Turbo + her LoRA, light image to image), so the face
+# (redrawn close up at 1024 px) and the rest (the edit at about 1 MP) look alike: the owner saw
+# a sharp face on a softer photo. At 0.12–0.25 text, patterns and objects stayed (a hoodie's
+# letters, "MATCHA" on a cup, a leopard print) while hair and skin got detail; likeness 0.716
+# against 0.714 before over 8 photos at 0.25 (2026-11-08).
+DETAIL_DENOISE = 0.2
+# Only her hair (SAM, grown, feathered) is redrawn, without her face (already redrawn
+# close up; over it closed eyes opened) and hands (white nails turned nude); the rest keeps its
+# pixels: over the whole photo a phone's clock "08:22" came out "W21" (and "lmxx2" with the
+# trigger word in the text, which is therefore left out: likeness the same, 0.717 against 0.703
+# over 4 photos); at 0.25 a key fob in her hand changed shape.
+DETAIL_TEXT = "photo of a woman, sharp detailed photo, natural skin texture"
+DETAIL_GROW = 8
+
+
+def detail_graph(
+    *, image: str, width: int, height: int, lora: str, strength: float, seed: int
+) -> dict[str, Any]:
+    """The 2K detail pass (DETAIL_DENOISE) over the person in a finished photo."""
+    wf: dict[str, Any] = {
+        "1": {
+            "class_type": "UNETLoader",
+            "inputs": {"unet_name": TURBO.filename, "weight_dtype": "default"},
+        },
+        "2": {
+            "class_type": "CLIPLoader",
+            "inputs": {
+                "clip_name": krea2.TEXT_ENCODER.filename,
+                "type": krea2.FAMILY,
+                "device": "default",
+            },
+        },
+        "3": {"class_type": "VAELoader", "inputs": {"vae_name": krea2.VAE.filename}},
+        "21": {
+            "class_type": "LoraLoaderModelOnly",
+            "inputs": {"model": ["1", 0], "lora_name": lora, "strength_model": strength},
+        },
+        "10": {"class_type": "LoadImage", "inputs": {"image": image}},
+        "101": {
+            "class_type": "ImageScale",
+            "inputs": {
+                "image": ["10", 0],
+                "upscale_method": "lanczos",
+                "width": width,
+                "height": height,
+                "crop": "center",
+            },
+        },
+        "12": {"class_type": "VAEEncode", "inputs": {"pixels": ["101", 0], "vae": ["3", 0]}},
+        "4": {"class_type": "CLIPTextEncode", "inputs": {"clip": ["2", 0], "text": DETAIL_TEXT}},
+        "5": {"class_type": "ConditioningZeroOut", "inputs": {"conditioning": ["4", 0]}},
+        "7": {
+            "class_type": "KSampler",
+            "inputs": {
+                "model": ["21", 0],
+                "seed": seed,
+                "steps": 8,
+                "cfg": 1.0,
+                "sampler_name": "euler",
+                "scheduler": "simple",
+                "positive": ["4", 0],
+                "negative": ["5", 0],
+                "latent_image": ["233", 0],
+                "denoise": DETAIL_DENOISE,
+            },
+        },
+        "8": {"class_type": "VAEDecode", "inputs": {"samples": ["7", 0], "vae": ["3", 0]}},
+        "9": {
+            "class_type": "SaveImage",
+            "inputs": {"images": ["237", 0], "filename_prefix": "ai-image-studio-advanced-detail"},
+        },
+        "40": {"class_type": "CheckpointLoaderSimple", "inputs": {"ckpt_name": SAM3.filename}},
+    }
+    # Her hair only, not her accessories: over her clothes it made smooth leggings blotchy,
+    # over her skin it drew fine lines like stretch marks on a thigh and melted the charms of a
+    # bracelet (the owner's photos, 2026-11-08).
+    wf["257"] = {
+        "class_type": "MaskComposite",
+        "inputs": {
+            "destination": _sam(wf, "253", "accessory", ["101", 0]),
+            "source": _sam(wf, "255", "jewelry", ["101", 0]),
+            "x": 0,
+            "y": 0,
+            "operation": "add",
+        },
+    }
+    wf["231"] = {
+        "class_type": "MaskComposite",
+        "inputs": {
+            "destination": _sam(wf, "250", "hair", ["101", 0]),
+            "source": ["257", 0],
+            "x": 0,
+            "y": 0,
+            "operation": "subtract",
+        },
+    }
+    wf["232"] = {
+        "class_type": "GrowMask",
+        "inputs": {"mask": ["231", 0], "expand": DETAIL_GROW, "tapered_corners": True},
+    }
+    wf["240"] = {
+        "class_type": "GrowMask",
+        "inputs": {
+            "mask": _sam(wf, "238", "hand", ["101", 0]),
+            "expand": 12,
+            "tapered_corners": True,
+        },
+    }
+    wf["241"] = {
+        "class_type": "MaskComposite",
+        "inputs": {
+            "destination": ["240", 0],
+            "source": _sam(wf, "243", "face", ["101", 0]),
+            "x": 0,
+            "y": 0,
+            "operation": "add",
+        },
+    }
+    wf["242"] = {
+        "class_type": "MaskComposite",
+        "inputs": {
+            "destination": ["232", 0],
+            "source": ["241", 0],
+            "x": 0,
+            "y": 0,
+            "operation": "subtract",
+        },
+    }
+    wf["233"] = {
+        "class_type": "SetLatentNoiseMask",
+        "inputs": {"samples": ["12", 0], "mask": ["242", 0]},
+    }
+    wf["234"] = {"class_type": "MaskToImage", "inputs": {"mask": ["242", 0]}}
+    wf["235"] = {
+        "class_type": "ImageBlur",
+        "inputs": {"image": ["234", 0], "blur_radius": 16, "sigma": 8.0},
+    }
+    wf["236"] = {"class_type": "ImageToMask", "inputs": {"image": ["235", 0], "channel": "red"}}
+    wf["237"] = {
+        "class_type": "ImageCompositeMasked",
+        "inputs": {
+            "destination": ["101", 0],
+            "source": ["8", 0],
+            "x": 0,
+            "y": 0,
+            "resize_source": False,
+            "mask": ["236", 0],
+        },
+    }
+    return wf
 
 
 def face_graph(

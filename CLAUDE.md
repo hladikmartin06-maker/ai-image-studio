@@ -181,16 +181,21 @@ repositories.
   camera angle." (not when the words ask for a new pose); a body edit whose face moved is
   run again with the rest held (`pose_fallback`); body edits use the character LoRA at half
   strength (`BODY_LORA`); a body change asked for on the whole photo is a second pass with only
-  the body words, everything else held, her face, arms and hands too, which with her hair
-  are then put back from the edit (`k2edit.body_change`, `keep_limbs`, `paste_held`,
-  `runner._body_pass`; the edit gets the other words); "keep her pose"
+  the body words, kept natural, her LoRA at full strength, everything else held, her face,
+  arms, hands and feet too, which with her hair are then put back from the edit
+  (`k2edit.body_change`, `keep_limbs`, `paste_held`, `runner._body_pass`; the edit gets the
+  other words); the character edit holds her hands, blurs her old hair in the reference when
+  new hair is asked for (`blur_hair`), and where her old hair was, and the part a body edit changed, are always
+  taken from the edit (`HAIR_NODE`, `PART_NODE`); with her LoRA her hair (not her face,
+  hands, skin, clothes or accessories) is redrawn lightly
+  at 2K for one quality (`detail_graph`, denoise 0.2, no trigger word); "keep her pose"
   is not a pose request; the move check finds tilted faces and a lost face counts as moved; "Strong" = lower `ref_boost` (new pose,
   hard expressions). With a character LoRA the face step runs for every face size (one
-  graph: edit LoRA + her LoRA ×1.4 keeps the expression, then Turbo + her LoRA ×1.25 at
+  graph: edit LoRA + her LoRA ×1.5 keeps the expression, then Turbo + her LoRA ×1.5 at
   denoise 0.35; a tight face oval; a face YuNet misses is found turned and done level; an
   open mouth, SAM teeth and tongue, is left out of the redraw) and
   another face of her (a mirror reflection: as large and like her, never a stranger) gets a
-  second pass named by its place. Face only pastes an oval around the face itself. Edits run at 1K (2K restaged a selfie); text to image at 2K. The instruction can
+  second pass named by its place, after which her own face is put back from the first pass. Face only pastes an oval around the face itself. Edits run at 1K (2K restaged a selfie); text to image at 2K. The instruction can
   be rewritten in English by the user's AI provider, which also picks what to change (shown
   before use). Same safety rules and 18+ switch as Krea 2. SAM 3.1 is Enhance photo's file; no
   other models or nodes (no upscaler). Measured facts and limits in `docs/PROVIDERS.md` › Advanced.

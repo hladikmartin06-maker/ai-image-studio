@@ -39,7 +39,7 @@
     0
    ],
    "lora_name": "your_character_lora.safetensors",
-   "strength_model": 1.4
+   "strength_model": 1.5
   }
  },
  "10": {
@@ -195,7 +195,7 @@
     0
    ],
    "lora_name": "your_character_lora.safetensors",
-   "strength_model": 1.25
+   "strength_model": 1.5
   }
  },
  "91": {

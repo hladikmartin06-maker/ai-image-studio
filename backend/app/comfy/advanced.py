@@ -308,6 +308,8 @@ async def create_advanced_generation(
             ),
             keep_hands=bool(square),
             hold_body=hold,
+            # New hair asked for (or the AI model's hair): the old hair blurred in the reference.
+            blur_hair=hold and k2edit.asks_for_hair(final),
             # Clothes: everything but the clothes held (the pose stays).
             hold_rest=area == "clothes",
             **k2edit.settings_for(
@@ -322,8 +324,11 @@ async def create_advanced_generation(
                 "workflow": k2edit.build_edit(
                     **{
                         **edit_args,
-                        "prompt": f"{words} {k2edit.KEEP_CLOTHES} {k2edit.KEEP_POSE}",
-                        "loras": [(f, s * k2edit.BODY_LORA) for f, s in loras],
+                        "prompt": (
+                            f"{words} {k2edit.BODY_NATURAL} {k2edit.KEEP_CLOTHES} "
+                            f"{k2edit.KEEP_POSE}"
+                        ),
+                        "loras": loras,
                         "region": part,
                         "hold_body": False,
                         "hold_rest": True,
@@ -354,6 +359,17 @@ async def create_advanced_generation(
             batch=count,
             loras=loras,
             prefix="ai-image-studio-advanced",
+        )
+    detail = None
+    if source and face and area in ("photo", "hair", "clothes", "body") and detection.get("sam"):
+        dw, dh = krea2.size_for_source(source["width"], source["height"], "2K")
+        detail = k2edit.detail_graph(
+            image=enhance.INPUT_PLACEHOLDER,
+            width=dw,
+            height=dh,
+            lora=face["lora"],
+            strength=face["strength"],
+            seed=seed + 7,
         )
     adult = body.adult or bool(source and source.get("nsfw"))
     settings: dict[str, Any] = {
@@ -409,6 +425,8 @@ async def create_advanced_generation(
             "face_only": list(square) if square and area == "face" else None,
             "head_crop": list(square) if square and area == "head" else None,
             "pose_fallback": fallback,
+            # With her LoRA: the whole photo at 2K once more, one quality (k2edit.detail_graph).
+            "detail": detail,
             # A body change on the whole photo, made in a second pass (runner._body_pass).
             "body_pass": body_pass,
             # Hair and Body (no character LoRA): the face comes back exactly (k2edit.hold_face).
@@ -450,9 +468,10 @@ REWRITE_SYSTEM = {
         "user's intent exactly and add nothing they did not ask for. Be concrete: name the "
         "body parts, pose (what each arm, hand and leg does, how much of the person is "
         "visible), facial expression, clothing (the new outfit and what is gone), "
-        "background, and where the light falls; for a body change say how much (e.g. "
-        "'much larger') and say 'bust' rather than 'breasts'. Keep words such as trigger "
-        "words verbatim. End with: Keep everything else unchanged. "
+        "background, and where the light falls; for a body change keep exactly the degree the "
+        "user gave ('bigger' is 'larger', only 'much bigger' is 'much larger'; never add "
+        "'much' or 'very' they did not say) and say 'bust' rather than 'breasts'. Keep words "
+        "such as trigger words verbatim. End with: Keep everything else unchanged. "
         'Answer with JSON only: {"instruction": "...", "target": "...", "part": "..."}. '
         'target is "face" when only the facial expression changes (eyes, gaze, mouth, a '
         'smile, a wink), "head" for things added on the head or face (glasses, sunglasses, '

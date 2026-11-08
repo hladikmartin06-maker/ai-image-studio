@@ -30,6 +30,19 @@ def _png(img: Image.Image) -> bytes:
     return out.getvalue()
 
 
+def _sent(fake: FakeComfy) -> list[dict]:
+    """The graphs sent, without the 2K detail pass (the last step of character edits)."""
+    return [
+        p["prompt"]
+        for p in fake.prompts.values()
+        if not any(
+            n.get("class_type") == "SaveImage"
+            and n["inputs"].get("filename_prefix", "").endswith("-detail")
+            for n in p["prompt"].values()
+        )
+    ]
+
+
 def test_edit_graph_follows_the_node_pack_example():
     wf = k2edit.build_edit(
         image="me.png",
@@ -251,7 +264,7 @@ async def test_advanced_edit_runs_and_keeps_the_original(user: Api):
         assert gen["status"] == "completed" and len(gen["images"]) == 1, gen
         assert gen["comfy"]["family"] == "k2edit" and gen["settings"]["keep_unchanged"] is True
         assert gen["comfy"]["input"]["thumb_url"].endswith("/thumb")
-        sent = list(fake.prompts.values())[-1]["prompt"]
+        sent = _sent(fake)[-1]
         uploaded = sent["10"]["inputs"]["image"]
         assert uploaded in fake.uploads
         assert sent["4"]["inputs"]["prompt"] == body["prompt"]
@@ -262,7 +275,7 @@ async def test_advanced_edit_runs_and_keeps_the_original(user: Api):
         assert sent["13"]["inputs"]["ref_boost"] == 4.0
         strong = await user.post("/api/comfy/advanced", json={**body, "strength": "strong"})
         assert (await wait_done(user, strong.json()["id"]))["settings"]["change"] == "strong"
-        assert list(fake.prompts.values())[-1]["prompt"]["13"]["inputs"]["ref_boost"] == 0.6
+        assert _sent(fake)[-1]["13"]["inputs"]["ref_boost"] == 0.6
         # Off: the edit as it came from ComfyUI.
         raw = await user.post("/api/comfy/advanced", json={**body, "keep_unchanged": False})
         done = await wait_done(user, raw.json()["id"])
@@ -379,7 +392,7 @@ async def test_character_face_is_redrawn_close_up(user: Api, monkeypatch):
         assert gen["status"] == "completed", gen
         assert gen["final_prompt"] == "Turn the woman into tla woman. Make her smile."
         assert gen["settings"]["face_refine"] is True
-        edit, face = [p["prompt"] for p in list(fake.prompts.values())[-2:]]
+        edit, face = _sent(fake)[-2:]
         # The edit: the character LoRA after the edit LoRA, ref_boost 2 (room for her face).
         assert edit["21"]["inputs"]["lora_name"] == lora_file
         assert edit["21"]["inputs"]["strength_model"] == 1.1
@@ -403,6 +416,8 @@ async def test_character_face_is_redrawn_close_up(user: Api, monkeypatch):
         )
         assert face["8"]["inputs"]["samples"] == ["93", 0]
         assert face["10"]["inputs"]["image"] in fake.uploads
+        # Without SAM 3.1 there is no detail pass (it redraws only her, found by SAM).
+        assert len(fake.prompts) == 2
         # No face found (or too big): one prompt only. Text to image: a batch, no photo.
         boxes[0] = None
         before = len(fake.prompts)
@@ -421,7 +436,7 @@ async def test_character_face_is_redrawn_close_up(user: Api, monkeypatch):
         done = await wait_done(user, text.json()["id"])
         assert done["status"] == "completed" and len(done["images"]) == 2, done
         assert len(fake.prompts) == before + 1
-        sent = list(fake.prompts.values())[-1]["prompt"]
+        sent = _sent(fake)[-1]
         assert sent["6"]["inputs"]["batch_size"] == 2
         assert (sent["6"]["inputs"]["width"], sent["6"]["inputs"]["height"]) == (880, 1184)
         assert sent["4"]["inputs"]["text"] == "tla, standing on a beach"
@@ -458,6 +473,19 @@ async def test_moved_finds_tilted_faces_and_a_lost_face(monkeypatch):
     assert await comfy_runner._moved(a, b)
 
 
+def test_keep_unchanged_takes_the_edit_where_the_old_hair_was():
+    wall = Image.new("RGB", (100, 100), (230, 230, 230))
+    original = wall.copy()
+    original.paste((240, 235, 220), (10, 10, 30, 90))  # pale curls, close to the wall
+    edited = wall.copy()
+    hair = Image.new("L", (50, 50), 0)
+    hair.paste(255, (0, 0, 25, 50))
+    plain, _ = k2edit.keep_unchanged(_png(original), _png(edited))
+    fixed, _ = k2edit.keep_unchanged(_png(original), _png(edited), [_png(hair)])
+    assert Image.open(io.BytesIO(plain)).getpixel((20, 50)) == (240, 235, 220)  # a ghost
+    assert Image.open(io.BytesIO(fixed)).getpixel((20, 50)) == (230, 230, 230)
+
+
 def test_paste_held_puts_back_only_the_held_part():
     before = _png(Image.new("RGB", (100, 100), (0, 0, 255)))
     after = _png(Image.new("RGB", (200, 200), (255, 0, 0)))
@@ -467,6 +495,80 @@ def test_paste_held_puts_back_only_the_held_part():
     assert out.size == (200, 200)
     assert out.getpixel((10, 100)) == (0, 0, 255)  # held: from before
     assert out.getpixel((190, 100)) == (255, 0, 0)  # the body pass's change
+
+
+def test_reflection_pass_graph_has_no_masks_left():
+    wf = k2edit.build_edit(
+        image="a.png",
+        prompt="p",
+        width=64,
+        height=64,
+        seed=1,
+        edit_lora=k2edit.DEFAULT_EDIT,
+        loras=[("l.safetensors", 1.0)],
+        hold_body=True,
+        blur_hair=True,
+    )
+    plain = k2edit.without_masks(wf)
+    assert "40" not in plain and k2edit.HAIR_NODE not in plain and "184" not in plain
+    assert plain["12"]["inputs"]["pixels"] == ["101", 0]
+    assert "ref_boost_mask" not in plain["13"]["inputs"]
+    for node in plain.values():  # every link points at a node that is still there
+        for v in node["inputs"].values():
+            if isinstance(v, list) and v and isinstance(v[0], str):
+                assert v[0] in plain, v
+
+
+def test_graphs_have_no_clashing_nodes():
+    """Every link points at a node of the right kind: a preview once took the id of a mask
+    merge and the body pass failed on the GPU."""
+    makers = {
+        "MaskToImage": "IMAGE",
+        "PreviewImage": None,
+        "SAM3_Detect": "MASK",
+        "GrowMask": "MASK",
+        "MaskComposite": "MASK",
+        "InvertMask": "MASK",
+        "ImageBlur": "IMAGE",
+        "ImageCompositeMasked": "IMAGE",
+        "ImageToMask": "MASK",
+        "ImageScale": "IMAGE",
+    }
+    wants = {
+        ("GrowMask", "mask"),
+        ("MaskComposite", "destination"),
+        ("MaskComposite", "source"),
+        ("InvertMask", "mask"),
+        ("MaskToImage", "mask"),
+        ("ImageCompositeMasked", "mask"),
+    }
+    graphs = [
+        k2edit.build_edit(
+            image="a",
+            prompt="p",
+            width=64,
+            height=64,
+            seed=1,
+            edit_lora=k2edit.DEFAULT_EDIT,
+            loras=[("l", 1.0)],
+            **kw,
+        )
+        for kw in (
+            {"region": "bust+butt+waist", "hold_rest": True, "keep_limbs": True},
+            {"region": "butt"},
+            {"region": "hair"},
+            {"region": "clothes", "hold_rest": True},
+            {"hold_body": True, "blur_hair": True},
+        )
+    ]
+    graphs.append(
+        k2edit.detail_graph(image="a", width=64, height=64, lora="l", strength=1.0, seed=1)
+    )
+    for wf in graphs:
+        for node in wf.values():
+            for name, v in node["inputs"].items():
+                if (node["class_type"], name) in wants:
+                    assert makers.get(wf[v[0]]["class_type"]) == "MASK", (node, name)
 
 
 def test_face_step_keeps_an_open_mouth():
@@ -536,7 +638,7 @@ async def test_face_only_edits_just_the_face(user: Api, monkeypatch):
         gen = await wait_done(user, r.json()["id"])
         assert gen["status"] == "completed", gen
         assert gen["settings"]["face_only"] is True
-        sent = list(fake.prompts.values())[-1]["prompt"]
+        sent = _sent(fake)[-1]
         assert sent["6"]["inputs"]["width"] == sent["6"]["inputs"]["height"] == 1024
         uploaded = Image.open(io.BytesIO(fake.uploads[sent["10"]["inputs"]["image"]]))
         assert uploaded.size == (1024, 1024)  # the face crop, not the photo
@@ -618,7 +720,7 @@ async def test_body_part_frees_only_that_part(user: Api):
         assert r.status_code == 201, r.text
         gen = await wait_done(user, r.json()["id"])
         assert gen["status"] == "completed" and gen["settings"]["body_part"] == "bust"
-        sent = list(fake.prompts.values())[-1]["prompt"]
+        sent = _sent(fake)[-1]
         words = sorted(
             n["inputs"]["text"] for n in sent.values() if n["class_type"] == "CLIPTextEncode"
         )
@@ -654,7 +756,7 @@ async def test_body_part_frees_only_that_part(user: Api):
         )
         assert cloth.status_code == 201, cloth.text
         assert (await wait_done(user, cloth.json()["id"]))["status"] == "completed"
-        sent = list(fake.prompts.values())[-1]["prompt"]
+        sent = _sent(fake)[-1]
         words = sorted(
             n["inputs"]["text"] for n in sent.values() if n["class_type"] == "CLIPTextEncode"
         )
@@ -749,7 +851,7 @@ async def test_head_and_hair_areas(user: Api, monkeypatch):
         assert head.status_code == 201, head.text
         gen = await wait_done(user, head.json()["id"])
         assert gen["status"] == "completed" and gen["settings"]["area"] == "head", gen
-        sent = list(fake.prompts.values())[-1]["prompt"]
+        sent = _sent(fake)[-1]
         crop = Image.open(io.BytesIO(fake.uploads[sent["10"]["inputs"]["image"]]))
         assert crop.size == (1024, 1024)  # the head square, edited close up
         assert sent["4"]["inputs"]["prompt"].endswith(k2edit.HEAD_NOTE)
@@ -762,7 +864,7 @@ async def test_head_and_hair_areas(user: Api, monkeypatch):
         )
         assert hair.status_code == 201, hair.text
         assert (await wait_done(user, hair.json()["id"]))["status"] == "completed"
-        sent = list(fake.prompts.values())[-1]["prompt"]
+        sent = _sent(fake)[-1]
         texts = [n["inputs"]["text"] for n in sent.values() if n["class_type"] == "CLIPTextEncode"]
         assert (
             texts == ["hair", "face"] and sent["13"]["inputs"]["ref_boost"] == k2edit.REGION_BOOST
@@ -836,7 +938,7 @@ async def test_auto_resolution_follows_the_photo(user: Api):
             assert r.status_code == 201, r.text
             gen = await wait_done(user, r.json()["id"])
             assert gen["settings"]["resolution"] == tier
-            sent = list(fake.prompts.values())[-1]["prompt"]
+            sent = _sent(fake)[-1]
             w, h = krea2.size_for_source(*size, tier)
             assert (sent["6"]["inputs"]["width"], sent["6"]["inputs"]["height"]) == (w, h)
             # Sent at the edit's size, as a JPEG (big photos timed out on the way).
@@ -912,12 +1014,34 @@ async def test_character_edit_holds_her_body(user: Api, monkeypatch):
         r = await user.post("/api/comfy/advanced", json=body)
         assert r.status_code == 201, r.text
         assert (await wait_done(user, r.json()["id"]))["status"] == "completed"
-        sent = list(fake.prompts.values())[-1]["prompt"]
+        sent = _sent(fake)[-1]
         texts = [n["inputs"]["text"] for n in sent.values() if n["class_type"] == "CLIPTextEncode"]
-        assert sorted(texts) == ["face", "hair", "woman"]
-        # Her body (woman minus hair and face) held at HOLD_BOOST: the pose stays.
+        assert sorted(texts) == ["accessory", "face", "hair", "hand", "jewelry", "woman"]
+        # Her body (woman minus hair and face, plus her hands) held at HOLD_BOOST: the pose
+        # stays; where her old hair was is shown for keep_unchanged.
         assert sent["13"]["inputs"]["ref_boost"] == k2edit.HOLD_BOOST
-        assert sent["13"]["inputs"]["ref_boost_mask"] == ["128", 0]
+        assert sent["13"]["inputs"]["ref_boost_mask"] == ["131", 0]
+        assert sent["131"]["inputs"]["source"] == ["138", 0]
+        assert sent[k2edit.HAIR_NODE]["class_type"] == "PreviewImage"
+        # New hair: the old hair (minus hands and face) blurred in the reference.
+        assert sent["12"]["inputs"]["pixels"] == ["187", 0]
+        assert sent["13"]["inputs"]["source_image"] == ["187", 0]
+        assert sent["4"]["inputs"]["image"] == ["187", 0]
+        # Once over her, three times over the background; not her accessories, not her hands
+        # (but the hair in them).
+        assert sent["184"]["inputs"]["mask"] == ["212", 0]  # soft edges
+        assert sent["187"]["inputs"]["mask"] == ["216", 0]
+        assert sent["210"]["inputs"]["mask"] == ["194", 0]
+        assert sent["194"]["inputs"]["destination"] == ["193", 0]
+        assert sent["131"]["inputs"]["source"] == ["138", 0]
+        assert sent["138"]["inputs"]["operation"] == "subtract"
+        assert sent["190"]["inputs"]["text"] == "accessory"
+        assert k2edit.asks_for_hair("Give her long black hair.")
+        assert not k2edit.asks_for_hair("Make her smile. Keep her hair as it is.")
+        r = await user.post("/api/comfy/advanced", json={**body, "prompt": "Make her smile."})
+        assert (await wait_done(user, r.json()["id"]))["status"] == "completed"
+        smile = _sent(fake)[-1]
+        assert "184" not in smile and smile["12"]["inputs"]["pixels"] == ["101", 0]
         assert sent["127"]["inputs"]["operation"] == "subtract"
         # Normal keeps the pose in words too, unless a new pose is asked for (or Strong).
         assert sent["4"]["inputs"]["prompt"].endswith(k2edit.KEEP_POSE)
@@ -929,14 +1053,14 @@ async def test_character_edit_holds_her_body(user: Api, monkeypatch):
                 "/api/comfy/advanced", json={**body, "prompt": prompt, "strength": strength}
             )
             assert (await wait_done(user, r.json()["id"]))["status"] == "completed"
-            sent = list(fake.prompts.values())[-1]["prompt"]
+            sent = _sent(fake)[-1]
             assert k2edit.KEEP_POSE not in sent["4"]["inputs"]["prompt"]
             assert "128" not in sent  # her body not held: the new pose can come
         # Without a character LoRA: no hold (the photo at ref_boost 4 everywhere).
         plain = {k: v for k, v in body.items() if k != "lora"}
         r = await user.post("/api/comfy/advanced", json={**plain, "prompt": "Make her smile."})
         assert (await wait_done(user, r.json()["id"]))["status"] == "completed"
-        sent = list(fake.prompts.values())[-1]["prompt"]
+        sent = _sent(fake)[-1]
         assert "40" not in sent and sent["13"]["inputs"]["ref_boost"] == 4.0
     finally:
         ComfyClient.transport = None
@@ -1047,18 +1171,36 @@ async def test_whole_photo_body_change_gets_a_body_pass(user: Api, monkeypatch):
         r = await user.post("/api/comfy/advanced", json=body)
         assert r.status_code == 201, r.text
         assert (await wait_done(user, r.json()["id"]))["status"] == "completed"
-        edit, shape = [p["prompt"] for p in list(fake.prompts.values())[before:]]
+        edit, shape, detail = [p["prompt"] for p in list(fake.prompts.values())[before:]]
+        # Last, her at 2K once more with her LoRA (one quality for face and rest), no trigger
+        # word in the text (it got written into the photo), only her redrawn.
+        assert detail["7"]["inputs"]["denoise"] == k2edit.DETAIL_DENOISE
+        assert detail["21"]["inputs"]["lora_name"] == lora_file
+        assert "tla" not in detail["4"]["inputs"]["text"]
+        assert detail["7"]["inputs"]["latent_image"] == ["233", 0]
+        assert detail["9"]["inputs"]["images"] == ["237", 0]
+        assert detail["231"]["inputs"]["operation"] == "subtract"  # her hair, not accessories
+        words = {
+            n["inputs"]["text"] for n in detail.values() if n["class_type"] == "CLIPTextEncode"
+        }
+        assert {"hair", "accessory", "jewelry", "hand", "face"} <= words and "skin" not in words
+        assert detail["242"]["inputs"]["operation"] == "subtract"  # not her hands and face
+        assert detail["241"]["inputs"]["source"] == ["244", 0]
+        assert max(detail["101"]["inputs"]["width"], detail["101"]["inputs"]["height"]) > 1500
         # The edit holds her body (the pose); the second pass changes the bust and butt only
         # (everything else held, her face, arms and hands too), told only the body words,
-        # with half the character LoRA.
-        assert edit["13"]["inputs"]["ref_boost_mask"] == ["128", 0]
+        # kept natural, with her LoRA at full strength.
+        assert edit["13"]["inputs"]["ref_boost_mask"] == ["131", 0]
         # The edit is not told about the body (a lying woman stood up to show a new bust).
         assert edit["4"]["inputs"]["prompt"].startswith(
             "Turn the woman into tla woman. Give her long straight black hair. Keep her pose"
         )
         assert "bust" not in edit["4"]["inputs"]["prompt"]
         words = [n["inputs"]["text"] for n in shape.values() if n["class_type"] == "CLIPTextEncode"]
-        assert words == ["breasts", "chest", "butt", "bottom", "face", "arm", "hand", "hair"]
+        # (stored as JSON, the graph comes back in another key order)
+        assert sorted(words) == sorted(
+            ["breasts", "chest", "butt", "bottom", "face", "arm", "hand", "feet", "hair"]
+        )
         assert shape["13"]["inputs"]["ref_boost"] == k2edit.HOLD_BOOST
         assert shape["13"]["inputs"]["ref_boost_mask"] == ["46", 0]  # the face held too
         assert shape["46"]["inputs"]["mask"] == ["165", 0]
@@ -1068,10 +1210,17 @@ async def test_whole_photo_body_change_gets_a_body_pass(user: Api, monkeypatch):
         # Her arms, hands, face and hair are shown for putting back (paste_held).
         assert shape[k2edit.HELD_NODE]["class_type"] == "PreviewImage"
         assert shape["176"]["inputs"]["destination"] == ["175", 0]
+        assert shape["175"]["inputs"]["destination"] == ["171", 0]  # limbs put back tight
+        assert shape["171"]["inputs"]["expand"] == k2edit.PASTE_GROW
+        # The part it changed is shown, so keep_unchanged never brings the old shape back.
+        assert shape[k2edit.PART_NODE]["class_type"] == "PreviewImage"
+        assert shape["188"]["inputs"]["mask"] == ["165", 0]
+        assert shape["166"]["inputs"]["mask"] == ["179", 0]  # arms + hands + feet
         text = shape["4"]["inputs"]["prompt"]
         assert "Give her a much larger bust, a rounder butt." in text and "background" not in text
         assert text.endswith(f"{k2edit.KEEP_CLOTHES} {k2edit.KEEP_POSE}")
-        assert shape["21"]["inputs"]["strength_model"] == k2edit.BODY_LORA
+        assert shape["21"]["inputs"]["strength_model"] == 1.0  # her own figure
+        assert k2edit.BODY_NATURAL in text
         assert shape["10"]["inputs"]["image"] != edit["10"]["inputs"]["image"]  # the edit's result
 
         # She moved in the body pass anyway: the edit is kept as it was.
@@ -1083,14 +1232,14 @@ async def test_whole_photo_body_change_gets_a_body_pass(user: Api, monkeypatch):
         r = await user.post("/api/comfy/advanced", json=body)
         assert (await wait_done(user, r.json()["id"]))["status"] == "completed"
         sent = [p["prompt"] for p in list(fake.prompts.values())[before:]]
-        assert len(sent) == 2
+        assert len(sent) == 3  # edit, body pass (kept as it was), detail
         # No body words: no second pass.
         before = len(fake.prompts)
         r = await user.post(
             "/api/comfy/advanced", json={**body, "prompt": "Give her long straight black hair."}
         )
         assert (await wait_done(user, r.json()["id"]))["status"] == "completed"
-        assert len(fake.prompts) == before + 1
+        assert len(fake.prompts) == before + 2  # edit, detail
     finally:
         ComfyClient.transport = None
         async with SessionLocal() as db:
@@ -1138,12 +1287,23 @@ async def test_reflection_gets_a_second_pass(user: Api, monkeypatch):
         r = await user.post("/api/comfy/advanced", json=body)
         gen = await wait_done(user, r.json()["id"])
         assert gen["status"] == "completed", gen
-        assert len(fake.prompts) == before + 3  # edit, reflection, face step
-        second = list(fake.prompts.values())[-2]["prompt"]
+        assert len(fake.prompts) == before + 3  # edit, reflection, face step (no SAM: no detail)
+        second = _sent(fake)[-2]
         assert second["4"]["inputs"]["prompt"].startswith("The person at the right edge")
         assert "Make her smile." in second["4"]["inputs"]["prompt"]
         assert second["21"]["inputs"]["lora_name"] == lora_file
         assert second["10"]["inputs"]["image"] in fake.uploads  # the first result
+        # Her own face comes back from the first pass (the second redraws the whole photo).
+        held: list[bytes] = []
+
+        async def face_at(data: bytes):
+            held.append(data)
+            return (10.0, 10.0, 20.0, 20.0), (64, 80)
+
+        monkeypatch.setattr(comfy_runner, "_face_at", face_at)
+        r = await user.post("/api/comfy/advanced", json=body)
+        assert (await wait_done(user, r.json()["id"]))["status"] == "completed"
+        assert held  # the face was looked up on the first pass's result
         # Switched off: one pass.
         before = len(fake.prompts)
         r = await user.post("/api/comfy/advanced", json={**body, "all_faces": False})
@@ -1287,7 +1447,7 @@ async def test_body_edit_uses_half_the_character_lora(user: Api, monkeypatch):
                 "/api/comfy/advanced", json={**body, "area": area, "body_part": part}
             )
             assert (await wait_done(user, r.json()["id"]))["status"] == "completed"
-            sent = list(fake.prompts.values())[-1]["prompt"]
+            sent = _sent(fake)[-1]
             strengths[area] = [
                 n["inputs"]["strength_model"]
                 for n in sent.values()

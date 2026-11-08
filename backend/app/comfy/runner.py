@@ -322,20 +322,16 @@ async def _extra_pass(
         name = await client.upload_image(
             data, f"studio-{gen.id.hex[:12]}-x{index}.png", "image/png"
         )
-        graph = {k: {**v, "inputs": dict(v["inputs"])} for k, v in workflow.items()}
-        graph = enhance.set_input(graph, name)
+        graph = k2edit.without_masks(enhance.set_input(workflow, name))
         graph["4"]["inputs"]["prompt"] = instruction
-        graph["13"]["inputs"]["ref_boost"] = 4.0
-        for node in ("40", "41", "42", "43", "45", "50", "51", "53", "54", "70", "80", "81"):
-            graph.pop(node, None)  # no region: the whole photo, held as at 4
-        graph["13"]["inputs"].pop("ref_boost_mask", None)
+        graph["13"]["inputs"]["ref_boost"] = 4.0  # no region: the whole photo, held as at 4
         graph["7"]["inputs"]["seed"] = int(graph["7"]["inputs"]["seed"]) + 1
         prompt_id = str(uuid.uuid4())
         await client.submit(graph, prompt_id, str(gen.id))
         images = history_outputs(await _poll(client, gen, task, prompt_id))
         if not images:
             return data
-        return await client.view(images[0]["filename"], images[0]["subfolder"], images[0]["type"])
+        out = await client.view(images[0]["filename"], images[0]["subfolder"], images[0]["type"])
     except RunFailed as exc:
         if exc.code in ("cancelled", "timeout"):
             raise
@@ -344,6 +340,16 @@ async def _extra_pass(
     except ComfyError as exc:
         log.warning("Advanced second pass failed for %s: %s", gen.id, exc.message)
         return data
+    # Her own face as the first pass left it: the second pass redraws the whole photo and closed
+    # a smile with teeth into a pout (the owner's lift photo, 2026-11-08); it is for the
+    # reflection only.
+    try:
+        box = await _face_at(data)
+    except Exception:  # noqa: BLE001 - no face models: the second pass as it came
+        return out
+    if box is None:
+        return out
+    return await asyncio.to_thread(k2edit.hold_face, data, out, box[0])
 
 
 async def _refine_face(
@@ -500,11 +506,11 @@ async def _moved(before: bytes, after: bytes) -> bool:
 
 async def _body_pass(
     client: ComfyClient, gen: Generation, task: Any, data: bytes, index: int
-) -> bytes:
+) -> tuple[bytes, bytes | None]:
     """Advanced, the whole photo with a body change: the edited photo's body changed with the
     body words alone, everything else held (k2edit.body_change, keep_limbs); her arms, hands,
-    face and hair are then put back (k2edit.paste_held). The edit is kept as it was if this
-    fails."""
+    face and hair are then put back (k2edit.paste_held). Also the part it changed, for
+    keep_unchanged. The edit is kept as it was if this fails."""
     spec = (gen.comfy_meta or {})["body_pass"]
     try:
         name = await client.upload_image(
@@ -515,20 +521,21 @@ async def _body_pass(
         entry = await _poll(client, gen, task, prompt_id)
         images = history_outputs(entry)
         if not images:
-            return data
+            return data, None
         out = await client.view(images[0]["filename"], images[0]["subfolder"], images[0]["type"])
         held = await _preview(client, entry, k2edit.HELD_NODE)
+        part = await _preview(client, entry, k2edit.PART_NODE)
     except RunFailed as exc:
         if exc.code in ("cancelled", "timeout"):
             raise
         log.warning("Advanced body pass failed for %s: %s", gen.id, exc.message)
-        return data
+        return data, None
     except ComfyError as exc:
         log.warning("Advanced body pass failed for %s: %s", gen.id, exc.message)
-        return data
+        return data, None
     if held is None:
-        return data  # what it held is unknown: the edit as it was
-    return await asyncio.to_thread(k2edit.paste_held, data, out, held)
+        return data, None  # what it held is unknown: the edit as it was
+    return await asyncio.to_thread(k2edit.paste_held, data, out, held), part
 
 
 async def _preview(
@@ -597,14 +604,36 @@ async def _advanced_finish(
             )
             for d in datas
         ]
+    # Where the edit was asked to change something: always the edit's pixels (keep_unchanged).
+    changed = [
+        m
+        for m in [
+            await _preview(client, entry or {}, k2edit.HAIR_NODE),
+            await _preview(client, entry or {}, k2edit.PART_NODE),
+        ]
+        if m
+    ]
     if meta.get("body_pass"):
-        datas = [await _body_pass(client, gen, task, d, i) for i, d in enumerate(datas)]
+        passes = [await _body_pass(client, gen, task, d, i) for i, d in enumerate(datas)]
+        datas = [d for d, _ in passes]
+        changed += [p for _, p in passes[:1] if p]
     extra = meta.get("extra_pass")
     if extra:
         datas = [await _extra_pass(client, gen, task, d, extra, i) for i, d in enumerate(datas)]
     face = meta.get("face")
     if face:
         datas = [await _refine_face(client, gen, task, d, face, i) for i, d in enumerate(datas)]
+    datas = await _keep_original(gen, datas, changed)
+    if meta.get("detail"):
+        datas = [await _detail(client, gen, task, d, i) for i, d in enumerate(datas)]
+    return datas
+
+
+async def _keep_original(gen: Generation, datas: list[bytes], changed: list[bytes]) -> list[bytes]:
+    """Untouched parts from the original (k2edit.keep_unchanged), and the face held exactly
+    (Hair and Body without a character)."""
+    meta = gen.comfy_meta or {}
+    source = meta.get("input")
     if not source or not (meta.get("keep_unchanged") or meta.get("hold_face")):
         return datas
     try:
@@ -612,12 +641,40 @@ async def _advanced_finish(
     except OSError:
         return datas  # the photo was deleted meanwhile: the edit as it came
     if meta.get("keep_unchanged"):
-        datas = [(await asyncio.to_thread(k2edit.keep_unchanged, original, d))[0] for d in datas]
+        datas = [
+            (await asyncio.to_thread(k2edit.keep_unchanged, original, d, changed))[0] for d in datas
+        ]
     if meta.get("hold_face"):
         box = await _face_box(original)
         if box:
             datas = [await asyncio.to_thread(k2edit.hold_face, original, d, box) for d in datas]
     return datas
+
+
+async def _detail(
+    client: ComfyClient, gen: Generation, task: Any, data: bytes, index: int
+) -> bytes:
+    """Advanced with her LoRA: the finished photo once more at 2K (k2edit.detail_graph); the
+    photo as it was if this fails."""
+    try:
+        name = await client.upload_image(
+            data, f"studio-{gen.id.hex[:12]}-d{index}.png", "image/png"
+        )
+        prompt_id = str(uuid.uuid4())
+        graph = enhance.set_input((gen.comfy_meta or {})["detail"], name)
+        await client.submit(graph, prompt_id, str(gen.id))
+        images = history_outputs(await _poll(client, gen, task, prompt_id))
+        if not images:
+            return data
+        return await client.view(images[0]["filename"], images[0]["subfolder"], images[0]["type"])
+    except RunFailed as exc:
+        if exc.code in ("cancelled", "timeout"):
+            raise
+        log.warning("Advanced detail pass failed for %s: %s", gen.id, exc.message)
+        return data
+    except ComfyError as exc:
+        log.warning("Advanced detail pass failed for %s: %s", gen.id, exc.message)
+        return data
 
 
 async def after_finish(gen_id: uuid.UUID) -> None:

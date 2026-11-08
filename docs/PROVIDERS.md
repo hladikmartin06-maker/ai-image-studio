@@ -547,13 +547,16 @@ What the studio does:
    and "hands on her hips" changed nothing; free, both came ("legs crossed" and "turn
    around" only partly: the hands and the head moved). Afterwards the
    main face (YuNet on the Mac), at any size, is cropped as a square 2.2× its size and at
-   1024 px goes through one graph: the edit LoRA with the character LoRA ×1.4 (`ref_boost`
+   1024 px goes through one graph: the edit LoRA with the character LoRA ×1.5 (`ref_boost`
    1, "Give her the face of … keep … her expression …") gives it her face while keeping what
-   the crop shows, then Turbo with the character LoRA ×1.25 alone redraws that latent at
+   the crop shows, then Turbo with the character LoRA ×1.5 alone redraws that latent at
    denoise 0.35 with the user's instruction (at 0.4 a closed-eyes smile came out with open
    eyes and a closed mouth on 4 of 6 seeds; at 0.35 the smile stayed on 6 of 6 and the
    closed eyes on 4 of 6, likeness 0.71 against 0.72 at 0.4 and 0.69 at 0.3 over 10 faces ×
-   2 seeds). Only an oval around the face box is pasted back. The redraw leaves out an open
+   2 seeds). Only an oval around the face box is pasted back. ×1.5 in both parts (was ×1.4
+   and ×1.25; 2026-11-08, 12 faces): likeness 0.726 against 0.716, and her face more alike
+   from photo to photo (SFace between the results 0.60 against 0.56), laughs and closed eyes
+   kept; a second face step (0.721 / 0.59) or denoise 0.4 (0.725 / 0.58) helped less. The redraw leaves out an open
    mouth: SAM 3.1 "teeth" and "tongue" on the first part's result (grown 16 px) become a
    noise mask (`SetLatentNoiseMask`). Without it the redraw closed a grin over the teeth (2
    of 2 seeds) and pulled a tongue back in (1 of 2); with it both stayed, likeness 0.695
@@ -661,6 +664,54 @@ What the studio does:
    the body (the chest, a T-shirt, that arm) and "hips" a hand or the mouth, while "butt"
    found the butt on 8 and "bottom" the clothes over it on 9 ("glutes" nothing, "rear end"
    furniture); the butt is now "butt" + "bottom" (Body › Butt too), and the arm stays.
+   Further fixes from the owner's checks (2026-11-08, 22 photos): her feet are kept with her
+   arms and hands (a foot under a kneeling woman's butt melted into it); arms, hands and feet
+   go back grown only 8 px (`PASTE_GROW`; at 40 px the old bust's edge beside an arm came back
+   as a pale halo around the new one); the character edit holds her hands too (a hand holding
+   up her hair went with the old hair); where her old hair was (SAM "hair", grown 48 px) is
+   always taken from the edit (`HAIR_NODE`; fine blond curls over a pale wall differed too
+   little from the new wall and came back as a ghost beside her new black hair). When the
+   words give her new hair, the old hair (SAM "hair" grown 32 px, minus her hands and face)
+   is blurred once in the reference before the edit (`blur_hair`; blurred three times, old
+   brown hair over a forearm became dark smudges on the skin; grown 48 px, a choker beside
+   the hair went; over the background (outside SAM "woman") it is blurred three times — a
+   light blob of old hair rollers over a grey wall, blurred once, came back as a see-through
+   outline of the old hair; over her once; the mask's edge feathered (a hard edge came back
+   as a thin outline); the hair within 32 px of her face stays sharp (blurred up to her
+   cheeks, a smile with teeth closed, 2 of 2 seeds); the hair she holds in her hand is not
+   held with her hand — a blond tuft she held up stayed blond; her jewelry (SAM "jewelry":
+   "accessory" missed a charm bracelet, which came out melted) and accessories, SAM
+   "accessory", are left sharp — blurred, a sleep mask on the hair became a pink headwrap;
+   SAM found the mask, a choker and a necklace, not hair rollers): its fine strands had been
+   copied — blond waves over a shoulder came out as thin dark lines on the skin, blond ends
+   stayed on the floor beside her new hair; blurred, the skin was clean, a tank top strap
+   came back and a hand holding up her hair stayed (8 photos). The body pass
+   says "Her body stays natural and realistic, in proportion." and uses her LoRA at full
+   strength: the studio's rewrite of "bigger bust" as "much larger bust" had made a full bust
+   grotesque; with these words it was natural on 8 of 8 photos, and the rewrite now keeps the
+   user's degree ("bigger" = "larger"). Her exact body from her own photo was tried as a
+   second image (the identity edit LoRA, her photo beside the scene): the pose stayed, but her
+   photo's bikini and even its beach came along, and putting the original clothes back in a
+   third pass changed them (a catsuit, long sleeves); not used.
+   The part a region edit or the body pass changed is always taken from the edit by "Untouched
+   parts" (`PART_NODE`, like the old hair): a bigger butt in navy shorts differed too little
+   from the old one per pixel, so the composite brought half the old shape back beside the
+   new one (the owner's kneeling photo). The reflection pass now drops every node that uses
+   SAM (`without_masks`): a leftover hair preview had made its graph invalid, and a mirror
+   reflection stayed blond. After the reflection pass her own face is put back as the first
+   pass left it (an oval inside her face box): the second pass redraws the whole photo and had
+   closed her smile with teeth into a pout.
+   **One quality**: with her LoRA she goes once more through Turbo + her LoRA at 2K
+   (`detail_graph`, denoise 0.2, only her hair: SAM "hair" minus "accessory" and "jewelry", grown 8 px, minus
+   her hands and face, feathered; the rest keeps its pixels — over her clothes it had made
+   smooth leggings blotchy and flattened their shape, over her skin it drew fine lines like
+   stretch marks on a thigh and melted the charms of a bracelet): the face, redrawn close up at 1024 px, had been sharper than
+   the rest at about 1 MP. Over the whole photo at 0.12–0.25 a hoodie's letters, "MATCHA" on
+   a cup and a leopard print stayed while hair and skin got detail (likeness 0.716 against
+   0.714 over 8 photos), but a phone's small clock "08:22" became "W21" — and "lmxx2" with
+   the trigger word in the text, which is left out (likeness the same) — and at 0.25 a key
+   fob in her hand changed shape; over her face closed eyes opened and over her hands white
+   nails turned nude (the face is already sharp from the face step).
    What did not work for a bigger change (on 6–12 photos each): the parts let go (0.05) or
    the rest held at 2.5 or 2 stood the lounger selfie up again; a blurred part in the
    reference changed the clothes (a bikini into a dress, leggings into a skirt); one
