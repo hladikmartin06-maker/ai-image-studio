@@ -377,6 +377,7 @@ async def _refine_face(
             who=face["who"],
             seed=int((gen.settings or {}).get("seed") or 0) + index,
             note=str(face.get("note") or ""),
+            keep_mouth=bool(face.get("keep_mouth")),
         )
         prompt_id = str(uuid.uuid4())
         await client.submit(workflow, prompt_id, str(gen.id))
@@ -438,21 +439,12 @@ async def _pose_fallback(
     fallback, source = meta.get("pose_fallback"), meta.get("input")
     if not fallback or not source or not datas:
         return datas
-    from PIL import Image as PILImage
-
-    from app.services import faces
-
     try:
         original = await asyncio.to_thread(storage.absolute(source["file_path"]).read_bytes)
         upright = await asyncio.to_thread(k2edit.upright, original)
-        before, after = await faces.face_box(upright), await faces.face_box(datas[0])
-        sizes = [
-            await asyncio.to_thread(lambda d=d: PILImage.open(io.BytesIO(d)).size)
-            for d in (upright, datas[0])
-        ]
-    except Exception:  # noqa: BLE001 - no face models: keep the edit
+    except OSError:
         return datas
-    if not before or not after or not k2edit.moved(before, after, sizes[0], sizes[1]):
+    if not await _moved(upright, datas[0]):
         return datas
     name = next(
         (n["inputs"]["image"] for n in sent.values() if n.get("class_type") == "LoadImage"),
@@ -476,9 +468,75 @@ async def _pose_fallback(
         return datas
 
 
-async def _hands(client: ComfyClient, entry: dict[str, Any]) -> bytes | None:
-    """Face only: the hands SAM found in the face square (a preview of the run), if any."""
-    images = ((entry.get("outputs") or {}).get(k2edit.HANDS_NODE) or {}).get("images") or []
+async def _face_at(data: bytes) -> tuple[tuple[float, ...], tuple[int, int]] | None:
+    """The main face's box in the picture and the picture's size; a tilted face (a woman
+    lying down) is found turned (_level_face) and its box put back where it is."""
+    from PIL import Image as PILImage
+
+    level = await _level_face(data)
+    if level is None:
+        return None
+    _, angle, (x, y, w, h) = level
+    size = await asyncio.to_thread(lambda: PILImage.open(io.BytesIO(data)).size)
+    if angle:
+        cx, cy = k2edit.unturn_point(x + w / 2, y + h / 2, angle, size)
+        x, y = cx - w / 2, cy - h / 2
+    return (x, y, w, h), size
+
+
+async def _moved(before: bytes, after: bytes) -> bool:
+    """Whether the person moved from one picture to the other (k2edit.moved). Her face lost
+    in the second counts as moved (a woman lying in a tilted selfie stood up and turned to
+    the camera: YuNet, looking only level, found neither face); no face in the first, not."""
+    try:
+        a = await _face_at(before)
+        b = await _face_at(after) if a else None
+    except Exception:  # noqa: BLE001 - no face models
+        return False
+    if a is None:
+        return False
+    return b is None or k2edit.moved(a[0], b[0], a[1], b[1])
+
+
+async def _body_pass(
+    client: ComfyClient, gen: Generation, task: Any, data: bytes, index: int
+) -> bytes:
+    """Advanced, the whole photo with a body change: the edited photo's body changed with the
+    body words alone, everything else held (k2edit.body_change, keep_limbs); her arms, hands,
+    face and hair are then put back (k2edit.paste_held). The edit is kept as it was if this
+    fails."""
+    spec = (gen.comfy_meta or {})["body_pass"]
+    try:
+        name = await client.upload_image(
+            data, f"studio-{gen.id.hex[:12]}-b{index}.png", "image/png"
+        )
+        prompt_id = str(uuid.uuid4())
+        await client.submit(enhance.set_input(spec["workflow"], name), prompt_id, str(gen.id))
+        entry = await _poll(client, gen, task, prompt_id)
+        images = history_outputs(entry)
+        if not images:
+            return data
+        out = await client.view(images[0]["filename"], images[0]["subfolder"], images[0]["type"])
+        held = await _preview(client, entry, k2edit.HELD_NODE)
+    except RunFailed as exc:
+        if exc.code in ("cancelled", "timeout"):
+            raise
+        log.warning("Advanced body pass failed for %s: %s", gen.id, exc.message)
+        return data
+    except ComfyError as exc:
+        log.warning("Advanced body pass failed for %s: %s", gen.id, exc.message)
+        return data
+    if held is None:
+        return data  # what it held is unknown: the edit as it was
+    return await asyncio.to_thread(k2edit.paste_held, data, out, held)
+
+
+async def _preview(
+    client: ComfyClient, entry: dict[str, Any], node: str = k2edit.HANDS_NODE
+) -> bytes | None:
+    """A mask the run showed as a preview: the hands SAM found in the face square (Face only,
+    Head), the changed part of a body pass; None if there is none."""
+    images = ((entry.get("outputs") or {}).get(node) or {}).get("images") or []
     if not images:
         return None
     try:
@@ -519,7 +577,7 @@ async def _advanced_finish(
             original = await asyncio.to_thread(storage.absolute(source["file_path"]).read_bytes)
         except OSError as exc:
             raise RunFailed("not_found", "The photo is no longer on this Mac.") from exc
-        hands = await _hands(client, entry or {})
+        hands = await _preview(client, entry or {})
         return [
             await asyncio.to_thread(k2edit.crop_paste, original, d, tuple(head), hands)
             for d in datas
@@ -531,7 +589,7 @@ async def _advanced_finish(
             original = await asyncio.to_thread(storage.absolute(source["file_path"]).read_bytes)
         except OSError as exc:
             raise RunFailed("not_found", "The photo is no longer on this Mac.") from exc
-        hands = await _hands(client, entry or {})
+        hands = await _preview(client, entry or {})
         box = await _face_box(original)
         return [
             await asyncio.to_thread(
@@ -539,6 +597,8 @@ async def _advanced_finish(
             )
             for d in datas
         ]
+    if meta.get("body_pass"):
+        datas = [await _body_pass(client, gen, task, d, i) for i, d in enumerate(datas)]
     extra = meta.get("extra_pass")
     if extra:
         datas = [await _extra_pass(client, gen, task, d, extra, i) for i, d in enumerate(datas)]

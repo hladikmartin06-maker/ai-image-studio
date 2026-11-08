@@ -439,6 +439,51 @@ async def test_character_face_is_redrawn_close_up(user: Api, monkeypatch):
             await db.commit()
 
 
+async def test_moved_finds_tilted_faces_and_a_lost_face(monkeypatch):
+    a, b = _png(Image.new("RGB", (100, 100))), _png(Image.new("RGB", (100, 100), (1, 1, 1)))
+    found = {a: (a, 0.0, (40.0, 40.0, 20.0, 20.0)), b: None}
+
+    async def level(data: bytes):
+        return found[data]
+
+    monkeypatch.setattr(comfy_runner, "_level_face", level)
+    assert await comfy_runner._moved(a, b)  # her face lost: moved
+    assert not await comfy_runner._moved(b, a)  # no face to begin with: not
+    # A face found turned by 90° is put back where it is: the same place, not moved.
+    turned = k2edit.turn(a, 90.0)
+    x, y = k2edit.unturn_point(50.0, 50.0, -90.0, (100, 100))  # the centre, in the turned photo
+    found[b] = (turned, 90.0, (x - 10, y - 10, 20.0, 20.0))
+    assert not await comfy_runner._moved(a, b)
+    found[b] = (turned, 90.0, (0.0, 0.0, 20.0, 20.0))
+    assert await comfy_runner._moved(a, b)
+
+
+def test_paste_held_puts_back_only_the_held_part():
+    before = _png(Image.new("RGB", (100, 100), (0, 0, 255)))
+    after = _png(Image.new("RGB", (200, 200), (255, 0, 0)))
+    held = Image.new("L", (50, 50), 0)
+    held.paste(255, (0, 0, 25, 50))  # the left half: a hand
+    out = Image.open(io.BytesIO(k2edit.paste_held(before, after, _png(held))))
+    assert out.size == (200, 200)
+    assert out.getpixel((10, 100)) == (0, 0, 255)  # held: from before
+    assert out.getpixel((190, 100)) == (255, 0, 0)  # the body pass's change
+
+
+def test_face_step_keeps_an_open_mouth():
+    plain = k2edit.face_graph(image="f.png", lora="l.safetensors", strength=1.0, who="w", seed=1)
+    assert plain["93"]["inputs"]["latent_image"] == ["7", 0] and "40" not in plain
+    wf = k2edit.face_graph(
+        image="f.png", lora="l.safetensors", strength=1.0, who="w", seed=1, keep_mouth=True
+    )
+    words = [n["inputs"]["text"] for n in wf.values() if n["class_type"] == "CLIPTextEncode"]
+    assert {"teeth", "tongue"} <= set(words)
+    # SAM looks at the first part's result; teeth and tongue are left out of the redraw.
+    assert wf["146"]["inputs"]["image"] == ["144", 0] and wf["144"]["inputs"]["samples"] == ["7", 0]
+    assert wf["93"]["inputs"]["latent_image"] == ["152", 0]
+    assert wf["152"]["inputs"] == {"samples": ["7", 0], "mask": ["151", 0]}
+    assert wf["151"]["class_type"] == "InvertMask"
+
+
 def test_face_square_rules():
     assert k2edit.face_square((10, 10, 10, 10), 1000, 1000) is None  # too small to redraw
     assert k2edit.face_square((100, 100, 400, 400), 1000, 1000) is None  # already big
@@ -893,6 +938,159 @@ async def test_character_edit_holds_her_body(user: Api, monkeypatch):
         assert (await wait_done(user, r.json()["id"]))["status"] == "completed"
         sent = list(fake.prompts.values())[-1]["prompt"]
         assert "40" not in sent and sent["13"]["inputs"]["ref_boost"] == 4.0
+    finally:
+        ComfyClient.transport = None
+        async with SessionLocal() as db:
+            await db.execute(ComfyConnection.__table__.delete())
+            await db.execute(Generation.__table__.delete().where(Generation.provider == "comfyui"))
+            await db.commit()
+
+
+def test_pose_words_and_body_words():
+    # What is to stay is not a new pose (the studio's rewrite said "Keep ... her pose").
+    assert not k2edit.asks_for_pose(
+        "Give her long black hair. Keep her current facial expression, her pose, and the "
+        "background exactly as they are."
+    )
+    assert not k2edit.asks_for_pose("Turn her into a blonde. Nechaj ju v tej istej póze.")
+    assert k2edit.asks_for_pose("Make her sit and keep the background.")
+    assert k2edit.asks_for_pose("Make her turn around.")
+    assert k2edit.asks_for_pose("Nech si sadne.")
+    # Body words: only the body clauses, the parts named; the edit gets the rest.
+    assert k2edit.body_change(
+        "Change her facial features, give her long straight black hair, make her figure "
+        "slimmer with a much larger bust and a larger, rounder buttocks. Keep everything else "
+        "unchanged."
+    ) == (
+        "Make her figure slimmer with a much larger bust, a larger, rounder buttocks.",
+        "bust+butt+waist",
+        "Change her facial features, give her long straight black hair. Keep everything else "
+        "unchanged.",
+    )
+    assert k2edit.body_change("Daj jej väčšie prsia a väčší zadok.")[1] == "bust+butt"
+    assert k2edit.body_change("Make her slimmer.") == ("Make her slimmer.", "figure", "")
+    assert k2edit.body_change("Make her a bit curvier and keep the background.") == (
+        "Make her a bit curvier.",
+        "figure",
+        "Keep the background.",
+    )
+    assert k2edit.body_change("Make her smile, and make her butt bigger.") == (
+        "Make her butt bigger.",
+        "butt",
+        "Make her smile.",
+    )
+    for none in (
+        "Give her long black hair.",
+        "Make her cross her legs.",
+        "Put her hands on her hips.",
+        "Give her a slimmer face.",
+        "Make her smile and give her bigger lips.",
+    ):
+        assert k2edit.body_change(none) is None, none
+    # Many parts: the whole figure (SAM words in one region are limited).
+    many = "Make her waist slimmer, her arms thinner, her legs longer and her bust bigger."
+    assert k2edit.body_change(many)[1] == "figure"
+
+
+def test_parts_together_are_one_region():
+    wf = k2edit.build_edit(
+        image="a.png",
+        prompt="p",
+        width=64,
+        height=64,
+        seed=1,
+        edit_lora=k2edit.DEFAULT_EDIT,
+        region="bust+butt",
+    )
+    words = [n["inputs"]["text"] for n in wf.values() if n["class_type"] == "CLIPTextEncode"]
+    assert words == ["breasts", "chest", "buttocks", "hips", "face"]
+    assert wf["13"]["inputs"]["ref_boost"] == k2edit.REGION_BOOST
+
+
+async def test_whole_photo_body_change_gets_a_body_pass(user: Api, monkeypatch):
+    from app.services import faces
+
+    fake = FakeComfy(
+        files={
+            **KREA_FILES,
+            "loras": [*KREA_FILES["loras"], EDIT_FILE],
+            "checkpoints": [k2edit.SAM3.filename],
+        },
+        custom_nodes=list(k2edit.NODES),
+    )
+    ComfyClient.transport = fake.transport()
+    comfy_runner.POLL_INITIAL = 0.01
+    comfy_runner.POLL_MAX = 0.02
+
+    async def no_face(_data: bytes):
+        return None
+
+    monkeypatch.setattr(faces, "face_box", no_face)
+    try:
+        conn = await _ready_connection(user)
+        version_id, lora_file = await _character(user, conn["id"])
+        fake.files["loras"].append(lora_file)
+        ref = (
+            await user.post(
+                "/api/reference-images",
+                files={"file": ("me.png", png_bytes(64, 80), "image/png")},
+            )
+        ).json()
+        body = {
+            "connection_id": conn["id"],
+            "image": {"kind": "reference", "id": ref["id"]},
+            "prompt": "Give her long straight black hair, a much larger bust and a rounder "
+            "butt. Keep her pose and the background.",
+            "lora": {"version_id": version_id, "strength": 1.0},
+        }
+        before = len(fake.prompts)
+        r = await user.post("/api/comfy/advanced", json=body)
+        assert r.status_code == 201, r.text
+        assert (await wait_done(user, r.json()["id"]))["status"] == "completed"
+        edit, shape = [p["prompt"] for p in list(fake.prompts.values())[before:]]
+        # The edit holds her body (the pose); the second pass changes the bust and butt only
+        # (everything else held, her face, arms and hands too), told only the body words,
+        # with half the character LoRA.
+        assert edit["13"]["inputs"]["ref_boost_mask"] == ["128", 0]
+        # The edit is not told about the body (a lying woman stood up to show a new bust).
+        assert edit["4"]["inputs"]["prompt"].startswith(
+            "Turn the woman into tla woman. Give her long straight black hair. Keep her pose"
+        )
+        assert "bust" not in edit["4"]["inputs"]["prompt"]
+        words = [n["inputs"]["text"] for n in shape.values() if n["class_type"] == "CLIPTextEncode"]
+        assert words == ["breasts", "chest", "buttocks", "hips", "face", "arm", "hand", "hair"]
+        assert shape["13"]["inputs"]["ref_boost"] == k2edit.HOLD_BOOST
+        assert shape["13"]["inputs"]["ref_boost_mask"] == ["46", 0]  # the face held too
+        assert shape["46"]["inputs"]["mask"] == ["165", 0]
+        assert shape["165"]["inputs"]["source"] == ["166", 0]  # arms and hands, grown
+        assert shape["166"]["inputs"]["expand"] == k2edit.LIMB_GROW
+        assert "128" not in shape and "47" not in shape
+        # Her arms, hands, face and hair are shown for putting back (paste_held).
+        assert shape[k2edit.HELD_NODE]["class_type"] == "PreviewImage"
+        assert shape["176"]["inputs"]["destination"] == ["175", 0]
+        text = shape["4"]["inputs"]["prompt"]
+        assert "Give her a much larger bust, a rounder butt." in text and "background" not in text
+        assert text.endswith(f"{k2edit.KEEP_CLOTHES} {k2edit.KEEP_POSE}")
+        assert shape["21"]["inputs"]["strength_model"] == k2edit.BODY_LORA
+        assert shape["10"]["inputs"]["image"] != edit["10"]["inputs"]["image"]  # the edit's result
+
+        # She moved in the body pass anyway: the edit is kept as it was.
+        async def moved(_a: bytes, _b: bytes) -> bool:
+            return True
+
+        monkeypatch.setattr(comfy_runner, "_moved", moved)
+        before = len(fake.prompts)
+        r = await user.post("/api/comfy/advanced", json=body)
+        assert (await wait_done(user, r.json()["id"]))["status"] == "completed"
+        sent = [p["prompt"] for p in list(fake.prompts.values())[before:]]
+        assert len(sent) == 2
+        # No body words: no second pass.
+        before = len(fake.prompts)
+        r = await user.post(
+            "/api/comfy/advanced", json={**body, "prompt": "Give her long straight black hair."}
+        )
+        assert (await wait_done(user, r.json()["id"]))["status"] == "completed"
+        assert len(fake.prompts) == before + 1
     finally:
         ComfyClient.transport = None
         async with SessionLocal() as db:

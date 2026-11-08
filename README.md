@@ -93,7 +93,9 @@ Integrations and Settings.
     larger" or "smaller"; pose, face and background stay).
     Pick your character's LoRA and the person becomes your character (her face, and her hair
     when the AI model has hair colour and style filled in), with a small face redrawn close
-    up. **Change strength** Strong lets bigger changes through (a new pose, hard
+    up. On *Whole photo* one instruction can change her face, hair and body together ("long
+    black hair, a much larger bust and a rounder butt"): the body is done in a second step,
+    so the pose and expression stay (about 15 s more). **Change strength** Strong lets bigger changes through (a new pose, hard
     expressions). **Untouched parts exactly from the original** (on by default) keeps the
     photo's own pixels where nothing changed. The model reads English: **Improve
     instruction** has your connected AI write it in clear English and choose What to change

@@ -51,6 +51,7 @@ NODES = [
     "MaskComposite",
     "PreviewImage",
     "InvertMask",
+    "SetLatentNoiseMask",
     # Built-in nodes of the Enhance photo workflow (PGUpscaler; ComfyUI >= 0.30).
     "LoadImage",
     "ImageScaleToTotalPixels",

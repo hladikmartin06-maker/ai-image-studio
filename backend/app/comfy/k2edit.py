@@ -120,14 +120,125 @@ KEEP_POSE = "Keep her exact pose, body position and camera angle."
 # ponytail: a word list; a missed one only keeps the pose ("Strong" never adds the words).
 POSE_WORDS = re.compile(
     r"\b(pose|sit\w*|seated|stand\w*|lie|lies|lying|lay\w*|kneel\w*|squat\w*|lean\w*|bend\w*"
-    r"|turn\w*|walk\w*|jump\w*|danc\w*|hug\w*|cross\w*|rais\w*|lift\w*|hands?|arms?|legs?"
-    r"|póz\w*|sed\w*|stoj\w*|lež\w*|ľah\w*|kľač\w*|otoč\w*|ruk\w*|nohy|nohu|nohami|drep\w*)\b",
+    r"|turn(?:s|ed|ing)?\b(?!(?:\s+\w+){0,3}\s+into\b)|walk\w*|jump\w*|danc\w*|hug\w*|cross\w*|rais\w*|lift\w*|hands?|arms?|legs?"
+    r"|póz\w*|sed\w*|stoj\w*|lež\w*|ľah\w*|kľač\w*|otoč\w*|ruk\w*|nohy|nohu|nohami|drep\w*|sadn\w*|posad\w*)\b",
+    re.IGNORECASE,
+)
+
+
+# What is to stay ("Keep her pose and the background", "nechaj ju v tej polohe"): from such a
+# word to the end of its sentence is not a request for a new pose. The studio's own rewrite of
+# the owner's request ended "Keep her current facial expression, her pose, and the background
+# exactly as they are." and the hold was dropped.
+KEEP_WORDS = re.compile(
+    r"\b(keep\w*|same|unchanged|stay\w*|remain\w*|don't|do not|without changing|as (it|they|she)"
+    r" (is|are)|nechaj\w*|nemeň\w*|nemen\w*|zachov\w*|rovnak\w*|ost[aá]v\w*|ostan\w*)\b[^.!?;]*",
     re.IGNORECASE,
 )
 
 
 def asks_for_pose(text: str) -> bool:
-    return bool(POSE_WORDS.search(text))
+    return bool(POSE_WORDS.search(KEEP_WORDS.sub(" ", text)))
+
+
+# A body change asked for on the whole photo ("…, long black hair, a much larger bust and a
+# rounder butt"): there her body is held (her pose), so the shape is changed in a second pass
+# like Body, with the body words alone (body_change). On 8 of the owner's photos (2026-11-08)
+# the whole instruction in that pass barely changed the shape; the body words alone made the
+# bust and butt clearly bigger, the pose kept (one framing change, caught by k2edit.moved).
+# ponytail: word lists (English, Slovak stems); a missed word only skips the second pass.
+PART_NOUNS = {
+    "bust": r"bust\w*|breast\w*|boobs?|chest|cleavage|prs\w*|poprs\w*|hrud\w*",
+    "butt": r"butt|butts|buttock\w*|booty|glutes?|hips?|zadok|zadk\w*|zadoč\w*|boky|bokov|bokmi",
+    "waist": r"waist\w*|pás|pása|pásom",
+    "belly": r"belly|stomach|tummy|brucho|bruch\w*",
+    "legs": r"legs?|thighs?|nohy|nohami|stehn\w*",
+    "arms": r"arms?|paž\w*",
+    "figure": r"figure|body|physique|hourglass|postav\w*|telo|tela|telom",
+}
+_PARTS = {part: re.compile(rf"\b({words})\b", re.IGNORECASE) for part, words in PART_NOUNS.items()}
+SHAPE_WORDS = re.compile(
+    r"\b(big\w*|larg\w*|small\w*|slim\w*|thin\w*|skinn\w*|full\w*|round\w*|wide\w*|wider|narrow\w*"
+    r"|long\w*|short\w*|curv\w*|toned|muscular|fat\w*|weight|size|huge|tiny|petite|hourglass"
+    r"|väčš\w*|menš\w*|štíhl\w*|plnš\w*|okrúhl\w*|dlhš\w*|kratš\w*|širš\w*|užš\w*|chudš\w*"
+    r"|zväčš\w*|zmenš\w*)\b",
+    re.IGNORECASE,
+)
+# Clauses about something else ("give her long black hair") stay out of the body pass.
+OTHER_WORDS = re.compile(
+    r"\b(hair\w*|face|facial|eyes?|lips|mouth|nose|smile|expression|background|light\w*|makeup"
+    r"|vlas\w*|tvár\w*|oči|očí|pery|úsmev\w*|pozad\w*|svetl\w*)\b",
+    re.IGNORECASE,
+)
+FIGURE_WORDS = re.compile(
+    r"\b(slim\w*|thin\w*|skinn\w*|curv\w*|fat\w*|weight|muscular|toned|petite|štíhl\w*|chud\w*)\b",
+    re.IGNORECASE,
+)
+LEADING_VERB = re.compile(
+    r"(give|make|change|add|turn|let|enlarge|reduce|increase|decrease|shrink|slim|daj|sprav"
+    r"|zmeň|zmen|zväčši|zmenši|urob|nech)\b",
+    re.IGNORECASE,
+)
+MAX_REGION_WORDS = 6
+# The body pass: her arms and hands out of the change, grown (a hand on the cheek went with
+# its wrist in the region), her face held. Let go (0.05) or held only at 1 with the face free,
+# the body pass stood up a lying woman, lost a hand on a cheek and restaged a woman leaning
+# on a mirror; held like this the pose stayed on 11 of 12 photos, the bust clearly bigger,
+# the butt a little (2026-11-08). SAM took a selfie arm in front of the chest for buttocks:
+# that arm became her bust (the twelfth).
+LIMB_WORDS = ("arm", "hand")
+LIMB_GROW = 40  # SAM words in one region (node ids 50-66; the merges use 70+)
+
+
+_PIECES = re.compile(r",\s*|\s+and\s+", re.IGNORECASE)
+
+
+def _pieces(text: str) -> list[str]:
+    """Clauses: split at commas and "and", without a hanging "and"/"but"/"or"."""
+    cut = (
+        re.sub(r"^(and|but|or)\s+|\s+(and|but|or)$", "", p.strip(), flags=re.I)
+        for p in _PIECES.split(text.strip(" .!?;"))
+    )
+    return [p for p in cut if p]
+
+
+def body_change(prompt: str) -> tuple[str, str, str] | None:
+    """(the instruction's body words alone, the region: parts joined by "+", the instruction
+    without them) when it changes the body's shape; None otherwise (a pose: "cross her legs",
+    hands on her hips). The edit gets the rest: with the body words a lying woman in a tilted
+    selfie stood up to show her new bust (2 of 2 runs), held body and all."""
+    kept: list[str] = []
+    parts: list[str] = []
+    rest: list[str] = []
+    for sentence in re.split(r"(?<=[.!?;])\s+", prompt.strip()):
+        body = [
+            c
+            for c in _pieces(KEEP_WORDS.sub(" ", sentence))
+            if any(rx.search(c) for rx in _PARTS.values())
+            or (SHAPE_WORDS.search(c) and not OTHER_WORDS.search(c))
+        ]
+        named = [p for p, rx in _PARTS.items() if any(rx.search(c) for c in body)]
+        if not named and body and FIGURE_WORDS.search(" ".join(body)):
+            named = ["figure"]  # "make her slimmer"
+        if not (named and SHAPE_WORDS.search(" ".join(body))):
+            rest.append(sentence)
+            continue
+        kept.append(", ".join(body))
+        parts += [p for p in named if p not in parts]
+        left = [p for p in _pieces(sentence) if not any(p.startswith(b) for b in body)]
+        if left:
+            rest.append(f"{left[0][0].upper()}{left[0][1:]}{''.join(', ' + p for p in left[1:])}.")
+    if not kept:
+        return None
+    if "figure" in parts and len(parts) > 1:
+        # "a slimmer figure with a bigger bust": the named parts, and the waist for the figure.
+        parts = [p for p in parts if p != "figure"] + ([] if "waist" in parts else ["waist"])
+    words = {w for p in parts for w in BODY_PARTS[p]}
+    region = "figure" if len(words) > MAX_REGION_WORDS else "+".join(parts)
+    # "give her long hair, a much larger bust": the body clause without its verb gets one.
+    kept = [k if LEADING_VERB.match(k) else f"give her {k[0].lower()}{k[1:]}" for k in kept]
+    text = ". ".join(k[0].upper() + k[1:] for k in kept)
+    return f"{text}.", region, " ".join(rest)
 
 
 # Hair: SAM 3.1 finds it on the whole photo and the edit is let go there (like Body): a new
@@ -141,6 +252,7 @@ SAM_NODES = (
     "MaskToImage",
     "PreviewImage",
     "InvertMask",
+    "SetLatentNoiseMask",  # the face step keeps an open mouth (MOUTH_WORDS)
 )
 # "strong": ref_boost 0.6 lets bigger changes through (body shape, a new pose) while the
 # scene still holds; at 2-4 the body barely changes (measured, PROVIDERS.md).
@@ -348,6 +460,7 @@ def build_edit(
     keep_hands: bool = False,
     hold_body: bool = False,
     hold_rest: bool = False,
+    keep_limbs: bool = False,
 ) -> dict[str, Any]:
     """The API-format edit graph: the photo (scaled to width x height) is the reference the
     edit LoRA keeps, the instruction is encoded together with it, the owner's LoRAs follow the
@@ -468,7 +581,12 @@ def build_edit(
         # Only that part of the photo (SAM 3.1 finds it from the words, grown a little so a
         # bigger shape has room) is let go: the edit hardly looks at it there, and keeps the
         # rest as at ref_boost 1. Two words per part (BODY_PARTS), added together.
-        words = HAIR_WORDS if region == "hair" else BODY_PARTS.get(region, (region,))
+        # Several parts at once ("bust+butt", k2edit.body_change): their words together.
+        words = (
+            HAIR_WORDS
+            if region == "hair"
+            else tuple(dict.fromkeys(w for p in region.split("+") for w in BODY_PARTS.get(p, (p,))))
+        )
         masks = [_sam(wf, str(50 + 3 * i), word, src) for i, word in enumerate(words)]
         mask = masks[0]
         for i, other in enumerate(masks[1:]):
@@ -501,13 +619,63 @@ def build_edit(
                 "operation": "subtract",
             },
         }
+        part = ["45", 0]
+        if keep_limbs:
+            # Her arms and hands (grown) are never part of the change, so a hand on her cheek
+            # or an arm across her chest stays (LIMB_WORDS).
+            arm, hand = (
+                _sam(wf, n, w, src) for n, w in (("160", LIMB_WORDS[0]), ("162", LIMB_WORDS[1]))
+            )
+            wf["164"] = {
+                "class_type": "MaskComposite",
+                "inputs": {"destination": arm, "source": hand, "x": 0, "y": 0, "operation": "add"},
+            }
+            wf["166"] = {
+                "class_type": "GrowMask",
+                "inputs": {"mask": ["164", 0], "expand": LIMB_GROW, "tapered_corners": True},
+            }
+            wf["165"] = {
+                "class_type": "MaskComposite",
+                "inputs": {
+                    "destination": part,
+                    "source": ["166", 0],
+                    "x": 0,
+                    "y": 0,
+                    "operation": "subtract",
+                },
+            }
+            part = ["165", 0]
+            # What goes back from the photo afterwards (paste_held): her arms and hands
+            # (grown), face and hair.
+            wf["175"] = {
+                "class_type": "MaskComposite",
+                "inputs": {
+                    "destination": ["166", 0],
+                    "source": face,
+                    "x": 0,
+                    "y": 0,
+                    "operation": "add",
+                },
+            }
+            wf["176"] = {
+                "class_type": "MaskComposite",
+                "inputs": {
+                    "destination": ["175", 0],
+                    "source": _sam(wf, "172", "hair", src),
+                    "x": 0,
+                    "y": 0,
+                    "operation": "add",
+                },
+            }
+            wf["168"] = {"class_type": "MaskToImage", "inputs": {"mask": ["176", 0]}}
+            wf[HELD_NODE] = {"class_type": "PreviewImage", "inputs": {"images": ["168", 0]}}
         if hold_rest:
             # Everything but the part held at HOLD_BOOST, the part at 1: the pose stays (a
             # smaller bust stood up a woman lying on a lounger when the part was let go);
             # the change is milder ("Strong" lets the part go instead).
-            wf["46"] = {"class_type": "InvertMask", "inputs": {"mask": ["45", 0]}}
+            wf["46"] = {"class_type": "InvertMask", "inputs": {"mask": part}}
             held = ["46", 0]
-            if loras:
+            if loras and not keep_limbs:
                 # With a character LoRA her face is not held (left at 1), so it can become
                 # hers: likeness after the face step up on 4 of 4 clothes edits (0.39 -> 0.54
                 # on a big smiling face; PROVIDERS.md).
@@ -526,7 +694,7 @@ def build_edit(
         else:
             patch |= {
                 "ref_boost": REGION_BOOSTS.get(region, REGION_BOOST),
-                "ref_boost_mask": ["45", 0],
+                "ref_boost_mask": part,
             }
     if keep_hands:
         # The hands of the photo (SAM 3.1), shown as a preview the studio fetches: the face
@@ -783,6 +951,29 @@ def hold_face(original: bytes, result: bytes, box: tuple[float, float, float, fl
     return buf.getvalue()
 
 
+HELD_NODE = "169"  # the body pass shows what it holds (keep_limbs) as a preview
+HELD_FEATHER = 6.0
+
+
+def paste_held(before: bytes, after: bytes, held: bytes) -> bytes:
+    """The body pass: her arms, hands, face and hair (the held preview, white) exactly from
+    `before` (feathered), the rest from `after`. Held at 4 in the edit, a hand on the cheek and
+    the hair over the shoulder still went to show a much larger bust (2 of 2 seeds); taking
+    everything outside the changed part from `before` left seams in the hair and half a bikini
+    top where SAM took a selfie arm for buttocks."""
+    import io
+
+    from PIL import Image, ImageFilter
+
+    out = Image.open(io.BytesIO(after)).convert("RGB")
+    src = Image.open(io.BytesIO(before)).convert("RGB").resize(out.size, Image.LANCZOS)
+    mask = Image.open(io.BytesIO(held)).convert("L").resize(out.size, Image.BILINEAR)
+    out.paste(src, (0, 0), mask.filter(ImageFilter.GaussianBlur(HELD_FEATHER)))
+    buf = io.BytesIO()
+    out.save(buf, "PNG")
+    return buf.getvalue()
+
+
 def for_upload(data: bytes, longest: int) -> bytes:
     """The photo turned upright, at most `longest` px on its longer side, as a JPEG (95)."""
     import io
@@ -875,6 +1066,18 @@ def turn(data: bytes, angle: float) -> bytes:
     return buf.getvalue()
 
 
+def unturn_point(x: float, y: float, angle: float, size: tuple[int, int]) -> tuple[float, float]:
+    """A point of the photo turned by `angle` (turn) where it is in the photo itself (size)."""
+    import math
+
+    w, h = size
+    a = math.radians(angle)
+    tw = abs(w * math.cos(a)) + abs(h * math.sin(a))
+    th = abs(w * math.sin(a)) + abs(h * math.cos(a))
+    dx, dy = x - tw / 2, y - th / 2
+    return w / 2 + dx * math.cos(a) - dy * math.sin(a), h / 2 + dx * math.sin(a) + dy * math.cos(a)
+
+
 def unturn(
     original: bytes, turned: bytes, angle: float, box: tuple[float, float, float, float]
 ) -> bytes:
@@ -900,8 +1103,23 @@ def unturn(
     return buf.getvalue()
 
 
+# The face step's redraw keeps an open mouth: SAM 3.1 finds teeth and a tongue in the first
+# part's result and that place is left out of the redraw (a noise mask). Without it the redraw
+# closed a grin over the teeth (2 of 2 seeds) and pulled a tongue back in (1 of 2); with it
+# both stayed, likeness 0.695 against 0.705 over 5 faces x 2 seeds (2026-11-08).
+MOUTH_WORDS = ("teeth", "tongue")
+MOUTH_GROW = 16
+
+
 def face_graph(
-    *, image: str, lora: str, strength: float, who: str, seed: int, note: str = ""
+    *,
+    image: str,
+    lora: str,
+    strength: float,
+    who: str,
+    seed: int,
+    note: str = "",
+    keep_mouth: bool = False,
 ) -> dict[str, Any]:
     """The face step in one graph: the edit LoRA with the character LoRA (FACE_EDIT_LORA x)
     gives the crop her face while keeping what it shows — the expression (a laugh, closed
@@ -948,5 +1166,24 @@ def face_graph(
             "denoise": FACE_DENOISE,
         },
     }
+    if keep_mouth:
+        wf["40"] = {"class_type": "CheckpointLoaderSimple", "inputs": {"ckpt_name": SAM3.filename}}
+        wf["144"] = {"class_type": "VAEDecode", "inputs": {"samples": ["7", 0], "vae": ["3", 0]}}
+        teeth = _sam(wf, "145", MOUTH_WORDS[0], ["144", 0])
+        tongue = _sam(wf, "147", MOUTH_WORDS[1], ["144", 0])
+        wf["149"] = {
+            "class_type": "MaskComposite",
+            "inputs": {"destination": teeth, "source": tongue, "x": 0, "y": 0, "operation": "add"},
+        }
+        wf["150"] = {
+            "class_type": "GrowMask",
+            "inputs": {"mask": ["149", 0], "expand": MOUTH_GROW, "tapered_corners": True},
+        }
+        wf["151"] = {"class_type": "InvertMask", "inputs": {"mask": ["150", 0]}}
+        wf["152"] = {
+            "class_type": "SetLatentNoiseMask",
+            "inputs": {"samples": ["7", 0], "mask": ["151", 0]},
+        }
+        wf["93"]["inputs"]["latent_image"] = ["152", 0]
     wf["8"]["inputs"]["samples"] = ["93", 0]
     return wf

@@ -211,9 +211,16 @@ async def create_advanced_generation(
             area = "photo"
 
     loras: list[tuple[str, float]] = []
+    character: tuple[str, str, str] | None = None
     lora_meta = None
     lora_version_id = None
-    final = prompt
+    # The whole photo with a body change: the edit gets the rest of the words, the body is a
+    # second pass with the body words alone (k2edit.body_change; runner._body_pass).
+    change = (
+        k2edit.body_change(prompt) if source and area == "photo" and detection.get("sam") else None
+    )
+    edit_words = change[2] if change and (change[2] or body.lora) else prompt
+    final = edit_words
     face = None
     if body.lora is not None:
         lora, version = await resolve_lora(db, user, body.lora, "turbo")
@@ -226,9 +233,8 @@ async def create_advanced_generation(
             )
         loras.append((lora_filename(lora, version), body.lora.strength))
         if source:
-            final = k2edit.with_character(
-                prompt, lora.trigger_word, lora.class_word, await _hair(db, user, lora)
-            )
+            character = (lora.trigger_word, lora.class_word, await _hair(db, user, lora))
+            final = k2edit.with_character(edit_words, *character)
         elif not k2edit.names(prompt, lora.trigger_word):
             final = f"{lora.trigger_word}, {prompt}"
         if body.face_refine:
@@ -238,6 +244,8 @@ async def create_advanced_generation(
                 "who": f"{lora.trigger_word} {lora.class_word}".strip(),
                 # Edits only: the instruction, so the expression it asked for stays.
                 "note": prompt if source else "",
+                # An open mouth (teeth, a tongue) stays through the redraw (needs SAM 3.1).
+                "keep_mouth": bool(detection.get("sam")),
             }
         lora_version_id = version.id
         lora_meta = {
@@ -281,6 +289,7 @@ async def create_advanced_generation(
         and not k2edit.asks_for_pose(prompt)
     )
     fallback = None
+    body_pass = None
     if area == "body":
         final = f"{final.rstrip()} {k2edit.KEEP_CLOTHES}"
     if area == "clothes" or (area == "body" and body.strength != "strong") or hold:
@@ -306,6 +315,23 @@ async def create_advanced_generation(
             ),
         )
         workflow = k2edit.build_edit(**edit_args)
+        if change:
+            words, part, _ = change
+            words = k2edit.with_character(words, *character) if character else words
+            body_pass = {
+                "workflow": k2edit.build_edit(
+                    **{
+                        **edit_args,
+                        "prompt": f"{words} {k2edit.KEEP_CLOTHES} {k2edit.KEEP_POSE}",
+                        "loras": [(f, s * k2edit.BODY_LORA) for f, s in loras],
+                        "region": part,
+                        "hold_body": False,
+                        "hold_rest": True,
+                        "keep_limbs": True,
+                        **k2edit.settings_for(character=bool(loras)),
+                    }
+                )
+            }
         if area == "body" and body.strength != "strong":
             # Body: the part let go (a visible change); if the person moves (her face is
             # elsewhere: a woman lying on a lounger stood up), the run is redone with
@@ -383,6 +409,8 @@ async def create_advanced_generation(
             "face_only": list(square) if square and area == "face" else None,
             "head_crop": list(square) if square and area == "head" else None,
             "pose_fallback": fallback,
+            # A body change on the whole photo, made in a second pass (runner._body_pass).
+            "body_pass": body_pass,
             # Hair and Body (no character LoRA): the face comes back exactly (k2edit.hold_face).
             "hold_face": area in ("hair", "body") and not loras,
             "adult": adult,

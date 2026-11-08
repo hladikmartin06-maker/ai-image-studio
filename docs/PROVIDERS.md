@@ -553,7 +553,12 @@ What the studio does:
    denoise 0.35 with the user's instruction (at 0.4 a closed-eyes smile came out with open
    eyes and a closed mouth on 4 of 6 seeds; at 0.35 the smile stayed on 6 of 6 and the
    closed eyes on 4 of 6, likeness 0.71 against 0.72 at 0.4 and 0.69 at 0.3 over 10 faces ×
-   2 seeds). Only an oval around the face box is pasted back.
+   2 seeds). Only an oval around the face box is pasted back. The redraw leaves out an open
+   mouth: SAM 3.1 "teeth" and "tongue" on the first part's result (grown 16 px) become a
+   noise mask (`SetLatentNoiseMask`). Without it the redraw closed a grin over the teeth (2
+   of 2 seeds) and pulled a tongue back in (1 of 2); with it both stayed, likeness 0.695
+   against 0.705 over 5 faces × 2 seeds. The face step's own words did not matter here (the
+   whole instruction, none, or the hair alone: 0.709–0.714).
    A face YuNet does not find as it is (a head tilted about 45°: a selfie held sideways, a
    woman lying down) is found in the result turned by ±30/45/60/90° — the turn YuNet is surest
    of (its score peaked at the level turn on 7 of 7 photos; its eye landmarks were off by 30°
@@ -611,7 +616,10 @@ What the studio does:
    the new shape." — without it a smaller bust came out without its bikini top)
    40 px; the edit gets `ref_boost` 0.05 there only (`ref_boost_mask`), 1 elsewhere. When
    the face moved in the result (YuNet on the Mac: its centre by more than 12 % of the
-   photo, or its size outside 0.7–1.45×; `k2edit.moved`), the run is done again once with
+   photo, or its size outside 0.7–1.45×; `k2edit.moved`; a tilted face is found turned and
+   put back where it is, and a face no longer found counts as moved — on the lounger selfie
+   YuNet, looking only level, found no face and a restaged result passed), the run is done
+   again once with
    everything but the part held at 4 and the part at 1 (`pose_fallback`, not with Strong):
    a freed bust on a woman lying on a lounger stood her up, the held run kept her lying.
    With "Normal" the instruction also ends with KEEP_POSE ("Keep her exact pose, body
@@ -627,6 +635,30 @@ What the studio does:
    "face" is taken out of the let-go part (MaskComposite subtract): with a grown hair mask
    the face changed too — likeness of the edited face to the original's (SFace, 12 hair
    edits) 0.62 without, 0.79 with the face held.
+   **A body change on the whole photo** (the owner's request of 2026-11-08: "face, hair,
+   body, bigger bust and butt, keep her expression, pose and background" in one instruction;
+   the studio's own rewrite gives "…, make her figure slimmer with a much larger bust and a
+   larger, rounder buttocks. Keep her current facial expression, her pose, and the
+   background …"): the edit holds her body (her pose), so the shape barely changed (18
+   photos). The body clauses are taken out of the instruction (`k2edit.body_change`: clauses
+   naming a body part with a size word; "cross her legs" or "hands on her hips" are not); the
+   edit gets the rest (told about a much larger bust, it stood up a woman lying in a tilted
+   selfie, 2 of 2 runs, held body and all), and a second pass on its result changes the
+   named parts (together; character LoRA at half strength; KEEP_CLOTHES and KEEP_POSE) with
+   everything else held at 4 — her face, and her arms and hands (SAM "arm" + "hand", grown
+   40 px) too (`keep_limbs`, `runner._body_pass`); afterwards her arms, hands, face and hair
+   are put back exactly from the edit (`paste_held`, the masks SAM made in that pass, shown
+   as a preview): held at 4, a hand on the cheek and the hair over a shoulder still went to
+   show a much larger bust (2 of 2 seeds); putting back everything outside the changed part
+   instead left seams in the hair and half a bikini top. Then the face step. Let go instead
+   (0.05, or 0.2) the pass made the shape change more but stood up the lying woman, took a
+   hand off a cheek and restaged a woman leaning on a lift mirror; held with the face free it
+   still took the hand (its wrist was in the region). Held like this the pose stayed on 11
+   of 12 photos, the bust clearly bigger, the butt a little; stronger words or a second held
+   pass added little. The twelfth: SAM took a selfie arm in front of her chest for
+   "buttocks", and that arm became her bust (she still lies as she did). "Keep … her pose" in the words no longer counts as asking for a
+   new pose (it had dropped the hold): from a keep word to the end of its sentence is
+   ignored.
    **Clothes** (What to change › Clothes): SAM 3.1 "clothes" + "swimsuit" (grown, minus the
    face) is edited at `ref_boost` 1 and everything else held at 4 (`hold_rest`); with a
    character LoRA her face is left out of the held part (at 1) so it can become hers
