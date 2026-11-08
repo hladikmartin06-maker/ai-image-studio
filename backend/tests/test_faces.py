@@ -156,3 +156,29 @@ async def test_real_models_tell_people_apart():
     assert float((one * two).sum()) > 0.6
     assert float((one * other).sum()) < faces.MATCH_THRESHOLD
     assert float((a * one).sum()) < faces.MATCH_THRESHOLD
+
+
+def test_reflection_must_look_like_her():
+    """Another face is her reflection only when about as large as hers and like her: a small
+    passer-by or a friend beside her is never turned into the character."""
+    import threading
+    from types import SimpleNamespace
+
+    import numpy as np
+
+    def row(x, w, who, score=0.9):  # YuNet's row; landmark slot 13 marks "who" in this fake
+        return np.array([x, 10, w, w, *[0] * 9, who, score], dtype=np.float32)
+
+    people = {1: [1.0, 0.0], 2: [0.9, 0.44], 3: [0.0, 1.0]}  # 2 is like 1 (0.9), 3 is not
+    found = np.stack([row(10, 60, 1), row(120, 50, 2), row(200, 58, 3), row(300, 12, 2)])
+    engine = SimpleNamespace(
+        cv2=SimpleNamespace(imdecode=lambda *_: np.zeros((200, 400, 3)), IMREAD_COLOR=1),
+        detector=SimpleNamespace(setInputSize=lambda _: None, detect=lambda _: (1, found)),
+        recognizer=SimpleNamespace(
+            alignCrop=lambda _, face: face,
+            feature=lambda face: np.array([people[int(face[13])]]),
+        ),
+        lock=threading.Lock(),
+    )
+    # Only the like face of a similar size: the stranger (3) and the tiny one are left out.
+    assert faces._reflections_of(engine, b"x", 0.6) == [(145 / 400, 35 / 200)]

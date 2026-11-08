@@ -105,6 +105,8 @@ repositories.
   controls (local routing, tier caps, caching, summaries, context only when changed, local
   and cached answers). Never show prices that no API returns; show reported tokens.
 - GPU: anything that starts billing needs `confirm_billing: true` from a UI confirmation.
+  A GPU key cannot be changed or removed while a GPU started with it still runs
+  (`gpu_running`): another account's key could no longer stop it.
 - Simple for beginners (the owner's rule): short menu — Dashboard, Generate, AI Models, LoRA,
   Image Library, Assistant, Integrations, Settings. No Favorites. ComfyUI is chosen inside
   Generate (Krea 2) with only two options: "This Mac" and "Rent a GPU". LoRA is one page
@@ -167,14 +169,23 @@ repositories.
   the comfyui-krea2edit v2.0.0 nodes (pinned commit, SHA-256 checked on the Mac, sent with
   the GPU's start command, `comfy/custom_nodes.py`); or text to image. With a character LoRA
   the instruction asks for the character first (hair from the AI model when filled in) and
-  a small face is redrawn close up (YuNet on the Mac, denoise 0.4); untouched parts keep the
+  the face is redrawn close up (YuNet on the Mac, denoise 0.35); untouched parts keep the
   original's pixels (on by default, closed mask with holes filled); "Face" edits the face
   crop and keeps the photo's hands (SAM 3.1); "Head" edits a head square and puts back only
   the changes; "Hair" and "Body" free a part found by SAM 3.1 (`ref_boost` 0.05 there, the
-  face always held); "Strong" = lower `ref_boost` (new pose, hard expressions). With a
-  character LoRA the face step runs for every face size (one graph: edit LoRA + her LoRA ×1.4
-  keeps the expression, then Turbo + her LoRA ×1.25 at denoise 0.4; a tight face oval) and another face (a mirror reflection) gets a second pass named by
-  its place. Edits run at 1K (2K restaged a selfie); text to image at 2K. The instruction can
+  whole figure 0.2, the face always held, body edits always say the clothes stay); a
+  character edit holds her body (SAM woman − hair − face at 4) so the pose stays (not with
+  "Strong" or words asking for a new pose); "Clothes"
+  edits SAM's clothes with everything else held (her face free with a character LoRA);
+  Normal clothes, body and character edits end "Keep her exact pose, body position and
+  camera angle." (not when the words ask for a new pose); a body edit whose face moved is
+  run again with the rest held (`pose_fallback`); body edits use the character LoRA at half
+  strength (`BODY_LORA`); "Strong" = lower `ref_boost` (new pose,
+  hard expressions). With a character LoRA the face step runs for every face size (one
+  graph: edit LoRA + her LoRA ×1.4 keeps the expression, then Turbo + her LoRA ×1.25 at
+  denoise 0.35; a tight face oval; a face YuNet misses is found turned and done level) and
+  another face of her (a mirror reflection: as large and like her, never a stranger) gets a
+  second pass named by its place. Face only pastes an oval around the face itself. Edits run at 1K (2K restaged a selfie); text to image at 2K. The instruction can
   be rewritten in English by the user's AI provider, which also picks what to change (shown
   before use). Same safety rules and 18+ switch as Krea 2. SAM 3.1 is Enhance photo's file; no
   other models or nodes (no upscaler). Measured facts and limits in `docs/PROVIDERS.md` › Advanced.

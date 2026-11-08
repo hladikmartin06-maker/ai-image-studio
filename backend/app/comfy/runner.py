@@ -276,6 +276,7 @@ async def run(worker: Any, gen: Generation) -> None:
         if not images:
             raise RunFailed("generation_failed", "The workflow finished without saving an image.")
         datas = [await client.view(i["filename"], i["subfolder"], i["type"]) for i in images]
+        datas = await _pose_fallback(client, gen, task, workflow_sent(gen, entry), datas)
         datas = await _advanced_finish(client, gen, task, datas, entry)
         # 18+ runs (Krea 2 switch, or an 18+ photo) are marked, so they can be blurred.
         adult = bool((gen.comfy_meta or {}).get("adult"))
@@ -351,19 +352,20 @@ async def _refine_face(
     """Advanced with a character LoRA: the main face redrawn close up (k2edit.face_*)."""
     from PIL import Image as PILImage
 
-    from app.services import faces
-
     try:
-        box = await faces.face_box(data)
-        size = await asyncio.to_thread(lambda: PILImage.open(io.BytesIO(data)).size)
+        level = await _level_face(data)
+        if level is None:
+            return data
+        work, angle, box = level
+        size = await asyncio.to_thread(lambda: PILImage.open(io.BytesIO(work)).size)
     except Exception:  # noqa: BLE001 - no face models or an unreadable image: keep the edit
         log.warning("Advanced face pass skipped for %s", gen.id, exc_info=True)
         return data
     # Every size: a big face kept the photo's own face too much (likeness 0.29 vs 0.67).
-    square = k2edit.face_square(box, *size, any_size=True) if box else None
+    square = k2edit.face_square(box, *size, any_size=True)
     if square is None:
         return data
-    crop = await asyncio.to_thread(k2edit.face_crop, data, square)
+    crop = await asyncio.to_thread(k2edit.face_crop, work, square)
     try:
         name = await client.upload_image(
             crop, f"studio-{gen.id.hex[:12]}-face{index}.png", "image/png"
@@ -391,7 +393,87 @@ async def _refine_face(
     except ComfyError as exc:
         log.warning("Advanced face pass failed for %s: %s", gen.id, exc.message)
         return data
-    return await asyncio.to_thread(k2edit.face_paste, data, patch, square, None, box)
+    pasted = await asyncio.to_thread(k2edit.face_paste, work, patch, square, None, box)
+    if angle:
+        pasted = await asyncio.to_thread(k2edit.unturn, data, pasted, angle, box)
+    return pasted
+
+
+async def _level_face(data: bytes) -> tuple[bytes, float, tuple[float, ...]] | None:
+    """(photo, angle, face box): the photo as it is when YuNet finds the face, else turned
+    (k2edit.turn by angle) the way YuNet is surest of it, and the face's box there. None
+    without a face."""
+    from app.services import faces
+
+    box = await faces.face_box(data)
+    if box:
+        return data, 0.0, box
+    found: dict[float, tuple[bytes, tuple[float, ...], float]] = {}
+    for angle in k2edit.TURNS:
+        image = await asyncio.to_thread(k2edit.turn, data, angle)
+        face = await faces.face_box_score(image)
+        if face:
+            found[angle] = (image, *face)
+    if not found:
+        return None
+    best = max(found, key=lambda a: found[a][2])
+    image, box, _ = found[best]
+    return image, best, box
+
+
+def workflow_sent(gen: Generation, entry: dict[str, Any]) -> dict[str, Any]:
+    """The graph ComfyUI ran (its history keeps it), else the stored one."""
+    prompt = entry.get("prompt")
+    if isinstance(prompt, list) and len(prompt) > 2 and isinstance(prompt[2], dict):
+        return prompt[2]
+    return gen.request_payload
+
+
+async def _pose_fallback(
+    client: ComfyClient, gen: Generation, task: Any, sent: dict[str, Any], datas: list[bytes]
+) -> list[bytes]:
+    """Advanced Body: when the person moved in the edit (k2edit.moved), it is run again with
+    everything but the body part held, on the same uploaded photo."""
+    meta = gen.comfy_meta or {}
+    fallback, source = meta.get("pose_fallback"), meta.get("input")
+    if not fallback or not source or not datas:
+        return datas
+    from PIL import Image as PILImage
+
+    from app.services import faces
+
+    try:
+        original = await asyncio.to_thread(storage.absolute(source["file_path"]).read_bytes)
+        upright = await asyncio.to_thread(k2edit.upright, original)
+        before, after = await faces.face_box(upright), await faces.face_box(datas[0])
+        sizes = [
+            await asyncio.to_thread(lambda d=d: PILImage.open(io.BytesIO(d)).size)
+            for d in (upright, datas[0])
+        ]
+    except Exception:  # noqa: BLE001 - no face models: keep the edit
+        return datas
+    if not before or not after or not k2edit.moved(before, after, sizes[0], sizes[1]):
+        return datas
+    name = next(
+        (n["inputs"]["image"] for n in sent.values() if n.get("class_type") == "LoadImage"),
+        None,
+    )
+    if not name:
+        return datas
+    try:
+        prompt_id = str(uuid.uuid4())
+        await client.submit(enhance.set_input(fallback, name), prompt_id, str(gen.id))
+        images = history_outputs(await _poll(client, gen, task, prompt_id))
+        if not images:
+            return datas
+        log.info("Advanced %s: the person moved, redone with the pose held", gen.id)
+        return [await client.view(i["filename"], i["subfolder"], i["type"]) for i in images]
+    except RunFailed as exc:
+        if exc.code in ("cancelled", "timeout"):
+            raise
+        return datas
+    except ComfyError:
+        return datas
 
 
 async def _hands(client: ComfyClient, entry: dict[str, Any]) -> bytes | None:
@@ -404,6 +486,16 @@ async def _hands(client: ComfyClient, entry: dict[str, Any]) -> bytes | None:
             images[0]["filename"], images[0].get("subfolder", ""), images[0].get("type", "temp")
         )
     except ComfyError:
+        return None
+
+
+async def _face_box(original: bytes) -> tuple[float, float, float, float] | None:
+    """The main face's box in the upright photo (YuNet on the Mac), or None."""
+    from app.services import faces
+
+    try:
+        return await faces.face_box(await asyncio.to_thread(k2edit.upright, original))
+    except Exception:  # noqa: BLE001 - no face models: the square's own ellipse
         return None
 
 
@@ -440,8 +532,11 @@ async def _advanced_finish(
         except OSError as exc:
             raise RunFailed("not_found", "The photo is no longer on this Mac.") from exc
         hands = await _hands(client, entry or {})
+        box = await _face_box(original)
         return [
-            await asyncio.to_thread(k2edit.face_paste, original, d, tuple(square), hands)
+            await asyncio.to_thread(
+                k2edit.face_paste, original, d, tuple(square), hands, box, k2edit.FACE_ONLY_GROW
+            )
             for d in datas
         ]
     extra = meta.get("extra_pass")
@@ -459,12 +554,7 @@ async def _advanced_finish(
     if meta.get("keep_unchanged"):
         datas = [(await asyncio.to_thread(k2edit.keep_unchanged, original, d))[0] for d in datas]
     if meta.get("hold_face"):
-        from app.services import faces
-
-        try:
-            box = await faces.face_box(await asyncio.to_thread(k2edit.upright, original))
-        except Exception:  # noqa: BLE001 - no face models: the edit as it is
-            box = None
+        box = await _face_box(original)
         if box:
             datas = [await asyncio.to_thread(k2edit.hold_face, original, d, box) for d in datas]
     return datas

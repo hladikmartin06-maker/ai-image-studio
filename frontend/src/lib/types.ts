@@ -818,7 +818,7 @@ export interface AdvancedBody {
   face_refine: boolean;
   all_faces: boolean;
   face_only: boolean;
-  area: "photo" | "face" | "head" | "hair" | "body";
+  area: "photo" | "face" | "head" | "hair" | "clothes" | "body";
   body_part: string | null;
   strength: "normal" | "strong";
   lora: { version_id: string; strength: number } | null;

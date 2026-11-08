@@ -533,17 +533,42 @@ What the studio does:
    (body shape, a new pose). 8 steps.
 2. **With a character LoRA** the instruction starts with "Turn the woman into
    `<trigger> <class>`[, with `<hair>` hair]." (hair from the AI model's appearance when filled
-   in); when the instruction mentions hair, the hair (SAM 3.1) is let go too. Afterwards the
+   in); her body (SAM 3.1 "woman" minus "hair" and "face") is held at `ref_boost` 4 and the
+   rest (hair, face, background) is at 1, so her pose stays while hair and face change.
+   Letting the hair go instead (`ref_boost` 0.05 on "hair", an earlier version) stood up a
+   woman lying on a sun lounger; with the body held she stays lying (likeness 0.71 over 5
+   photos, against 0.65 with no mask). That alone still stood her up on one seed in the
+   studio, and lost a hand on the cheek (2 photos) and a tongue out; with "Normal" the
+   instruction now also ends "Keep her exact pose, body position and camera angle." (left out
+   when the words ask for a new pose — sit, lie, hands, turn … in English or Slovak — and
+   with "Strong"): she stayed lying on 2 of 2 seeds and the hands and expressions stayed on
+   6 photos (holding more of the photo instead lost the hand or likeness). When a new pose
+   is asked for ("Strong", or the words) her body is not held: held, "sit up on the towel"
+   and "hands on her hips" changed nothing; free, both came ("legs crossed" and "turn
+   around" only partly: the hands and the head moved). Afterwards the
    main face (YuNet on the Mac), at any size, is cropped as a square 2.2× its size and at
    1024 px goes through one graph: the edit LoRA with the character LoRA ×1.4 (`ref_boost`
    1, "Give her the face of … keep … her expression …") gives it her face while keeping what
    the crop shows, then Turbo with the character LoRA ×1.25 alone redraws that latent at
-   denoise 0.4 with the user's instruction. Only an oval around the face box is pasted back.
+   denoise 0.35 with the user's instruction (at 0.4 a closed-eyes smile came out with open
+   eyes and a closed mouth on 4 of 6 seeds; at 0.35 the smile stayed on 6 of 6 and the
+   closed eyes on 4 of 6, likeness 0.71 against 0.72 at 0.4 and 0.69 at 0.3 over 10 faces ×
+   2 seeds). Only an oval around the face box is pasted back.
+   A face YuNet does not find as it is (a head tilted about 45°: a selfie held sideways, a
+   woman lying down) is found in the result turned by ±30/45/60/90° — the turn YuNet is surest
+   of (its score peaked at the level turn on 7 of 7 photos; its eye landmarks were off by 30°
+   and more on tilted heads) — and the face step runs on the level face, which is turned back
+   (an oval around it): on a lounger selfie the step had been skipped and her old face stayed
+   (likeness 0.27, turned 0.62). Faces it finds as they are stay as they are (turned: same
+   likeness). Likeness of tilted faces is measured on the level face (SFace's alignment
+   under-scores tilted heads: 0.43 tilted, 0.74 level for the same result).
    On 10 photos (the owner's and three made like his latest): a plain image to image at
    denoise 0.5 erased a laugh, closed eyes and a tongue out (likeness 0.73); this keeps them
    (likeness 0.71); the edit alone, 0.64; pasting the whole square's ellipse carried a grey
    smudge into a beach sky. Lost on the way: heart-shaped eye patches. When the photo
-   shows another face (her mirror reflection), a second pass edits the whole result with
+   shows another face of her (her mirror reflection: at least 0.4× her face's width and
+   SFace ≥ 0.2 to her face — the owner's lift photo 0.375 at 0.9×, a passer-by in a street
+   photo −0.06 at 0.2×, so strangers are left alone), a second pass edits the whole result with
    "The person at the right edge … is the same woman (her reflection): turn her into … like
    the woman in the middle. <the user's instruction>" (switch "Her mirror reflection too",
    on by default). The owner's six photos, "Give her long straight black hair" with Taila 2:
@@ -561,7 +586,10 @@ What the studio does:
    (a new background) the edit is used whole: mixing kept the old white sky and a tree's
    edge behind a new white studio wall.
 4. **Face only**: the face square (any size) is edited at 1024 px (`ref_boost` 1; "Strong"
-   0.6) and pasted back; nothing else changes. SAM 3.1 finds the hands in the square (a
+   0.6) and an oval around the face itself (the face box grown 25 %) is pasted back; nothing
+   else changes. The square's own centred ellipse missed half of a face at the photo's edge
+   (the square is moved inside the photo): a doubled eye, a seam and new hair beside the
+   face on the owner's car selfie. SAM 3.1 finds the hands in the square (a
    preview the studio fetches) and the paste keeps them as they were, and the instruction
    ends "Change only the face. Do not add hands." — without these a kiss grew a floating hand
    and a finger at the lips was cut off by the new mouth (seen on the owner's photos).
@@ -574,15 +602,39 @@ What the studio does:
    their real size (on the whole photo they were missing or oversized).
 6. **Hair** (colour, a bob, a ponytail, curls): SAM 3.1 "hair" on the whole photo, let go
    like Body. A small person's new colour or cut barely changed on the whole photo at 4.
-7. **Body**: one part (bust, butt, waist and hips, belly, legs, arms) is found by SAM 3.1 from
+7. **Body**: the whole figure (SAM: breasts, buttocks, waist, hips, thighs; `ref_boost` 0.2 —
+   at 0.05 it restaged a selfie) or one part (bust, butt, waist and hips, belly, legs, arms) is
+   found by SAM 3.1 from
    two words (e.g. "breasts" + "chest"; one word alone missed parts or found the wrong one —
    "buttocks" marked the chest on a woman seen from the front), the masks added and grown
-   40 px; the edit gets `ref_boost` 0.05 there only (`ref_boost_mask`), 1 elsewhere. SAM 3.1
+   (the instruction always ends "Her clothes stay on and look exactly the same, only fitting
+   the new shape." — without it a smaller bust came out without its bikini top)
+   40 px; the edit gets `ref_boost` 0.05 there only (`ref_boost_mask`), 1 elsewhere. When
+   the face moved in the result (YuNet on the Mac: its centre by more than 12 % of the
+   photo, or its size outside 0.7–1.45×; `k2edit.moved`), the run is done again once with
+   everything but the part held at 4 and the part at 1 (`pose_fallback`, not with Strong):
+   a freed bust on a woman lying on a lounger stood her up, the held run kept her lying.
+   With "Normal" the instruction also ends with KEEP_POSE ("Keep her exact pose, body
+   position and camera angle."): a smaller bust on the owner's car selfie otherwise
+   restaged her and lost the hand on her cheek; with it the pose and hand stayed and the bust
+   was clearly smaller (1 seed × 6 photos). Legs ("longer") still restage a kneeling woman
+   (the fallback catches it when her face moves); arms and a lying butt change little. With a
+   character LoRA the body edit uses it at half strength (`BODY_LORA`; the face step still
+   at full): likeness the same or higher on 4 photos (0.65/0.62/0.68/0.71 against
+   0.64/0.58/0.67/0.71) and a slimmer waist no longer turned a crop top into a sports bra. SAM 3.1
    is Enhance photo's file `sam3.1_multiplex_fp16.safetensors` (1.75 GB, same source), part of
    the one-click install; its nodes are built into ComfyUI 0.35. In every region edit SAM's
    "face" is taken out of the let-go part (MaskComposite subtract): with a grown hair mask
    the face changed too — likeness of the edited face to the original's (SFace, 12 hair
    edits) 0.62 without, 0.79 with the face held.
+   **Clothes** (What to change › Clothes): SAM 3.1 "clothes" + "swimsuit" (grown, minus the
+   face) is edited at `ref_boost` 1 and everything else held at 4 (`hold_rest`); with a
+   character LoRA her face is left out of the held part (at 1) so it can become hers
+   (likeness after the face step 0.39 → 0.54, 0.58 → 0.60, 0.57 → 0.58, 0.71 → 0.73 on 4
+   photos); the instruction ends with KEEP_POSE. A black one-piece on the lounger selfie
+   stood her up without the words; with them she stayed lying (2 of 2 seeds); bikinis, a
+   camisole, a sweater, jeans and a slip dress kept the pose on 6 photos. No Change strength
+   (it does nothing there).
 8. **Text to image**: Krea 2 Turbo + the LoRA (trigger word added), then the face step. In
    edits the face step's prompt repeats the user's instruction: an edited smile drifted
    back towards the LoRA's usual look otherwise (same likeness, 0.655, either way).
@@ -619,6 +671,13 @@ results checked by eye on contact sheets and with the studio's SFace face match)
 - Gaze ("look into the camera") did not change on the whole photo at 2–4 nor on the face crop
   at 2–4; it did on the face crop at 0.3–0.6 (Face only + Strong).
 - Hands checked close up on pose edits and text to image: five fingers, no extra limbs seen.
+- Body like the character's LoRA: freeing the whole person (`ref_boost` 0.6 or a background
+  hold) or a light Turbo + LoRA redraw of the body (denoise 0.35–0.5) barely changed the
+  shape: the LoRA carries her face far more than her figure, and the redraw changed clothing
+  patterns. What works is saying the figure ("a slim petite figure: a small bust, a slim
+  waist and narrow hips") with Body › Whole figure.
+- Clothes with the character (6 photos, "a black satin slip dress", "a white t-shirt and
+  jeans"): changed with the pose kept, likeness 0.75.
 - Body (6 photos × bust / butt / waist): the whole person freed except the face (SAM
   "woman" minus a face oval) changed the pose (a seated woman turned round to show her
   butt); the part masks kept the pose. Sizes follow the words: "slightly" < "noticeably" <

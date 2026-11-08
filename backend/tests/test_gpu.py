@@ -94,13 +94,15 @@ class FakeRunPod:
     # Versions the catalog lists as free but whose last machine is taken at create time.
     taken_at_create: set[str] = field(default_factory=set)
     catalog: list[dict[str, Any]] = field(default_factory=lambda: list(CATALOG))
+    # API keys the fake accepts (another account's key in key-change tests).
+    keys: set[str] = field(default_factory=lambda: {RUNPOD_KEY})
     _ids: itertools.count = field(default_factory=lambda: itertools.count(1))
 
     def transport(self) -> httpx.MockTransport:
         return httpx.MockTransport(self.handle)
 
     def authorized(self, request: httpx.Request) -> bool:
-        return request.headers.get("authorization") == f"Bearer {RUNPOD_KEY}"
+        return request.headers.get("authorization") in {f"Bearer {k}" for k in self.keys}
 
     def new_id(self) -> str:
         return f"pod{next(self._ids)}"
@@ -364,6 +366,28 @@ async def test_runpod_workload_lifecycle(user: Api, runpod: FakeRunPod):
             await db.scalars(select(GPUWorkload).where(GPUWorkload.external_id == pod_id))
         ).one()
         assert record.status == "terminated" and record.stopped_at is not None
+
+
+async def test_key_kept_while_its_gpu_runs(user: Api, runpod: FakeRunPod):
+    """A GPU belongs to the key's account: with another key the studio could not stop it."""
+    await user.put("/api/gpu/providers/runpod", json={"api_key": RUNPOD_KEY})
+    spec = {"name": "comfy", "image": "runpod/pytorch:2.4.0", "gpu_type": "NVIDIA L4"}
+    pod_id = (
+        await user.post("/api/gpu/runpod/workloads", json={**spec, "confirm_billing": True})
+    ).json()["id"]
+    other = "rp_other_account_9876"
+    runpod.keys.add(other)
+    for r in (
+        await user.put("/api/gpu/providers/runpod", json={"api_key": other}),
+        await user.delete("/api/gpu/providers/runpod"),
+    ):
+        assert r.status_code == 409 and r.json()["error"]["code"] == "gpu_running"
+    # The same key again is fine; once the GPU is stopped the key can change.
+    same = await user.put("/api/gpu/providers/runpod", json={"api_key": RUNPOD_KEY})
+    assert same.status_code == 200
+    assert (await user.post(f"/api/gpu/runpod/workloads/{pod_id}/stop")).status_code == 200
+    changed = await user.put("/api/gpu/providers/runpod", json={"api_key": other})
+    assert changed.status_code == 200
 
 
 async def test_runpod_endpoints(user: Api, runpod: FakeRunPod):

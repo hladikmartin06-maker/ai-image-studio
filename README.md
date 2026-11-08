@@ -87,7 +87,8 @@ Integrations and Settings.
     pose, clothes, background, light — the rest stays), *Face* (expressions such as a wink,
     a kiss, surprise, laughing, close up; hands and everything else stay exactly), *Head*
     (glasses, sunglasses, a cap or beanie, earrings, makeup — edited close up, so they fit
-    even when the person is small), *Hair* (colour or style), or *Body* (one part: bust,
+    even when the person is small), *Hair* (colour or style), *Clothes* (a new dress, swimwear,
+    a top, jeans — pose, body, face and background stay), or *Body* (the whole figure or one part: bust,
     butt, waist and hips, belly, legs, arms — say how much: "slightly", "noticeably", "much
     larger" or "smaller"; pose, face and background stay).
     Pick your character's LoRA and the person becomes your character (her face, and her hair
@@ -148,7 +149,7 @@ Integrations and Settings.
   API, in Low cost, Balanced or High quality mode.
 - **Integrations** — image providers, AI assistant, GPU compute (RunPod, Modal) and
   **Hugging Face** (token plus a check of the Krea 2 license, needed for LoRA training); keys
-  encrypted. **Settings** — theme, language EN/SK, defaults, appearance, assistant, storage,
+  encrypted. Stop running GPUs before changing a GPU key (another account's key could not stop them). **Settings** — theme, language EN/SK, defaults, appearance, assistant, storage,
   account.
 
 ## Everyday commands

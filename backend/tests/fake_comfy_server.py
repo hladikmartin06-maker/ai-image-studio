@@ -50,6 +50,7 @@ NODES = [
     "EmptySD3LatentImage",
     "MaskComposite",
     "PreviewImage",
+    "InvertMask",
     # Built-in nodes of the Enhance photo workflow (PGUpscaler; ComfyUI >= 0.30).
     "LoadImage",
     "ImageScaleToTotalPixels",

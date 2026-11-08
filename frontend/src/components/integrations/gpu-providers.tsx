@@ -121,7 +121,12 @@ function GPUCard({ provider }: { provider: GPUProvider }) {
       danger: true,
     });
     if (!ok) return;
-    await api(`/api/gpu/providers/${provider.key}`, { method: "DELETE" });
+    try {
+      await api(`/api/gpu/providers/${provider.key}`, { method: "DELETE" });
+    } catch (err) {
+      toast.error(err instanceof ApiError ? err.message : t("errors.generic"));
+      return;
+    }
     qc.invalidateQueries({ queryKey: gpuKeys.providers });
     toast.success(t("int.disconnected", { name: provider.name }));
   };

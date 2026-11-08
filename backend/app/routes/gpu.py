@@ -117,6 +117,39 @@ async def _creds(db: AsyncSession, user: User, provider: str) -> dict[str, str]:
     return json.loads(decrypt_secret(row.encrypted_credentials, associated=_assoc(user, provider)))
 
 
+async def _still_running(db: AsyncSession, user: User, provider: str) -> bool:
+    """Whether a GPU the studio started with the saved key still runs. Sandboxes and pods
+    belong to the key's account: after a key change the studio could no longer stop it and
+    it would keep billing."""
+    ids = list(
+        await db.scalars(
+            select(GPUWorkload.external_id).where(
+                GPUWorkload.user_id == user.id,
+                GPUWorkload.provider == provider,
+                GPUWorkload.stopped_at.is_(None),
+            )
+        )
+    )
+    if not ids:
+        return False
+    creds = await _creds(db, user, provider)
+    adapter = get_gpu_adapter(provider)
+    for workload_id in ids:
+        try:
+            workload = await adapter.workload(creds, workload_id)
+        except GPUError:
+            continue  # unreachable with the saved key either: nothing it could stop
+        if workload is not None and workload.status in ("running", "starting"):
+            return True
+    return False
+
+
+GPU_RUNNING = (
+    "A GPU started with the saved key is still running. Stop it first: with another key the "
+    "studio could no longer stop it and it would keep billing."
+)
+
+
 def _provider_json(key: str, row: GPUIntegration | None) -> dict:
     spec = GPU_PROVIDERS[key]
     return {
@@ -156,6 +189,12 @@ async def save_credentials(
     except GPUError as exc:
         raise _fail(exc) from exc
     row = await _row(db, user, provider)
+    if (
+        row is not None
+        and await _creds(db, user, provider) != creds
+        and await _still_running(db, user, provider)
+    ):
+        raise api_error(409, "gpu_running", GPU_RUNNING)
     if row is None:
         row = GPUIntegration(user_id=user.id, provider=provider)
         db.add(row)
@@ -194,6 +233,8 @@ async def disconnect(
 ):
     _spec(provider)
     row = await _row(db, user, provider)
+    if row is not None and await _still_running(db, user, provider):
+        raise api_error(409, "gpu_running", GPU_RUNNING)
     if row is not None:
         await db.delete(row)
         await db.commit()

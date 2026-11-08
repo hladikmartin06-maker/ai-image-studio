@@ -95,12 +95,53 @@ BODY_PARTS: dict[str, tuple[str, ...]] = {
     "belly": ("belly", "waist"),
     "legs": ("legs", "thighs"),
     "arms": ("arms", "shoulders"),
+    # The whole figure (slimmer, curvier, like the character): let go more gently (0.2), at
+    # 0.05 it restaged a selfie.
+    "figure": ("breasts", "buttocks", "waist", "hips", "thighs"),
 }
+REGION_BOOSTS = {"figure": 0.2}
+# Body: the character LoRA at half its strength in the edit (the face step still brings her
+# face at full strength): likeness the same or higher on 4 photos (0.65/0.62/0.68/0.71 vs
+# 0.64/0.58/0.67/0.71) and a slimmer waist no longer turned a crop top into a sports bra.
+BODY_LORA = 0.5
+# Clothes (Clothes): SAM finds them; edited with everything else held (hold_rest).
+BODY_PARTS["clothes"] = ("clothes", "swimsuit")
+HOLD_BOOST = 4.0
+# Body edits: without it, a smaller bust came out without its bikini top (seen on the owner's
+# photos); with it the clothes stay and follow the new shape.
+KEEP_CLOTHES = "Her clothes stay on and look exactly the same, only fitting the new shape."
+# Clothes and body edits, and character edits of the whole photo (Normal; a smaller bust
+# restaged the owner's car selfie and lost her hand without them): a one-piece swimsuit, or
+# the character alone, stood up a woman lying on a lounger in a tilted selfie; a hand on the
+# cheek and a tongue out were lost. With these words (and the body held) she stayed lying
+# and kept her hand and expression (2 of 2 seeds, 6 photos, 2026-11-07).
+KEEP_POSE = "Keep her exact pose, body position and camera angle."
+# Words asking for a new pose (English, and Slovak stems): then KEEP_POSE is left out.
+# ponytail: a word list; a missed one only keeps the pose ("Strong" never adds the words).
+POSE_WORDS = re.compile(
+    r"\b(pose|sit\w*|seated|stand\w*|lie|lies|lying|lay\w*|kneel\w*|squat\w*|lean\w*|bend\w*"
+    r"|turn\w*|walk\w*|jump\w*|danc\w*|hug\w*|cross\w*|rais\w*|lift\w*|hands?|arms?|legs?"
+    r"|póz\w*|sed\w*|stoj\w*|lež\w*|ľah\w*|kľač\w*|otoč\w*|ruk\w*|nohy|nohu|nohami|drep\w*)\b",
+    re.IGNORECASE,
+)
+
+
+def asks_for_pose(text: str) -> bool:
+    return bool(POSE_WORDS.search(text))
+
+
 # Hair: SAM 3.1 finds it on the whole photo and the edit is let go there (like Body): a new
 # colour or a short cut on a small person changed little at ref_boost 4 (measured).
 HAIR_WORDS = ("hair",)
 HANDS_NODE = "64"
-SAM_NODES = ("SAM3_Detect", "GrowMask", "MaskComposite", "MaskToImage", "PreviewImage")
+SAM_NODES = (
+    "SAM3_Detect",
+    "GrowMask",
+    "MaskComposite",
+    "MaskToImage",
+    "PreviewImage",
+    "InvertMask",
+)
 # "strong": ref_boost 0.6 lets bigger changes through (body shape, a new pose) while the
 # scene still holds; at 2-4 the body barely changes (measured, PROVIDERS.md).
 STRENGTHS = ("normal", "strong")
@@ -118,6 +159,11 @@ def settings_for(character: bool, strength: str = "normal", face: bool = False) 
 
 # Face only: the crop's mouth may grow a hand (a kiss) that the oval paste would cut off.
 FACE_ONLY_NOTE = "Change only the face. Do not add hands."
+# Face only: an oval around the face itself goes back (a little wider than the face step's,
+# for an open mouth or raised brows). The square's own centred ellipse missed half of a face
+# at the photo's edge (the square is moved inside the photo): a doubled eye and a seam, and
+# hair from the crop beside the face (the owner's car selfie, 2026-11-07).
+FACE_ONLY_GROW = 0.25
 
 
 NODES = ("Krea2EditModelPatch", "Krea2EditGroundedEncode")
@@ -205,6 +251,26 @@ def detect(object_info: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+MOVE_SHIFT = 0.12
+MOVE_SIZE = (0.7, 1.45)
+
+
+def moved(
+    before: tuple[float, float, float, float],
+    after: tuple[float, float, float, float],
+    size_before: tuple[int, int],
+    size_after: tuple[int, int],
+) -> bool:
+    """Whether the person moved between the photo and the edit: her face's centre shifted by
+    more than MOVE_SHIFT of the picture, or its size changed beyond MOVE_SIZE."""
+    (x0, y0, w0, h0), (x1, y1, w1, h1) = before, after
+    (W0, H0), (W1, H1) = size_before, size_after
+    dx = (x1 + w1 / 2) / W1 - (x0 + w0 / 2) / W0
+    dy = (y1 + h1 / 2) / H1 - (y0 + h0 / 2) / H0
+    ratio = (max(w1, h1) / max(W1, H1)) / max(1e-6, max(w0, h0) / max(W0, H0))
+    return abs(dx) > MOVE_SHIFT or abs(dy) > MOVE_SHIFT or not MOVE_SIZE[0] <= ratio <= MOVE_SIZE[1]
+
+
 def place(x: float, y: float) -> str:
     """Where a point (shares of the image) is, in words."""
     if x < 0.34:
@@ -280,6 +346,8 @@ def build_edit(
     prefix: str = "ai-image-studio-advanced",
     region: str | None = None,
     keep_hands: bool = False,
+    hold_body: bool = False,
+    hold_rest: bool = False,
 ) -> dict[str, Any]:
     """The API-format edit graph: the photo (scaled to width x height) is the reference the
     edit LoRA keeps, the instruction is encoded together with it, the owner's LoRAs follow the
@@ -364,8 +432,38 @@ def build_edit(
         wf["32"] = {"class_type": "VAEEncode", "inputs": {"pixels": person, "vae": ["3", 0]}}
         patch |= {"source_latent_b": ["32", 0], "source_image_b": person}
         encode["image_b"] = person
-    if region or keep_hands:
+    if region or keep_hands or hold_body:
         wf["40"] = {"class_type": "CheckpointLoaderSimple", "inputs": {"ckpt_name": SAM3.filename}}
+    if hold_body and not region:
+        # The character's body (SAM "woman" minus her hair and face) held at HOLD_BOOST, the
+        # rest (hair, face, background) at 1: her pose stays even when new long hair is asked
+        # for; letting the hair go instead stood up a woman lying on a sun lounger.
+        hair = _sam(wf, "120", "hair", src)
+        wf["126"] = {
+            "class_type": "GrowMask",
+            "inputs": {"mask": hair, "expand": 16, "tapered_corners": True},
+        }
+        wf["127"] = {
+            "class_type": "MaskComposite",
+            "inputs": {
+                "destination": _sam(wf, "110", "woman", src),
+                "source": ["126", 0],
+                "x": 0,
+                "y": 0,
+                "operation": "subtract",
+            },
+        }
+        wf["128"] = {
+            "class_type": "MaskComposite",
+            "inputs": {
+                "destination": ["127", 0],
+                "source": _sam(wf, "123", "face", src),
+                "x": 0,
+                "y": 0,
+                "operation": "subtract",
+            },
+        }
+        patch |= {"ref_boost": HOLD_BOOST, "ref_boost_mask": ["128", 0]}
     if region:
         # Only that part of the photo (SAM 3.1 finds it from the words, grown a little so a
         # bigger shape has room) is let go: the edit hardly looks at it there, and keeps the
@@ -392,17 +490,44 @@ def build_edit(
         }
         # The face is never in the let-go part (a grown hair mask reached it and the face
         # changed with a new hair colour): it stays held as at ref_boost 1.
+        face = _sam(wf, "80", "face", src)
         wf["45"] = {
             "class_type": "MaskComposite",
             "inputs": {
                 "destination": ["43", 0],
-                "source": _sam(wf, "80", "face", src),
+                "source": face,
                 "x": 0,
                 "y": 0,
                 "operation": "subtract",
             },
         }
-        patch |= {"ref_boost": REGION_BOOST, "ref_boost_mask": ["45", 0]}
+        if hold_rest:
+            # Everything but the part held at HOLD_BOOST, the part at 1: the pose stays (a
+            # smaller bust stood up a woman lying on a lounger when the part was let go);
+            # the change is milder ("Strong" lets the part go instead).
+            wf["46"] = {"class_type": "InvertMask", "inputs": {"mask": ["45", 0]}}
+            held = ["46", 0]
+            if loras:
+                # With a character LoRA her face is not held (left at 1), so it can become
+                # hers: likeness after the face step up on 4 of 4 clothes edits (0.39 -> 0.54
+                # on a big smiling face; PROVIDERS.md).
+                wf["47"] = {
+                    "class_type": "MaskComposite",
+                    "inputs": {
+                        "destination": held,
+                        "source": face,
+                        "x": 0,
+                        "y": 0,
+                        "operation": "subtract",
+                    },
+                }
+                held = ["47", 0]
+            patch |= {"ref_boost": HOLD_BOOST, "ref_boost_mask": held}
+        else:
+            patch |= {
+                "ref_boost": REGION_BOOSTS.get(region, REGION_BOOST),
+                "ref_boost_mask": ["45", 0],
+            }
     if keep_hands:
         # The hands of the photo (SAM 3.1), shown as a preview the studio fetches: the face
         # paste keeps them as they were (face_paste).
@@ -535,7 +660,9 @@ def keep_unchanged(original: bytes, edited: bytes) -> tuple[bytes, float]:
 # the studio's runs: face likeness to the character's photos up (docs/PROVIDERS.md).
 FACE_EXPAND = 2.2
 FACE_PX = 1024
-FACE_DENOISE = 0.4
+# 0.35: a smile kept on 6 of 6 seeds and closed eyes on 4 of 6 (at 0.4: 2 of 6, at 0.3: all),
+# likeness 0.71 (0.4: 0.72, 0.3: 0.69; 10 faces x 2 seeds, 2026-11-07).
+FACE_DENOISE = 0.35
 FACE_EDIT_LORA = 1.4
 FACE_SWAP = (
     "Give her the face of {who}: her eyes, nose, lips, jaw and skin. Keep everything else in"
@@ -689,10 +816,12 @@ def face_paste(
     square: tuple[int, int, int],
     keep: bytes | None = None,
     box: tuple[float, float, float, float] | None = None,
+    grow: float = 0.0,
 ) -> bytes:
     """The redrawn face square pasted back. With `box` (the face's box in the photo) only a
     feathered oval around the face is taken: the whole square's ellipse also carried the
-    face step's redraw of the background next to the head (a grey smudge in a beach sky).
+    face step's redraw of the background next to the head (a grey smudge in a beach sky);
+    `grow` widens it (a share of the box, Face only: FACE_ONLY_GROW).
     `keep` (a mask of the square, white = the photo's own pixels, e.g. the hands SAM found)
     stays as it was, so a finger at the lips is never cut off by the new mouth."""
     import io
@@ -705,7 +834,8 @@ def face_paste(
     mask = Image.new("L", (side, side), 0)
     if box:
         x, y, w, h = box
-        x, y = x - left, y - top
+        x, y = x - left - grow * w / 2, y - top - grow * h / 2
+        w, h = w * (1 + grow), h * (1 + grow)
         oval = (x - 0.12 * w, y - 0.18 * h, x + 1.12 * w, y + 1.1 * h)
         ImageDraw.Draw(mask).ellipse(oval, fill=255)
         mask = mask.filter(ImageFilter.GaussianBlur(max(3.0, 0.08 * w)))
@@ -718,6 +848,53 @@ def face_paste(
         hands = hands.filter(ImageFilter.MaxFilter(5)).filter(ImageFilter.GaussianBlur(3))
         mask = ImageChops.subtract(mask, hands)
     img.paste(face, (left, top), mask)
+    buf = io.BytesIO()
+    img.save(buf, "PNG")
+    return buf.getvalue()
+
+
+# A face YuNet does not find as it is (a head tilted about 45 degrees: a selfie held
+# sideways, a woman lying down) is found in the photo turned, the face step runs on the
+# level face and the photo is turned back: on a lounger selfie the face step was skipped and
+# her old face stayed (likeness 0.27; turned 0.62, 2026-11-07). The turn is the one YuNet is
+# surest of: its score peaked at the level turn on 7 of 7 photos (its eye landmarks were off
+# by 30+ degrees on tilted heads). A tilted face it does find works as well as turned (0.74
+# vs 0.73, 0.67 vs 0.69), so that one stays as it is.
+TURNS = (-60.0, -45.0, -30.0, 30.0, 45.0, 60.0, 90.0, -90.0)
+
+
+def turn(data: bytes, angle: float) -> bytes:
+    """The photo turned by `angle` degrees (counter-clockwise), grown to keep every corner."""
+    import io
+
+    from PIL import Image, ImageOps
+
+    img = ImageOps.exif_transpose(Image.open(io.BytesIO(data))).convert("RGB")
+    buf = io.BytesIO()
+    img.rotate(angle, Image.BICUBIC, expand=True).save(buf, "PNG")
+    return buf.getvalue()
+
+
+def unturn(
+    original: bytes, turned: bytes, angle: float, box: tuple[float, float, float, float]
+) -> bytes:
+    """The face pasted into the turned photo (`box` there) put back into the original: the
+    turned photo is turned back, and only an oval around the face is taken from it."""
+    import io
+
+    from PIL import Image, ImageDraw, ImageFilter, ImageOps
+
+    img = ImageOps.exif_transpose(Image.open(io.BytesIO(original))).convert("RGB")
+    work = Image.open(io.BytesIO(turned)).convert("RGB")
+    x, y, w, h = box
+    mask = Image.new("L", work.size, 0)
+    ImageDraw.Draw(mask).ellipse((x - 0.2 * w, y - 0.28 * h, x + 1.2 * w, y + 1.2 * h), fill=255)
+    mask = mask.filter(ImageFilter.GaussianBlur(max(3.0, 0.08 * w)))
+    back = work.rotate(-angle, Image.BICUBIC, expand=True)
+    mask = mask.rotate(-angle, Image.BICUBIC, expand=True)
+    left, top = (back.width - img.width) // 2, (back.height - img.height) // 2
+    crop = (left, top, left + img.width, top + img.height)
+    img.paste(back.crop(crop), (0, 0), mask.crop(crop))
     buf = io.BytesIO()
     img.save(buf, "PNG")
     return buf.getvalue()

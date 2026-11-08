@@ -233,7 +233,8 @@ def _score(features: list[Any], refs: list[Any]) -> float:
     return max(float((f * r).sum()) for f in features for r in refs)
 
 
-def _box_of(engine: Any, data: bytes) -> tuple[float, float, float, float] | None:
+def _row_of(engine: Any, data: bytes) -> Any | None:
+    """The main face's YuNet row (x, y, w, h, landmarks, score), or None."""
     import numpy as np
 
     image = engine.cv2.imdecode(np.frombuffer(data, np.uint8), engine.cv2.IMREAD_COLOR)
@@ -245,39 +246,79 @@ def _box_of(engine: Any, data: bytes) -> tuple[float, float, float, float] | Non
         _, found = engine.detector.detect(image)
     if found is None or len(found) == 0:
         return None
-    face = main_face(found)
+    return main_face(found)
+
+
+def _box_of(engine: Any, data: bytes) -> tuple[float, float, float, float] | None:
+    face = _row_of(engine, data)
+    if face is None:
+        return None
     return float(face[0]), float(face[1]), float(face[2]), float(face[3])
 
 
-def _boxes_of(engine: Any, data: bytes) -> tuple[int, int, list[tuple[float, ...]]]:
+async def face_box_score(
+    data: bytes,
+) -> tuple[tuple[float, float, float, float], float] | None:
+    """The main face's box and YuNet's confidence in it (highest when the face is level), or
+    None."""
+    engine = await _get_engine()
+    face = await asyncio.to_thread(_row_of, engine, data)
+    if face is None:
+        return None
+    return (float(face[0]), float(face[1]), float(face[2]), float(face[3])), float(face[14])
+
+
+# Another face counts as her reflection only when it is about as large as hers and looks
+# like her (SFace): the owner's lift photo's reflection measured 0.375 at 0.9x her face's
+# width; a passer-by at the edge of a street photo -0.06 at 0.2x (2026-11-07). Strangers are
+# never turned into the character.
+REFLECTION_MIN_SIZE = 0.4
+REFLECTION_MIN_LIKENESS = 0.2
+
+
+def _reflections_of(engine: Any, data: bytes, min_score: float) -> list[tuple[float, float]]:
     import numpy as np
 
     image = engine.cv2.imdecode(np.frombuffer(data, np.uint8), engine.cv2.IMREAD_COLOR)
     if image is None:
-        return 0, 0, []
+        return []
     h, w = image.shape[:2]
+
+    def feature(face: Any) -> Any:
+        vector = engine.recognizer.feature(engine.recognizer.alignCrop(image, face)).flatten()
+        norm = float(np.linalg.norm(vector))
+        return vector / norm if norm else vector
+
     with engine.lock:
         engine.detector.setInputSize((w, h))
         _, found = engine.detector.detect(image)
-    if found is None:
-        return w, h, []
-    return w, h, [tuple(float(v) for v in (*f[:4], f[14])) for f in found]
+        if found is None or len(found) < 2:
+            return []
+        main = main_face(found)
+        mine = feature(main)
+        out = []
+        for face in found:
+            if np.array_equal(face, main) or float(face[14]) < min_score:
+                continue
+            if float(face[2]) < REFLECTION_MIN_SIZE * float(main[2]):
+                continue
+            if float((feature(face) * mine).sum()) < REFLECTION_MIN_LIKENESS:
+                continue
+            out.append(
+                (
+                    (float(face[0]) + float(face[2]) / 2) / w,
+                    (float(face[1]) + float(face[3]) / 2) / h,
+                )
+            )
+    return out
 
 
 async def other_faces(data: bytes, min_score: float = 0.6) -> list[tuple[float, float]]:
-    """Centres (x, y as shares of the image) of the faces other than the main one (e.g. her
-    reflection in a mirror), main_face's rule; empty when there are none."""
+    """Centres (x, y as shares of the image) of her other faces (e.g. her reflection in a
+    mirror): about as large as the main face (main_face's rule) and like it; empty when there
+    are none."""
     engine = await _get_engine()
-    w, h, found = await asyncio.to_thread(_boxes_of, engine, data)
-    if len(found) < 2 or not w:
-        return []
-    best = max(f[4] for f in found)
-    main = max((f for f in found if f[4] >= SURE_SHARE * best), key=lambda f: f[2] * f[3])
-    return [
-        ((f[0] + f[2] / 2) / w, (f[1] + f[3] / 2) / h)
-        for f in found
-        if f is not main and f[4] >= min_score
-    ]
+    return await asyncio.to_thread(_reflections_of, engine, data, min_score)
 
 
 async def face_box(data: bytes) -> tuple[float, float, float, float] | None:

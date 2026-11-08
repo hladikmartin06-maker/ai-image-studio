@@ -24,9 +24,9 @@ import {
 import type { Generation } from "@/lib/types";
 
 type Mode = "edit" | "text";
-type Target = "photo" | "face" | "head" | "hair" | "body";
-const TARGETS: Target[] = ["photo", "face", "head", "hair", "body"];
-const BODY_PARTS = ["bust", "butt", "waist", "belly", "legs", "arms"] as const;
+type Target = "photo" | "face" | "head" | "hair" | "clothes" | "body";
+const TARGETS: Target[] = ["photo", "face", "head", "hair", "clothes", "body"];
+const BODY_PARTS = ["figure", "bust", "butt", "waist", "belly", "legs", "arms"] as const;
 type BodyPart = (typeof BODY_PARTS)[number];
 
 /** Slovak or Czech words: the edit model mainly reads English (a Slovak "smile" changed
@@ -393,8 +393,22 @@ export function AdvancedPanel({
                             </button>
                           ))}
                         </div>
-                      ) : target === "hair" ? null : (
-                        <Field label={t("ad.changeStrength")} hint={t(change === "strong" ? (target === "face" ? "ad.changeStrongFaceHint" : "ad.changeStrongHint") : "ad.changeNormalHint")}>
+                      ) : null}
+                      {target === "hair" || target === "clothes" ? null : (
+                        <Field
+                          label={t("ad.changeStrength")}
+                          hint={t(
+                            change === "strong"
+                              ? target === "face"
+                                ? "ad.changeStrongFaceHint"
+                                : target === "body"
+                                  ? "ad.bodyStrongHint"
+                                  : "ad.changeStrongHint"
+                              : target === "body"
+                                ? "ad.bodyNormalHint"
+                                : "ad.changeNormalHint",
+                          )}
+                        >
                           <Segmented
                             label={t("ad.changeStrength")}
                             value={change}

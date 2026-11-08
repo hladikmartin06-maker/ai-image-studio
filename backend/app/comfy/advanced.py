@@ -56,7 +56,7 @@ class AdvancedBody(BaseModel):
     face_only: bool = False
     # What the edit works on: "photo" (all of it), "face" (= face_only), "head" (glasses,
     # earrings, a hat: the head edited close up), "hair" (SAM finds it), "body" (body_part).
-    area: str = Field(default="photo", pattern="^(photo|face|head|hair|body)$")
+    area: str = Field(default="photo", pattern="^(photo|face|head|hair|clothes|body)$")
     # How far the edit may go: "strong" for a new pose, or hard expressions with Face only.
     strength: str = Field(default="normal", pattern="^(normal|strong)$")
     # Body: change the shape of one part only (k2edit.BODY_PARTS: bust, butt, waist, …).
@@ -269,31 +269,48 @@ async def create_advanced_generation(
         look = await _hair(db, user, lora)
         note = f"{prompt} Give her {look} hair." if look else prompt
         extra = await _other_face(source, who, note)
-    # Her character with new hair (photo mode): the hair is let go too, so all of it becomes
-    # hers and her face comes through more (likeness 0.74 vs 0.63 and her face far more alike
-    # across six photos, the pose kept; PROVIDERS.md).
-    hair = bool(
+    # Her character on the whole photo: her body (pose) is held, her hair and face are free
+    # (k2edit.HOLD_BOOST; PROVIDERS.md) — not when a new pose is asked for ("Strong", or the
+    # words): held, "sit with her legs crossed" left her as she sat.
+    hold = bool(
         source
         and loras
         and area == "photo"
         and detection.get("sam")
-        and re.search(r"\bhair", final, re.I)
+        and body.strength != "strong"
+        and not k2edit.asks_for_pose(prompt)
     )
+    fallback = None
+    if area == "body":
+        final = f"{final.rstrip()} {k2edit.KEEP_CLOTHES}"
+    if area == "clothes" or (area == "body" and body.strength != "strong") or hold:
+        final = f"{final.rstrip()} {k2edit.KEEP_POSE}"
     if source:
-        workflow = k2edit.build_edit(
+        edit_args: dict[str, Any] = dict(
             image=enhance.INPUT_PLACEHOLDER,
             prompt=final,
             width=width,
             height=height,
             seed=seed,
             edit_lora=k2edit.DEFAULT_EDIT,
-            loras=loras,
-            region=body.body_part if area == "body" else "hair" if area == "hair" or hair else None,
+            loras=[(f, s * k2edit.BODY_LORA) for f, s in loras] if area == "body" else loras,
+            region=(
+                body.body_part if area == "body" else area if area in ("hair", "clothes") else None
+            ),
             keep_hands=bool(square),
+            hold_body=hold,
+            # Clothes: everything but the clothes held (the pose stays).
+            hold_rest=area == "clothes",
             **k2edit.settings_for(
                 character=bool(loras), strength=body.strength, face=area == "face"
             ),
         )
+        workflow = k2edit.build_edit(**edit_args)
+        if area == "body" and body.strength != "strong":
+            # Body: the part let go (a visible change); if the person moves (her face is
+            # elsewhere: a woman lying on a lounger stood up), the run is redone with
+            # everything but the part held (k2edit.moved, runner._advanced_finish).
+            fallback = k2edit.build_edit(**{**edit_args, "hold_rest": True})
     else:
         width, height = krea2.size_for(body.aspect_ratio, tier)
         workflow = krea2.build_workflow(
@@ -365,6 +382,7 @@ async def create_advanced_generation(
             "extra_pass": extra,
             "face_only": list(square) if square and area == "face" else None,
             "head_crop": list(square) if square and area == "head" else None,
+            "pose_fallback": fallback,
             # Hair and Body (no character LoRA): the face comes back exactly (k2edit.hold_face).
             "hold_face": area in ("hair", "body") and not loras,
             "adult": adult,
@@ -411,9 +429,11 @@ REWRITE_SYSTEM = {
         'target is "face" when only the facial expression changes (eyes, gaze, mouth, a '
         'smile, a wink), "head" for things added on the head or face (glasses, sunglasses, '
         'a hat or cap, earrings, makeup, piercings), "hair" for the hair colour or style, '
+        '"clothes" when only the clothes change, '
         '"body" when the shape or size of the body changes (bust, buttocks, hips, waist, '
         'weight, muscles), else "photo" (several things, pose, clothes, background, light). '
-        'With "body", part is one of "bust", "butt", "waist", "belly", "legs", "arms". '
+        'With "body", part is one of "figure" (the whole figure), "bust", "butt", "waist", '
+        '"belly", "legs", "arms". '
         "If the request involves anyone under 18, answer exactly: REFUSED"
     ),
     "text": (
@@ -431,7 +451,6 @@ def parse_rewrite(text: str) -> tuple[str, str | None, str | None]:
     """The instruction and its target from the model's JSON answer; plain text (or broken
     JSON) is taken as the instruction alone."""
     import json
-    import re
 
     raw = text.strip()
     found = re.search(r"\{.*\}", raw, re.DOTALL)
@@ -445,7 +464,7 @@ def parse_rewrite(text: str) -> tuple[str, str | None, str | None]:
             part = data.get("part")
             return (
                 " ".join(data["instruction"].split()),
-                target if target in ("photo", "face", "head", "hair", "body") else None,
+                target if target in ("photo", "face", "head", "hair", "clothes", "body") else None,
                 part if target == "body" and part in k2edit.BODY_PARTS else None,
             )
     return " ".join(raw.split()).strip().strip('"'), None, None
