@@ -1003,7 +1003,7 @@ def test_parts_together_are_one_region():
         region="bust+butt",
     )
     words = [n["inputs"]["text"] for n in wf.values() if n["class_type"] == "CLIPTextEncode"]
-    assert words == ["breasts", "chest", "buttocks", "hips", "face"]
+    assert words == ["breasts", "chest", "butt", "bottom", "face"]
     assert wf["13"]["inputs"]["ref_boost"] == k2edit.REGION_BOOST
 
 
@@ -1058,7 +1058,7 @@ async def test_whole_photo_body_change_gets_a_body_pass(user: Api, monkeypatch):
         )
         assert "bust" not in edit["4"]["inputs"]["prompt"]
         words = [n["inputs"]["text"] for n in shape.values() if n["class_type"] == "CLIPTextEncode"]
-        assert words == ["breasts", "chest", "buttocks", "hips", "face", "arm", "hand", "hair"]
+        assert words == ["breasts", "chest", "butt", "bottom", "face", "arm", "hand", "hair"]
         assert shape["13"]["inputs"]["ref_boost"] == k2edit.HOLD_BOOST
         assert shape["13"]["inputs"]["ref_boost_mask"] == ["46", 0]  # the face held too
         assert shape["46"]["inputs"]["mask"] == ["165", 0]
@@ -1188,7 +1188,7 @@ def test_figure_is_let_go_gently():
     )
     assert wf["13"]["inputs"]["ref_boost"] == k2edit.REGION_BOOSTS["figure"]
     words = sorted(n["inputs"]["text"] for n in wf.values() if n["class_type"] == "CLIPTextEncode")
-    assert words == ["breasts", "buttocks", "face", "hips", "thighs", "waist"]
+    assert words == ["breasts", "butt", "face", "hips", "thighs", "waist"]
 
 
 def test_moved_tells_a_new_pose():

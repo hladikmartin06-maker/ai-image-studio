@@ -610,8 +610,8 @@ What the studio does:
 7. **Body**: the whole figure (SAM: breasts, buttocks, waist, hips, thighs; `ref_boost` 0.2 —
    at 0.05 it restaged a selfie) or one part (bust, butt, waist and hips, belly, legs, arms) is
    found by SAM 3.1 from
-   two words (e.g. "breasts" + "chest"; one word alone missed parts or found the wrong one —
-   "buttocks" marked the chest on a woman seen from the front), the masks added and grown
+   two words (e.g. "breasts" + "chest"; one word alone missed parts or found the wrong one),
+   the masks added and grown
    (the instruction always ends "Her clothes stay on and look exactly the same, only fitting
    the new shape." — without it a smaller bust came out without its bikini top)
    40 px; the edit gets `ref_boost` 0.05 there only (`ref_boost_mask`), 1 elsewhere. When
@@ -656,7 +656,18 @@ What the studio does:
    still took the hand (its wrist was in the region). Held like this the pose stayed on 11
    of 12 photos, the bust clearly bigger, the butt a little; stronger words or a second held
    pass added little. The twelfth: SAM took a selfie arm in front of her chest for
-   "buttocks", and that arm became her bust (she still lies as she did). "Keep … her pose" in the words no longer counts as asking for a
+   "buttocks", and that arm became her bust (she still lies as she did). That was SAM's
+   word itself: on 10 of 10 of the owner's photos (2026-11-08) "buttocks" marked the top of
+   the body (the chest, a T-shirt, that arm) and "hips" a hand or the mouth, while "butt"
+   found the butt on 8 and "bottom" the clothes over it on 9 ("glutes" nothing, "rear end"
+   furniture); the butt is now "butt" + "bottom" (Body › Butt too), and the arm stays.
+   What did not work for a bigger change (on 6–12 photos each): the parts let go (0.05) or
+   the rest held at 2.5 or 2 stood the lounger selfie up again; a blurred part in the
+   reference changed the clothes (a bikini into a dress, leggings into a skirt); one
+   absolute body for every photo ("a full, round C-cup bust, … a big, round butt") barely
+   changed anything held; "much bigger" on the butt alone, let go or held, left already
+   big butts about as they were. The edit keeps each photo's own body and changes it
+   relatively: the same body on every photo is not reached. "Keep … her pose" in the words no longer counts as asking for a
    new pose (it had dropped the hold): from a keep word to the end of its sentence is
    ignored.
    **Clothes** (What to change › Clothes): SAM 3.1 "clothes" + "swimsuit" (grown, minus the

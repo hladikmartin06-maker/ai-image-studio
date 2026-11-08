@@ -79,7 +79,7 @@ EDIT_LORAS = {
 DEFAULT_EDIT = "general_v2"
 
 
-# A region edit (body shape: "breasts", "buttocks", "waist and hips"): SAM 3.1 (built-in
+# A region edit (body shape: "breasts", "butt", "waist and hips"): SAM 3.1 (built-in
 # nodes, the same file as Enhance photo) finds the part; ref_boost 0.05 only there. Measured:
 # much stronger than ref_boost 0.6 on the whole photo, the rest stays (PROVIDERS.md).
 SAM3 = enhance.SAM3
@@ -90,14 +90,17 @@ REGION_THRESHOLD = 0.4
 # studio's tests ("breasts" found nothing on a photo where "chest" did).
 BODY_PARTS: dict[str, tuple[str, ...]] = {
     "bust": ("breasts", "chest"),
-    "butt": ("buttocks", "hips"),
+    # SAM 3.1's "buttocks" marked the top of the body (the chest, a T-shirt, a selfie arm) on
+    # 10 of 10 of the owner's photos and "hips" a hand or the mouth; "butt" found the butt on
+    # 8 of 10 and "bottom" the clothes over it on 9 (2026-11-08).
+    "butt": ("butt", "bottom"),
     "waist": ("waist", "hips"),
     "belly": ("belly", "waist"),
     "legs": ("legs", "thighs"),
     "arms": ("arms", "shoulders"),
     # The whole figure (slimmer, curvier, like the character): let go more gently (0.2), at
     # 0.05 it restaged a selfie.
-    "figure": ("breasts", "buttocks", "waist", "hips", "thighs"),
+    "figure": ("breasts", "butt", "waist", "hips", "thighs"),
 }
 REGION_BOOSTS = {"figure": 0.2}
 # Body: the character LoRA at half its strength in the edit (the face step still brings her
@@ -184,8 +187,8 @@ MAX_REGION_WORDS = 6
 # its wrist in the region), her face held. Let go (0.05) or held only at 1 with the face free,
 # the body pass stood up a lying woman, lost a hand on a cheek and restaged a woman leaning
 # on a mirror; held like this the pose stayed on 11 of 12 photos, the bust clearly bigger,
-# the butt a little (2026-11-08). SAM took a selfie arm in front of the chest for buttocks:
-# that arm became her bust (the twelfth).
+# the butt a little (2026-11-08); the twelfth, a selfie arm SAM's "buttocks" took for the butt,
+# became her bust until the butt's words were changed (BODY_PARTS).
 LIMB_WORDS = ("arm", "hand")
 LIMB_GROW = 40  # SAM words in one region (node ids 50-66; the merges use 70+)
 
