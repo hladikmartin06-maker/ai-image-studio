@@ -1430,7 +1430,7 @@ export const sk: Record<MessageKey, string> = {
   "ad.changeHint": "Napíš jednoducho, napr. „Nech sa usmieva“, „Zmeň pozadie na pláž pri západe slnka“, „Daj jej obe ruky v bok“. Všetko ostatné ostane.",
   "ad.promptHint": "Opíš fotku: kto, čo robí, oblečenie, miesto, svetlo.",
   "ad.loraEditHint": "Človek na fotke sa zmení na tvoju postavu ({trigger}); póza, oblečenie a pozadie ostanú, ak nenapíšeš inak. Vlasy postavy sa zmenia, keď vyplníš farbu a účes vlasov v jej AI modeli, alebo ich napíšeš do pokynu.",
-  "ad.loraTextHint": "Spúšťacie slovo {trigger} sa doplní do promptu samo.",
+  "ad.loraTextHint": "Spúšťacie slovo {trigger} netreba písať: tvár aj telo dodá LoRA (napísané sa môže objaviť ako text na fotke).",
   "ad.loraTurbo": "Táto LoRA bola trénovaná na RAW s iným adaptérom alebo nie je pre Krea 2 — Advanced beží na Krea 2 Turbo.",
   "ad.keep": "Nezmenené časti presne z originálu",
   "ad.keepHint": "Kde úprava nič nezmenila, ostanú pôvodné pixely fotky (v jej rozlíšení). Vypni, ak chceš celú fotku prekreslenú.",

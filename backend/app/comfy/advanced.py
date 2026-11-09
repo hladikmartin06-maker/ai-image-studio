@@ -235,8 +235,9 @@ async def create_advanced_generation(
         if source:
             character = (lora.trigger_word, lora.class_word, await _hair(db, user, lora))
             final = k2edit.with_character(edit_words, *character)
-        elif not k2edit.names(prompt, lora.trigger_word):
-            final = f"{lora.trigger_word}, {prompt}"
+        # Text to image: no trigger word is added (the LoRA brings her): "lmxx2, …" lit up
+        # as a neon sign "LMXX2" in a night street, and likeness was the same or higher
+        # without it (0.70-0.86 over 5 prompts, 2026-11-09).
         if body.face_refine:
             face = {
                 "lora": lora_filename(lora, version),
@@ -486,10 +487,16 @@ REWRITE_SYSTEM = {
     "text": (
         "You rewrite a user's image idea (any language) as one detailed English prompt for a "
         "photorealistic text-to-image model, at most 80 words. Output only the prompt. Keep "
-        "the user's intent "
-        "and add nothing they did not ask for beyond photographic detail: subject, pose, "
-        "expression, clothing, setting, light, camera and framing. Keep words such as trigger "
-        "words verbatim. If the request involves anyone under 18, answer exactly: REFUSED"
+        "the user's intent and every element they named (the place, e.g. 'in a car', the "
+        "clothes, the pose, the framing) and add nothing they did not ask for beyond "
+        "photographic detail: subject, pose, expression, clothing, setting, light, camera and "
+        "framing. The subject is 'a woman' unless the user says otherwise. Her face is always "
+        "fully visible and never covered: in a mirror selfie she holds the phone beside her "
+        "face or at chest height, not in front of it. For a full-body shot the whole person "
+        "from head to feet is in the frame. Aim for a natural, real photo (natural skin "
+        "texture, everyday light), not a studio or CGI look. Keep words such as trigger "
+        "words verbatim. If the "
+        "request involves anyone under 18, answer exactly: REFUSED"
     ),
 }
 

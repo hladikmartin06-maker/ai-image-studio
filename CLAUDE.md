@@ -188,7 +188,8 @@ repositories.
   new hair is asked for (`blur_hair`), and where her old hair was, and the part a body edit changed, are always
   taken from the edit (`HAIR_NODE`, `PART_NODE`); with her LoRA her hair (not her face,
   hands, skin, clothes or accessories) is redrawn lightly
-  at 2K for one quality (`detail_graph`, denoise 0.2, no trigger word); "keep her pose"
+  at 2K for one quality (`detail_graph`, denoise 0.2, no trigger word); text to image adds no
+  trigger word (it was written into photos as a sign); "keep her pose"
   is not a pose request; the move check finds tilted faces and a lost face counts as moved; "Strong" = lower `ref_boost` (new pose,
   hard expressions). With a character LoRA the face step runs for every face size (one
   graph: edit LoRA + her LoRA ×1.5 keeps the expression, then Turbo + her LoRA ×1.5 at

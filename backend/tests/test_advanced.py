@@ -439,7 +439,8 @@ async def test_character_face_is_redrawn_close_up(user: Api, monkeypatch):
         sent = _sent(fake)[-1]
         assert sent["6"]["inputs"]["batch_size"] == 2
         assert (sent["6"]["inputs"]["width"], sent["6"]["inputs"]["height"]) == (880, 1184)
-        assert sent["4"]["inputs"]["text"] == "tla, standing on a beach"
+        # No trigger word added (it got written into the photo as a sign).
+        assert sent["4"]["inputs"]["text"] == "standing on a beach"
         assert done["mode"] == "text-to-image" and not done["comfy"].get("input")
         bad = await user.post(
             "/api/comfy/advanced",

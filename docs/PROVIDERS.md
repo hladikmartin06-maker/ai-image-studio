@@ -729,7 +729,17 @@ What the studio does:
    stood her up without the words; with them she stayed lying (2 of 2 seeds); bikinis, a
    camisole, a sweater, jeans and a slip dress kept the pose on 6 photos. No Change strength
    (it does nothing there).
-8. **Text to image**: Krea 2 Turbo + the LoRA (trigger word added), then the face step. In
+8. **Text to image**: Krea 2 Turbo + the LoRA, then the face step. No trigger word is added
+   (2026-11-09, 5 prompts): "lmxx2, …" lit up as a neon sign "LMXX2" in a night street, and
+   likeness without it was the same or higher (cafe 0.69 against 0.64). The "Improve
+   instruction" rewrite keeps every element named (a car selfie had lost its car), keeps her
+   face visible (a mirror selfie had the phone over her face), frames full-body shots head to
+   feet (heads were cut off) and asks for a natural photo look: over 8 Slovak ideas likeness
+   0.766 against 0.733 before, every face found. 18+ prompts (lingerie, topless, bath, nude on
+   a bed, shower; the 18+ switch on) came out realistic, likeness 0.63–0.82 (a profile in a
+   shower 0.44). A light Turbo pass over the whole edited photo at 2K (denoise 0.15–0.22, face,
+   hands, jewelry and SAM "text" kept) added little detail and still changed small text ("08:22"
+   became "09:22", "W21"); not used. In
    edits the face step's prompt repeats the user's instruction: an edited smile drifted
    back towards the LoRA's usual look otherwise (same likeness, 0.655, either way).
 9. **Improve instruction** (optional): the user's AI provider (cheapest tier) rewrites the

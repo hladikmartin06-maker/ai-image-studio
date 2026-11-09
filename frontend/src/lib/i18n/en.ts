@@ -1429,7 +1429,7 @@ export const en = {
   "ad.changeHint": "Write it plainly, e.g. “Make her smile”, “Change the background to a beach at sunset”, “Put both her hands on her hips”. Everything else stays.",
   "ad.promptHint": "Describe the photo: who, what they do, clothes, place, light.",
   "ad.loraEditHint": "The person in the photo becomes your character ({trigger}); pose, clothes and background stay unless you write otherwise. Her hair changes too when the AI model has its hair colour and style filled in, or when you write it in the instruction.",
-  "ad.loraTextHint": "The trigger word {trigger} is added to the prompt by itself.",
+  "ad.loraTextHint": "No need to write the trigger word {trigger}: the LoRA brings her face and body (written, it can appear as text in the photo).",
   "ad.loraTurbo": "This LoRA was trained on RAW with another adapter or is not for Krea 2 — Advanced runs on Krea 2 Turbo.",
   "ad.keep": "Untouched parts exactly from the original",
   "ad.keepHint": "Where the edit changed nothing, the photo's own pixels stay (at its resolution). Turn off to have the whole photo redrawn.",
