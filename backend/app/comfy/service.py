@@ -171,6 +171,28 @@ def _copy(src: Path, dest: Path) -> None:
     tmp.replace(dest)
 
 
+def _same_size(dest: Path, source: Path) -> bool:
+    try:
+        return dest.stat().st_size == source.stat().st_size
+    except OSError:
+        return False
+
+
+async def _still_there(conn: ComfyConnection, capability: str, name: str, source: Path) -> bool:
+    """An earlier upload counts only while its file is still there: a rented GPU's Volume or
+    a ComfyUI folder can lose it, and ComfyUI then refuses the run ("lora_name … not in")."""
+    if capability == "folder":
+        root = await asyncio.to_thread(_expand, conn.models_dir or "")
+        return await asyncio.to_thread(_same_size, root / "models" / "loras" / name, source)
+    agent = agent_for(conn) if capability == "agent" else None
+    if agent is None:
+        return True
+    size = await agent.remote_size(f"{comfy_subdir(conn)}/models/loras/{name}")
+    if size is None:  # the GPU cannot be asked: the run itself will tell
+        return True
+    return await asyncio.to_thread(lambda: size == source.stat().st_size)
+
+
 async def place_lora(
     db: AsyncSession, conn: ComfyConnection, lora: Lora, version: LoraVersion, force: bool = False
 ) -> str:
@@ -180,15 +202,16 @@ async def place_lora(
         raise ComfyError("missing_models", "This LoRA version has no file yet.")
     name = lora_filename(lora, version)
     done = (version.deployments or {}).get(str(conn.id))
+    source = storage.absolute(version.file_path)
+    capability = file_capability(conn)
     if (
         not force
         and done
         and done.get("filename") == name
         and done.get("sha256") == version.file_sha256
+        and await _still_there(conn, capability, name, source)
     ):
         return name
-    source = storage.absolute(version.file_path)
-    capability = file_capability(conn)
     if capability == "folder":
         root = await asyncio.to_thread(_expand, conn.models_dir or "")
         if not await asyncio.to_thread(_is_comfy_dir, root):

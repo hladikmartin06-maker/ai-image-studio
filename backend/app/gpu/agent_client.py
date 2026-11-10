@@ -38,6 +38,7 @@ class AgentError(Exception):
 # One upload per file on an agent at a time: two uploads of the same file (e.g. two runs
 # with the same LoRA) would otherwise write over each other.
 _UPLOAD_LOCKS: dict[tuple[str, str], asyncio.Lock] = {}
+MISSING = -1  # remote_size: the folder lists, the file is not in it
 
 
 class AgentClient:
@@ -104,7 +105,7 @@ class AgentClient:
         async with lock:
             for _ in range(3):
                 await self._upload_once(remote, local, size)
-                if await self._remote_size(remote) in (size, None):
+                if await self.remote_size(remote) in (size, None, MISSING):
                     return
         raise AgentError("agent_error", "The file on the GPU did not match after the upload")
 
@@ -138,8 +139,9 @@ class AgentClient:
             if offset >= size:
                 return
 
-    async def _remote_size(self, remote: str) -> int | None:
-        """The size of an uploaded file on the agent (None when it cannot be listed)."""
+    async def remote_size(self, remote: str) -> int | None:
+        """The size of a file on the agent: None when it cannot be told, MISSING when its
+        folder lists without it."""
         target = posixpath.normpath(remote)
         try:
             files = await self.list_files(posixpath.dirname(target))
@@ -152,7 +154,7 @@ class AgentClient:
         # name, so the file is found by its name when that is unambiguous.
         name = posixpath.basename(target)
         same = [size for path, size in paths.items() if posixpath.basename(path) == name]
-        return same[0] if len(same) == 1 else None
+        return same[0] if len(same) == 1 else (None if same else MISSING)
 
     async def download_file(self, remote: str, local: Path, size: int | None = None) -> str:
         """Ranged download (resumable) into a .part file; returns the SHA-256."""

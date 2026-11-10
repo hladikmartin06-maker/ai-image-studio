@@ -14,7 +14,7 @@ import httpx
 import pytest
 
 from app.gpu.agent import BOOT, agent_env
-from app.gpu.agent_client import AgentClient, AgentError
+from app.gpu.agent_client import MISSING, AgentClient, AgentError
 from tests.gpu_fakes import free_port, make_toolkit
 
 TOKEN = "agent-test-token-0123456789"
@@ -135,6 +135,8 @@ async def test_upload_survives_lost_answers(agent, tmp_path: Path, monkeypatch):
     monkeypatch.setattr(AgentClient, "transport", proxy)
     await client.upload_file("models/loras/lora.safetensors", src)
     assert (workspace / "models/loras/lora.safetensors").read_bytes() == data
+    assert await client.remote_size("models/loras/lora.safetensors") == len(data)
+    assert await client.remote_size("models/loras/other.safetensors") == MISSING
 
     # Two uploads of the same file at once (two runs with the same LoRA) do not mix.
     monkeypatch.setattr(AgentClient, "transport", None)

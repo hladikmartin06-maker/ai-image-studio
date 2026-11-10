@@ -679,15 +679,13 @@ async def test_training_on_runpod_end_to_end(user: Api, tmp_path: Path, hub: Fak
             },
         )
         conn = conn.json()
-        g = await user.post(
-            "/api/comfy/generate",
-            json={
-                "connection_id": conn["id"],
-                "variant": "turbo",
-                "prompt": "walking in Lisbon",
-                "lora": {"version_id": version["id"], "strength": 0.9},
-            },
-        )
+        run = {
+            "connection_id": conn["id"],
+            "variant": "turbo",
+            "prompt": "walking in Lisbon",
+            "lora": {"version_id": version["id"], "strength": 0.9},
+        }
+        g = await user.post("/api/comfy/generate", json=run)
         assert g.status_code == 201, g.text
         gen = await wait_done(user, g.json()["id"])
         assert gen["status"] == "completed", gen
@@ -695,12 +693,19 @@ async def test_training_on_runpod_end_to_end(user: Api, tmp_path: Path, hub: Fak
         assert gen["comfy"]["lora"]["trigger_word"] == "lnx"
         copied = list((tmp_path / "ComfyUI/models/loras/ai-image-studio").iterdir())
         assert len(copied) == 1
+
+        # A file ComfyUI lost (a cleaned GPU Volume, a deleted file) is put back before the
+        # next run; trusting the earlier upload made ComfyUI refuse it ("lora_name … not in").
+        copied[0].unlink()
+        g = await user.post("/api/comfy/generate", json=run)
+        assert (await wait_done(user, g.json()["id"]))["status"] == "completed"
+        assert copied[0].is_file()
         sent = list(comfy.prompts.values())[-1]["prompt"]
         node = next(n for n in sent.values() if n["class_type"] == "LoraLoaderModelOnly")
         assert node["inputs"]["strength_model"] == 0.9
         assert node["inputs"]["lora_name"].startswith("ai-image-studio/")
         lib = (await user.get("/api/images", params={"lora_version": version["id"]})).json()
-        assert lib["total"] == 1
+        assert lib["total"] == 2
 
         # Side-by-side test: base vs the LoRA, same seed.
         t = await user.post(
