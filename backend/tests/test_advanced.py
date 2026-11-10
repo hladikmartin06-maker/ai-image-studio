@@ -441,6 +441,57 @@ async def test_character_face_is_redrawn_close_up(user: Api, monkeypatch):
         assert (sent["6"]["inputs"]["width"], sent["6"]["inputs"]["height"]) == (880, 1184)
         # No trigger word added (it got written into the photo as a sign).
         assert sent["4"]["inputs"]["text"] == "standing on a beach"
+        # The pose from the words: her LoRA only after the first steps, on the same noise.
+        first, rest = sent[k2edit.COMPOSE_NODE]["inputs"], sent["7"]["inputs"]
+        light, full = sent[first["model"][0]]["inputs"], sent[rest["model"][0]]["inputs"]
+        assert light["model"] == ["1", 0] and light["lora_name"] == full["lora_name"]
+        assert light["strength_model"] == k2edit.COMPOSE_LORA * full["strength_model"]
+        assert first["end_at_step"] == rest["start_at_step"] == k2edit.COMPOSE_STEPS
+        assert rest["latent_image"] == [k2edit.COMPOSE_NODE, 0]
+        assert first["noise_seed"] == rest["noise_seed"] == done["settings"]["seed"]
+        assert first["add_noise"] == "enable" and rest["add_noise"] == "disable"
+        # Words without a pose (a plain mirror selfie): her LoRA on every step.
+        plain = await user.post(
+            "/api/comfy/advanced",
+            json={
+                "connection_id": conn["id"],
+                "prompt": "a mirror selfie in a bathroom",
+                "aspect_ratio": "3:4",
+                "resolution": "1K",
+                "lora": {"version_id": version_id, "strength": 1.0},
+            },
+        )
+        assert (await wait_done(user, plain.json()["id"]))["status"] == "completed"
+        sent = _sent(fake)[-1]
+        assert sent["7"]["class_type"] == "KSampler" and k2edit.COMPOSE_NODE not in sent
+        # 18+ and words asking for her naked: the sentence that keeps clothes off is added
+        # (History shows it); without the switch nothing is added.
+        naked = await user.post(
+            "/api/comfy/advanced",
+            json={
+                "connection_id": conn["id"],
+                "prompt": "completely nude on a bed, her pussy",
+                "adult": True,
+                "resolution": "1K",
+            },
+        )
+        done = await wait_done(user, naked.json()["id"])
+        assert done["final_prompt"] == (
+            f"completely nude on a bed, her pussy {k2edit.NUDE_NOTE} {k2edit.VULVA_NOTE}"
+        )
+        # A pose in a front selfie with her LoRA: her face beside the phone.
+        squat = await user.post(
+            "/api/comfy/advanced",
+            json={
+                "connection_id": conn["id"],
+                "prompt": "squatting, a mirror selfie",
+                "resolution": "1K",
+                "lora": {"version_id": version_id, "strength": 1.0},
+            },
+        )
+        done = await wait_done(user, squat.json()["id"])
+        assert done["final_prompt"] == f"squatting, a mirror selfie {k2edit.FACE_NOTE}"
+        assert _sent(fake)[-1]["4"]["inputs"]["text"] == done["final_prompt"]
         assert done["mode"] == "text-to-image" and not done["comfy"].get("input")
         bad = await user.post(
             "/api/comfy/advanced",
@@ -1392,6 +1443,57 @@ async def test_a_face_found_only_turned_is_levelled(monkeypatch):
     monkeypatch.setattr(faces, "face_box_score", found)
     image, angle, box = await comfy_runner._level_face(data)
     assert angle == 45 and image == level
+
+    # A back view has no face: what YuNet finds only turned and unsure of (soles, a bottom,
+    # 0.60-0.70) is no face, and no face is drawn there.
+    async def unsure(image: bytes):
+        return (10.0, 10.0, 50.0, 50.0), 0.7
+
+    monkeypatch.setattr(faces, "face_box_score", unsure)
+    assert await comfy_runner._level_face(data) is None
+
+    # Found as it is but surer upside down (lying on her back): turned 180; a level face stays.
+    photo = Image.new("RGB", (300, 400), (0, 0, 255))
+    photo.paste((255, 0, 0), (0, 0, 100, 100))
+    data = _png(photo)
+    flipped = k2edit.turn(data, 180)
+
+    async def anywhere(image: bytes):
+        return (10.0, 10.0, 50.0, 50.0)
+
+    async def upside_down(image: bytes):
+        return (10.0, 10.0, 50.0, 50.0), 0.92 if image == flipped else 0.85
+
+    async def level_face(image: bytes):
+        return (10.0, 10.0, 50.0, 50.0), 0.82 if image == flipped else 0.94
+
+    monkeypatch.setattr(faces, "face_box", anywhere)
+    monkeypatch.setattr(faces, "face_box_score", upside_down)
+    image, angle, _ = await comfy_runner._level_face(data)
+    assert angle == 180 and image == flipped
+    monkeypatch.setattr(faces, "face_box_score", level_face)
+    image, angle, _ = await comfy_runner._level_face(data)
+    assert angle == 0 and image == data
+
+
+def test_nude_words_and_colours():
+    for text in ("completely nude", "naked on a bed", "nahá žena", "nude body", "nude topless"):
+        assert k2edit.asks_for_nude(text), text
+    for text in ("nude lipstick", "wearing nude heels", "a nude bodysuit", "nude bra", "nahor"):
+        assert not k2edit.asks_for_nude(text), text
+    assert k2edit.names_vulva("showing her pussy") and k2edit.names_vulva("ukáž pičku")
+    assert not k2edit.names_vulva("pick up a picture of a pickup")
+
+
+def test_front_selfies():
+    assert k2edit.front_selfie("squatting, holding the phone for a front selfie")
+    assert k2edit.front_selfie("mirror selfie v kúpeľni")
+    for text in (
+        "rear selfie from behind",
+        "looking back over her shoulder at the phone",
+        "a beach",
+    ):
+        assert not k2edit.front_selfie(text), text
 
 
 def test_clothes_leave_her_face_free_with_a_character():

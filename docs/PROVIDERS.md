@@ -737,7 +737,36 @@ What the studio does:
    feet (heads were cut off) and asks for a natural photo look: over 8 Slovak ideas likeness
    0.766 against 0.733 before, every face found. 18+ prompts (lingerie, topless, bath, nude on
    a bed, shower; the 18+ switch on) came out realistic, likeness 0.63–0.82 (a profile in a
-   shower 0.44). A light Turbo pass over the whole edited photo at 2K (denoise 0.15–0.22, face,
+   shower 0.44). Poses and 18+ prompts (2026-11-10; the owner's 6 18+ prompts, 14 more 18+
+   and 15 clothed pose prompts at 2K, fixed seeds, mostly raw output before the face step):
+   with her LoRA on all 8 steps "leaning forward", "back to the camera", "looking back over her
+   shoulder", "sitting on the edge of the bed" often came out as a standing mirror selfie (her
+   LoRA v2 more than v1). The first 2 steps on Turbo alone (KSamplerAdvanced, same noise) got
+   the poses right but looked staged and dressed "completely nude" (2 of 9 nude); her LoRA at
+   0.5–0.7 for those steps put a bikini back on "leaning forward"; at 0.85
+   (`k2edit.compose_first`, `COMPOSE_LORA`) the owner's 6 prompts stayed as natural and as nude
+   as at full strength, and leaning and sitting poses improved. "One leg lifted onto a chair"
+   failed with her LoRA in every setup. It runs only when the words ask for a pose
+   (`asks_for_pose`): on plain mirror selfies the phone moved over her face. Turbo put a thong,
+   bra or bikini on "completely nude" in 5 of 9 prompts; with `NUDE_NOTE` (18+ on,
+   `asks_for_nude`) in 2 of 9, and 0 of 6 on new seeds (the sentence at the start: 3 of 6
+   dressed; a longer "no thong, no bra…": 2 of 6). Naming her intimate area, `VULVA_NOTE` made
+   8 of 8 bare where 7 of 8 were. A front selfie with a pose held the phone over her face once;
+   `FACE_NOTE` moved it beside her face (not when both hands hold the phone in front of her,
+   as on all steps). On back views YuNet found no face upright and "faces" in her soles and
+   bottom only turned (scores 0.60–0.70), and the face step drew a face there; her real faces
+   found turned scored 0.865–0.946 on 24 test photos, so a turned face counts from 0.8
+   (`TURN_MIN_SCORE`). Upside-down faces (lying on her back, head toward the camera) were found
+   as they are (0.70–0.85) but surer turned 180 (0.86–0.92), level faces surer as they are
+   (0.94 against 0.82–0.89): with `FLIP_MARGIN` 0.04 the face step works on them turned (they
+   had odd stripes and likeness 0.18–0.22). Likeness after the face step (28 prompts, her
+   LoRA v1): front faces 0.65–0.81, faces looking back or in profile 0.27–0.46.
+   Through the studio with all of it (14 runs, LoRA v1 and v2, 2K, face step): nude where
+   asked on 12 of 14 (on all fours and lying on her stomach a thong twice with v1, nude with v2
+   and on other seeds), no face drawn on soles, front faces 0.71–0.84, upside-down faces 0.58–
+   0.64 (0.46–0.55 before; measured turned level). Not reached: "one leg lifted onto a chair";
+   an upside-down face keeps faint dark stripes under the eyes from the first image.
+   A light Turbo pass over the whole edited photo at 2K (denoise 0.15–0.22, face,
    hands, jewelry and SAM "text" kept) added little detail and still changed small text ("08:22"
    became "09:22", "W21"); not used. In
    edits the face step's prompt repeats the user's instruction: an edited smile drifted

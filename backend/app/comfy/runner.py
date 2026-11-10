@@ -414,18 +414,36 @@ async def _level_face(data: bytes) -> tuple[bytes, float, tuple[float, ...]] | N
 
     box = await faces.face_box(data)
     if box:
-        return data, 0.0, box
+        return await _flipped(data) or (data, 0.0, box)
     found: dict[float, tuple[bytes, tuple[float, ...], float]] = {}
     for angle in k2edit.TURNS:
         image = await asyncio.to_thread(k2edit.turn, data, angle)
         face = await faces.face_box_score(image)
-        if face:
+        if face and face[1] >= k2edit.TURN_MIN_SCORE:
             found[angle] = (image, *face)
     if not found:
         return None
     best = max(found, key=lambda a: found[a][2])
     image, box, _ = found[best]
     return image, best, box
+
+
+async def _flipped(data: bytes) -> tuple[bytes, float, tuple[float, ...]] | None:
+    """An upside-down face (she lies on her back, her head toward the camera): YuNet finds it
+    as it is too, but surer turned 180 degrees (k2edit.FLIP_MARGIN); then the photo turned."""
+    from app.services import faces
+
+    try:
+        level = await faces.face_box_score(data)
+        image = await asyncio.to_thread(k2edit.turn, data, 180.0)
+        turned = await faces.face_box_score(image)
+    except Exception:  # noqa: BLE001 - no face models: the face as it is
+        return None
+    if not level or not turned:
+        return None
+    if turned[1] < max(k2edit.TURN_MIN_SCORE, level[1] + k2edit.FLIP_MARGIN):
+        return None
+    return image, 180.0, turned[0]
 
 
 def workflow_sent(gen: Generation, entry: dict[str, Any]) -> dict[str, Any]:

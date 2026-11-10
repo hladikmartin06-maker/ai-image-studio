@@ -189,7 +189,12 @@ repositories.
   taken from the edit (`HAIR_NODE`, `PART_NODE`); with her LoRA her hair (not her face,
   hands, skin, clothes or accessories) is redrawn lightly
   at 2K for one quality (`detail_graph`, denoise 0.2, no trigger word); text to image adds no
-  trigger word (it was written into photos as a sign); "keep her pose"
+  trigger word (it was written into photos as a sign), and words asking for a pose run its
+  first 2 steps with her LoRA at 0.85 (`compose_first`; at full strength poses became mirror
+  selfies, without it "nude" got clothes); with 18+ on, nude words add `NUDE_NOTE` and naming
+  her intimate area `VULVA_NOTE`, a front selfie with a pose `FACE_NOTE`; a face found only
+  turned counts from YuNet 0.8 (back views had "faces" on soles), an upside-down one is
+  turned 180 (`FLIP_MARGIN`); "keep her pose"
   is not a pose request; the move check finds tilted faces and a lost face counts as moved; "Strong" = lower `ref_boost` (new pose,
   hard expressions). With a character LoRA the face step runs for every face size (one
   graph: edit LoRA + her LoRA ×1.5 keeps the expression, then Turbo + her LoRA ×1.5 at

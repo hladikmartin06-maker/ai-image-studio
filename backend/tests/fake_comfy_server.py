@@ -39,6 +39,7 @@ NODES = [
     "ConditioningZeroOut",
     "EmptyLatentImage",
     "KSampler",
+    "KSamplerAdvanced",
     "VAEDecode",
     "SaveImage",
     "LoraLoaderModelOnly",

@@ -144,6 +144,52 @@ def asks_for_pose(text: str) -> bool:
     return bool(POSE_WORDS.search(KEEP_WORDS.sub(" ", text)))
 
 
+# Text to image with the 18+ switch on and words asking for her naked: Krea 2 Turbo put a
+# thong, a bra or a bikini on "completely nude" in 5 of 9 prompts (her LoRA on every step) and
+# in 2 of 9 with this sentence added (2026-11-10, PROVIDERS.md › Advanced). "nude" as a colour
+# (lipstick, heels) is not such a word.
+NUDE_NOTE = "She is fully naked: bare breasts, bare hips and bare skin, nothing on her body."
+NUDE_WORDS = re.compile(
+    r"\b(naked|nah[áéýú]\w*|nahot\w*|bez obleč\w*|nude(?!\s+(?:lip\w*|heel\w*|colou?r\w*"
+    r"|tone\w*|make-?up|nail\w*|shoe\w*|dress\w*|bra\w*|panties|lingerie|top\b|tops|bodysuit\w*"
+    r"|swim\w*|underwear|beige)))\b",
+    re.IGNORECASE,
+)
+
+
+def asks_for_nude(text: str) -> bool:
+    return bool(NUDE_WORDS.search(text))
+
+
+# 18+ text to image naming her intimate area: Turbo still covered it with a thong on all fours
+# (1 of 8 with NUDE_NOTE); with this sentence 8 of 8 were bare, nothing else changed
+# (2026-11-10).
+VULVA_NOTE = "Her bare vulva is clearly visible, nothing covers it."
+VULVA_WORDS = re.compile(
+    r"\b(pussy|vagina\w*|vulva\w*|labia\w*|kund\w*|pičk\w*|piča|piču|vagín\w*)\b", re.IGNORECASE
+)
+
+
+def names_vulva(text: str) -> bool:
+    return bool(VULVA_WORDS.search(text))
+
+
+# Text to image, a selfie seen from the front: with the pose composed first the phone was held
+# over her face (a squat selfie); this sentence moved it beside her face (2026-11-10). Not for
+# views from behind (she looks back, or her face is not in the photo).
+FACE_NOTE = "Her face is fully visible, not hidden by the phone."
+SELFIE_WORDS = re.compile(r"\b(selfie\w*|phone\w*|mirror\w*|mobil\w*|zrkadl\w*)\b", re.IGNORECASE)
+BACK_WORDS = re.compile(
+    r"\b(behind|back to|from the back|rear|facing away|shoulder|looking back|back view"
+    r"|zozadu|zo zadu|chrbt\w*|otočen\w*)\b",
+    re.IGNORECASE,
+)
+
+
+def front_selfie(text: str) -> bool:
+    return bool(SELFIE_WORDS.search(text)) and not BACK_WORDS.search(text)
+
+
 HAIR_ASK = re.compile(r"\b(hair\w*|vlas\w*)\b", re.IGNORECASE)
 
 
@@ -302,7 +348,13 @@ FACE_ONLY_GROW = 0.25
 
 
 NODES = ("Krea2EditModelPatch", "Krea2EditGroundedEncode")
-REQUIRED_NODES = (*NODES, "EmptySD3LatentImage", "LoraLoaderModelOnly", "ImageScale")
+REQUIRED_NODES = (
+    *NODES,
+    "EmptySD3LatentImage",
+    "LoraLoaderModelOnly",
+    "ImageScale",
+    "KSamplerAdvanced",
+)
 TURBO = krea2.VARIANTS["turbo"].known_files[0]  # krea2_turbo_fp8_scaled.safetensors
 REF_POSITIONS = ("aligned (trained)", "beside (right of target)")
 MAX_PROMPT = 2000
@@ -1307,7 +1359,16 @@ def face_paste(
 # surest of: its score peaked at the level turn on 7 of 7 photos (its eye landmarks were off
 # by 30+ degrees on tilted heads). A tilted face it does find works as well as turned (0.74
 # vs 0.73, 0.67 vs 0.69), so that one stays as it is.
-TURNS = (-60.0, -45.0, -30.0, 30.0, 45.0, 60.0, 90.0, -90.0)
+TURNS = (-60.0, -45.0, -30.0, 30.0, 45.0, 60.0, 90.0, -90.0, 180.0)
+# An upside-down face (text to image "lying on her back" with her head toward the camera) is
+# found as it is too (0.70-0.85) but surer turned 180 (0.86-0.92); level faces scored higher as
+# they are (0.94 vs 0.82-0.89). On it as it was, the face step left odd stripes and likeness
+# 0.18-0.22 (2026-11-10).
+FLIP_MARGIN = 0.04
+# A face found only turned counts from this YuNet score: on back views (no face) it found
+# "faces" in her soles and bottom at 0.60-0.70, and the face step drew one there (the owner's
+# photo, 2026-11-10); her real faces found turned scored 0.865-0.946 on 24 test photos.
+TURN_MIN_SCORE = 0.8
 
 
 def turn(data: bytes, angle: float) -> bytes:
@@ -1380,6 +1441,70 @@ DETAIL_DENOISE = 0.2
 # over 4 photos); at 0.25 a key fob in her hand changed shape.
 DETAIL_TEXT = "photo of a woman, sharp detailed photo, natural skin texture"
 DETAIL_GROW = 8
+
+
+# Text to image with her LoRA and words asking for a pose (asks_for_pose): the first
+# COMPOSE_STEPS of Turbo's 8 run with her LoRA at COMPOSE_LORA, so the pose follows the words
+# more, and at full strength for the rest (her face, body, skin). At full strength on every
+# step (trained on mirror selfies) "leaning forward", "back to the camera" and "looking back"
+# often became a standing mirror selfie; without her LoRA for those steps the poses were right
+# but "completely nude" got underwear (2 of 9 nude) and looked staged; at 0.7 a bikini came
+# back on "leaning forward"; at 0.85 the owner's 6 prompts stayed as natural and as nude as at
+# full strength and leaning and sitting poses improved. Not for other words: a plain mirror
+# selfie then had the phone over her face (2026-11-10, PROVIDERS.md › Advanced).
+COMPOSE_STEPS = 2
+COMPOSE_LORA = 0.85
+COMPOSE_NODE = "13"
+
+
+def compose_first(
+    wf: dict[str, Any], steps: int = COMPOSE_STEPS, share: float = COMPOSE_LORA
+) -> dict[str, Any]:
+    """krea2.build_workflow's KSampler split in two with the same noise: the first `steps` on
+    the model with the LoRAs at `share` of their strength, the rest at full strength."""
+    first = wf.pop("7")["inputs"]
+    model: list[Any] = ["1", 0]
+    loaders = sorted(
+        (k for k, n in wf.items() if n["class_type"] == "LoraLoaderModelOnly"), key=int
+    )
+    for index, node in enumerate(loaders):
+        lora = wf[node]["inputs"]
+        wf[str(30 + index)] = {
+            "class_type": "LoraLoaderModelOnly",
+            "inputs": {
+                "model": model,
+                "lora_name": lora["lora_name"],
+                "strength_model": round(float(lora["strength_model"]) * share, 3),
+            },
+        }
+        model = [str(30 + index), 0]
+    common = {k: first[k] for k in ("cfg", "sampler_name", "scheduler", "positive", "negative")}
+    common.update(noise_seed=first["seed"], steps=first["steps"])
+    wf[COMPOSE_NODE] = {
+        "class_type": "KSamplerAdvanced",
+        "inputs": {
+            **common,
+            "model": model,
+            "add_noise": "enable",
+            "start_at_step": 0,
+            "end_at_step": steps,
+            "return_with_leftover_noise": "enable",
+            "latent_image": first["latent_image"],
+        },
+    }
+    wf["7"] = {
+        "class_type": "KSamplerAdvanced",
+        "inputs": {
+            **common,
+            "model": first["model"],
+            "add_noise": "disable",
+            "start_at_step": steps,
+            "end_at_step": 10000,
+            "return_with_leftover_noise": "disable",
+            "latent_image": [COMPOSE_NODE, 0],
+        },
+    }
+    return wf
 
 
 def detail_graph(

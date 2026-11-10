@@ -344,6 +344,12 @@ async def create_advanced_generation(
             # everything but the part held (k2edit.moved, runner._advanced_finish).
             fallback = k2edit.build_edit(**{**edit_args, "hold_rest": True})
     else:
+        if body.adult and k2edit.asks_for_nude(prompt):
+            final = f"{final.rstrip()} {k2edit.NUDE_NOTE}"
+        if body.adult and k2edit.names_vulva(prompt):
+            final = f"{final.rstrip()} {k2edit.VULVA_NOTE}"
+        if loras and k2edit.asks_for_pose(prompt) and k2edit.front_selfie(prompt):
+            final = f"{final.rstrip()} {k2edit.FACE_NOTE}"
         width, height = krea2.size_for(body.aspect_ratio, tier)
         workflow = krea2.build_workflow(
             variant="turbo",
@@ -361,6 +367,8 @@ async def create_advanced_generation(
             loras=loras,
             prefix="ai-image-studio-advanced",
         )
+        if loras and k2edit.asks_for_pose(prompt):
+            workflow = k2edit.compose_first(workflow)
     detail = None
     if source and face and area in ("photo", "hair", "clothes", "body") and detection.get("sam"):
         dw, dh = krea2.size_for_source(source["width"], source["height"], "2K")
@@ -490,9 +498,10 @@ REWRITE_SYSTEM = {
         "the user's intent and every element they named (the place, e.g. 'in a car', the "
         "clothes, the pose, the framing) and add nothing they did not ask for beyond "
         "photographic detail: subject, pose, expression, clothing, setting, light, camera and "
-        "framing. The subject is 'a woman' unless the user says otherwise. Her face is always "
-        "fully visible and never covered: in a mirror selfie she holds the phone beside her "
-        "face or at chest height, not in front of it. For a full-body shot the whole person "
+        "framing. The subject is 'a woman' unless the user says otherwise. Her face is "
+        "fully visible and never covered (unless the user asks for her back to the camera): in "
+        "a mirror selfie she holds the phone beside her face or at chest height, not in front "
+        "of it. For a full-body shot the whole person "
         "from head to feet is in the frame. Aim for a natural, real photo (natural skin "
         "texture, everyday light), not a studio or CGI look. Keep words such as trigger "
         "words verbatim. If the "
