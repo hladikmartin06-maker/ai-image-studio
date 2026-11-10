@@ -210,10 +210,10 @@ repositories.
   `POST /api/reference-images/from-image`); LoRA dataset generator (`/api/loras/{id}/dataset/
   generate`, Krea 2 runs marked `dataset_lora_id`, results added with Add to LoRA); "Create a
   dataset from an AI model" (2026-11-04, `/api/loras/{id}/dataset/hosted` + `/estimate`: one
-  click, 12/24/36 hosted runs of the studio's shot list with the AI model's photos as
-  references on Nano Banana Pro, Seedream or Wan 2.7 Pro, the whole set's price confirmed
-  first, runs marked `Generation.dataset_lora_id`; the user picks the best, face similarity
-  measured on demand); spending
+  click, 12/24/36 or an own number (4–48) of hosted runs of the studio's shot list with the
+  AI model's photos as references on Nano Banana Pro, Seedream or Wan 2.7 Pro, the whole
+  set's price confirmed first, runs marked `Generation.dataset_lora_id`; the user picks the
+  best, face similarity measured on demand); spending
   overview (`/api/stats/spending`: confirmed `Generation.cost_estimate`, GPU hours ×
   `GPUWorkload.meta.cost_per_hour`, Modal's `billing.report`); export for social media
   (`/api/images/export`, JPEG without metadata); prompt snippets (`/api/snippets`); face match

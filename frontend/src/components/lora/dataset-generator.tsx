@@ -175,6 +175,9 @@ const DATASET_MODELS = [
   { value: "wan-2.7-pro", label: "Wan 2.7 Pro" },
 ] as const;
 type DatasetModel = (typeof DATASET_MODELS)[number]["value"];
+// The number of photos the backend accepts for one set (`HostedDatasetBody.count`).
+const HOSTED_MIN = 4;
+const HOSTED_MAX = 48;
 
 /** LoRA › Photos: one click makes a set of photos of the AI model (its photos as references,
  * a hosted model, one shot each: close-ups, half and full body); the price of the whole set is
@@ -188,6 +191,9 @@ export function HostedDatasetCard({ lora }: { lora: LoraDetail }) {
   const [personaId, setPersonaId] = useState(lora.persona_id ?? "");
   const [model, setModel] = useState<DatasetModel>("nano-banana-pro");
   const [count, setCount] = useState(24);
+  // An own number typed in (empty = one of the buttons); the backend accepts 4–48.
+  const [own, setOwn] = useState("");
+  const ownOk = own === "" || (Number.isInteger(Number(own)) && Number(own) >= HOSTED_MIN && Number(own) <= HOSTED_MAX);
   const [adult, setAdult] = useState(false);
   const [busy, setBusy] = useState(false);
   const list = personas.data?.items ?? [];
@@ -243,8 +249,35 @@ export function HostedDatasetCard({ lora }: { lora: LoraDetail }) {
                     options={list.map((p) => ({ value: p.id, label: p.name }))}
                   />
                 </Field>
-                <Field label={t("hd.count")}>
-                  <Segmented label={t("hd.count")} value={count} onChange={setCount} options={[12, 24, 36].map((n) => ({ value: n, label: String(n) }))} />
+                <Field label={t("hd.count")} hint={t("hd.countHint", { min: HOSTED_MIN, max: HOSTED_MAX })} error={ownOk ? undefined : t("hd.countBad", { min: HOSTED_MIN, max: HOSTED_MAX })}>
+                  <div className="row" style={{ gap: 8 }}>
+                    <Segmented
+                      label={t("hd.count")}
+                      value={own === "" ? count : 0}
+                      onChange={(n) => {
+                        setOwn("");
+                        setCount(n);
+                      }}
+                      options={[12, 24, 36].map((n) => ({ value: n, label: String(n) }))}
+                    />
+                    <input
+                      className="input"
+                      type="number"
+                      min={HOSTED_MIN}
+                      max={HOSTED_MAX}
+                      style={{ width: 90 }}
+                      placeholder={t("hd.own")}
+                      aria-label={t("hd.own")}
+                      value={own}
+                      onChange={(e) => {
+                        const v = e.target.value;
+                        setOwn(v);
+                        const n = Number(v);
+                        if (Number.isInteger(n) && n >= HOSTED_MIN && n <= HOSTED_MAX) setCount(n);
+                        else if (v === "") setCount(24);
+                      }}
+                    />
+                  </div>
                 </Field>
               </div>
               <Field label={t("dg.model")} hint={t(mature ? "hd.modelHintMature" : "hd.modelHint")}>
@@ -260,7 +293,7 @@ export function HostedDatasetCard({ lora }: { lora: LoraDetail }) {
                 </div>
               ) : null}
               <div className="hint">{t("hd.shotsHint")}</div>
-              <Button variant="primary" icon={<Sparkles />} loading={busy} disabled={!persona} onClick={start}>
+              <Button variant="primary" icon={<Sparkles />} loading={busy} disabled={!persona || !ownOk} onClick={start}>
                 {t("hd.generate", { n: count })}
               </Button>
             </>

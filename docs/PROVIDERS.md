@@ -994,8 +994,8 @@ LoRA › Photos › "Create a dataset from an AI model" (`routes/loras.py`, sinc
 the same hosted request as Generate with an AI model — its photos as references on the
 model's editing endpoint (Nano Banana Pro, Seedream, Wan 2.7 Pro; only parameters the
 catalog documents: 3:4 and the endpoint's 2K size where offered), its description per the
-usual rule — once per shot of the studio's own list (`DATASET_SHOTS`: 24 shots, repeated for
-36; with 18+ on Wan 2.7 Pro, three full-body shots without clothes). The price shown first is
+usual rule — once per shot of the studio's own list (`DATASET_SHOTS`: 24 shots, repeated above
+24; 12/24/36 or an own number, 4–48; with 18+ on Wan 2.7 Pro, three full-body shots without clothes). The price shown first is
 the provider's estimate for one photo × the number of photos (Atlas: unknown, linked);
 nothing starts without that confirmation (`confirmed`), and every request is checked before
 the first one is sent. Not run against the real WaveSpeed / Atlas APIs (fake providers only).

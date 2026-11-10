@@ -125,7 +125,7 @@ Integrations and Settings.
   both. **Add to
   LoRA** (on every result in Generate, in the image viewer and in the library selection)
   copies your best generated images into a LoRA's photos. **Create a dataset from an AI
-  model** (LoRA › Photos): one click makes 12, 24 or 36 photos of your AI model with Nano
+  model** (LoRA › Photos): one click makes 12, 24, 36 or your own number (4–48) of photos of your AI model with Nano
   Banana Pro, Seedream or Wan 2.7 Pro (its photos as references; close-ups, half and full
   body in different places and lights), after you confirm the price of the whole set; compare
   the faces, tick the best and add them. **Generate new photos with Krea 2**

@@ -410,6 +410,12 @@ async def test_dataset_from_an_ai_model_in_one_click(connected: Api, fake):
 
     est = (await connected.post(f"{base}/estimate", json=body)).json()
     assert est["images"] == 4 and est["per_image"] == fake.unit_price
+    # An own number of photos: 4–48, anything else is refused before a price is asked for.
+    for bad in (3, 49):
+        r = await connected.post(f"{base}/estimate", json={**body, "count": bad})
+        assert r.status_code == 422 and r.json()["error"]["field"] == "count"
+    most = await connected.post(f"{base}/estimate", json={**body, "count": 48})
+    assert most.json()["images"] == 48
     assert est["total"] == round(fake.unit_price * 4, 4) and fake.submits == []
     # Nothing starts without the confirmed price; SFW models refuse 18+.
     assert (await connected.post(base, json=body)).status_code == 400
