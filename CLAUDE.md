@@ -172,7 +172,10 @@ repositories.
   the face is redrawn close up (YuNet on the Mac, denoise 0.35); untouched parts keep the
   original's pixels (on by default, closed mask with holes filled); "Face" edits the face
   crop and keeps the photo's hands (SAM 3.1); "Head" edits a head square and puts back only
-  the changes; "Hair" and "Body" free a part found by SAM 3.1 (`ref_boost` 0.05 there, the
+  the changes; a tilted face is cut level for Face and Head (`FACE_TURN_GAIN`, what changed
+  turned back) and a pasted square fades out at its edges inside the photo; with 18+ on,
+  words asking for her naked on the whole photo run as Clothes with `UNDRESS` first;
+  "Hair" and "Body" free a part found by SAM 3.1 (`ref_boost` 0.05 there, the
   whole figure 0.2, the face always held, body edits always say the clothes stay); a
   character edit holds her body (SAM woman − hair − face at 4) so the pose stays (not with
   "Strong" or words asking for a new pose); "Clothes"

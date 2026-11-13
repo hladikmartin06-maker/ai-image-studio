@@ -111,7 +111,10 @@ async def _with_input(client: ComfyClient, gen: Generation) -> dict[str, Any]:
     meta = gen.comfy_meta or {}
     square = meta.get("face_only") or meta.get("head_crop")
     if square:
-        # Advanced, face only: just the face, cropped on this Mac (k2edit.face_crop).
+        # Advanced, face only: just the face, cropped on this Mac (k2edit.face_crop); a
+        # tilted face from the photo turned level (face_turn).
+        if meta.get("face_turn"):
+            data = await asyncio.to_thread(k2edit.turn, data, float(meta["face_turn"]))
         data = await asyncio.to_thread(k2edit.face_crop, data, tuple(square))
         ext, mime = "png", "image/png"
     if meta.get("family") == k2edit.FAMILY:
@@ -596,32 +599,33 @@ async def _advanced_finish(
         return datas
     source = meta.get("input")
     head = meta.get("head_crop")
-    if head and source:
-        # Head: what changed in the edited square goes back into the original photo.
-        try:
-            original = await asyncio.to_thread(storage.absolute(source["file_path"]).read_bytes)
-        except OSError as exc:
-            raise RunFailed("not_found", "The photo is no longer on this Mac.") from exc
-        hands = await _preview(client, entry or {})
-        return [
-            await asyncio.to_thread(k2edit.crop_paste, original, d, tuple(head), hands)
-            for d in datas
-        ]
     square = meta.get("face_only")
-    if square and source:
-        # Face only: the edited face goes back into the original photo; nothing else changes.
+    if (head or square) and source:
+        # Head: what changed in the edited square goes back into the original photo. Face
+        # only: the edited face goes back; nothing else changes. A square cut from the photo
+        # turned level (face_turn) is pasted there and what changed is turned back.
         try:
             original = await asyncio.to_thread(storage.absolute(source["file_path"]).read_bytes)
         except OSError as exc:
             raise RunFailed("not_found", "The photo is no longer on this Mac.") from exc
+        angle = float(meta.get("face_turn") or 0)
+        work = await asyncio.to_thread(k2edit.turn, original, angle) if angle else original
         hands = await _preview(client, entry or {})
-        box = await _face_box(original)
-        return [
-            await asyncio.to_thread(
-                k2edit.face_paste, original, d, tuple(square), hands, box, k2edit.FACE_ONLY_GROW
-            )
-            for d in datas
-        ]
+        box = None if head else await _face_box(work)
+        out = []
+        for d in datas:
+            if head:
+                pasted = await asyncio.to_thread(k2edit.crop_paste, work, d, tuple(head), hands)
+            else:
+                pasted = await asyncio.to_thread(
+                    k2edit.face_paste, work, d, tuple(square), hands, box, k2edit.FACE_ONLY_GROW
+                )
+            if angle:
+                pasted = await asyncio.to_thread(
+                    k2edit.unturn_changes, original, work, pasted, angle
+                )
+            out.append(pasted)
+        return out
     # Where the edit was asked to change something: always the edit's pixels (keep_unchanged).
     changed = [
         m

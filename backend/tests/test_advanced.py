@@ -24,6 +24,12 @@ from tests.fakes import png_bytes
 EDIT_FILE = k2edit.EDIT_LORAS[k2edit.DEFAULT_EDIT].filename
 
 
+def _uuid(value: str):
+    import uuid
+
+    return uuid.UUID(value)
+
+
 def _png(img: Image.Image) -> bytes:
     out = io.BytesIO()
     img.save(out, "PNG")
@@ -700,6 +706,32 @@ async def test_face_only_edits_just_the_face(user: Api, monkeypatch):
         assert sent["4"]["inputs"]["prompt"].endswith(k2edit.FACE_ONLY_NOTE)
         image = gen["images"][0]
         assert (image["width"], image["height"]) == (400, 500)  # back in the whole photo
+        async with SessionLocal() as db:
+            assert "face_turn" not in (await db.get(Generation, _uuid(gen["id"]))).comfy_meta
+        # A tilted face (found surer turned): the square is cut from the photo turned level and
+        # only what the edit changed goes back; the rest of the photo keeps its own pixels.
+        level = Image.open(io.BytesIO(photo)).convert("RGB")
+
+        async def tilted(data: bytes):
+            same = Image.open(io.BytesIO(data)).convert("RGB").size == level.size
+            return (100.0, 80.0, 60.0, 70.0), 0.7 if same else 0.95
+
+        monkeypatch.setattr(faces, "face_box_score", tilted)
+        r = await user.post("/api/comfy/advanced", json=body)
+        gen = await wait_done(user, r.json()["id"])
+        assert gen["status"] == "completed"
+        async with SessionLocal() as db:
+            meta = (await db.get(Generation, _uuid(gen["id"]))).comfy_meta
+        assert meta["face_turn"] == k2edit.TURNS[0]
+        image = gen["images"][0]
+        assert (image["width"], image["height"]) == (400, 500)
+        from app.models import Image as ImageRow
+        from app.services import storage
+
+        async with SessionLocal() as db:
+            row = await db.get(ImageRow, _uuid(image["id"]))
+            out = Image.open(storage.absolute(row.file_path)).convert("RGB")
+        assert out.getpixel((2, 2)) == level.getpixel((2, 2))  # untouched corner
         found[0] = None
         none = await user.post("/api/comfy/advanced", json=body)
         assert none.status_code == 422 and none.json()["error"]["code"] == "no_face"
@@ -816,6 +848,21 @@ async def test_body_part_frees_only_that_part(user: Api):
         assert sent["13"]["inputs"]["ref_boost"] == k2edit.HOLD_BOOST
         assert sent["46"]["class_type"] == "InvertMask"
         assert sent["4"]["inputs"]["prompt"].endswith(k2edit.KEEP_POSE)
+        # 18+ and "naked" on the whole photo: a Clothes edit that removes them.
+        naked = await user.post(
+            "/api/comfy/advanced",
+            json={
+                "connection_id": conn["id"],
+                "image": {"kind": "reference", "id": ref["id"]},
+                "prompt": "She is completely naked.",
+                "adult": True,
+            },
+        )
+        done = await wait_done(user, naked.json()["id"])
+        assert done["status"] == "completed" and done["settings"]["area"] == "clothes"
+        assert done["final_prompt"].startswith(f"{k2edit.UNDRESS} She is completely naked.")
+        assert _sent(fake)[-1]["13"]["inputs"]["ref_boost"] == k2edit.HOLD_BOOST
+        assert k2edit.asks_to_undress("take off her bikini") and k2edit.asks_to_undress("vyzleč ju")
     finally:
         ComfyClient.transport = None
         async with SessionLocal() as db:
@@ -1392,6 +1439,14 @@ def test_face_paste_with_a_box_takes_only_the_face():
     ).convert("RGB")
     assert old_way.getpixel((305, 210))[0] < 128 and new_way.getpixel((305, 210))[0] > 200
     assert new_way.getpixel((130, 130)) == (0, 0, 255)  # hair beside the face stays
+    # A big tilted face: its oval is larger than the square (clipped to the photo's width); the
+    # square fades out where it ends inside the photo instead of leaving a hard line there.
+    tall = _png(Image.new("RGB", (400, 800), (0, 0, 255)))
+    out = Image.open(
+        io.BytesIO(k2edit.face_paste(tall, patch, (0, 0, 400), None, (40, 40, 320, 420)))
+    ).convert("RGB")
+    assert out.getpixel((200, 360))[0] > 200 and out.getpixel((200, 398))[0] < 60
+    assert out.getpixel((200, 2))[0] > 200  # the photo's own top edge is no seam: no fade
 
 
 def test_figure_is_let_go_gently():

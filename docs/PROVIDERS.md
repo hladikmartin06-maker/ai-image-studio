@@ -779,6 +779,23 @@ What the studio does:
    "clothes" the sheets), so no automatic re-run on clothes; the Clothes edit ("remove all her
    clothes") undressed but took her hair once and left a smooth, detail-less body twice. A
    stronger face step (denoise 0.45–0.55) raised profile likeness by about 0.05 only (noise).
+   Photo edits (2026-11-13; 7 kinds of edit on 12 of the owner's photos, 84 runs, then the
+   fixes rerun): on a tilted face (a sideways selfie, a tongue-out head) Face stood an upright
+   face on the tilted head, and a big face's square, clipped to the photo's width, left a hard
+   line across it. Now a face YuNet finds clearly surer turned (+0.06; level faces gained at
+   most +0.024 over 32 photos, tilted ones +0.08 to +0.26) is cut level and only what changed
+   is turned back (`unturn_changes`), and the pasted square fades out at its inner edges
+   (`EDGE_FADE`): both tilted faces now follow the head, no line. "She is completely naked."
+   on the whole photo undressed 5 of 12 (her body is held with her clothes), as a Clothes edit
+   0 of 4; as a Clothes edit with "Remove all her clothes." first 12 of 12 with the pose kept
+   (one raised leg came down), so 18+ nude words on the whole photo run that way
+   (`UNDRESS`). Clothes, Head (glasses), a larger bust and Strong poses were right on 10-12 of
+   12; a bust hidden behind her arm moved the arm. Tried and not kept: Hair with everything
+   else held at 4 kept a tilted head but left old hair under a new bob; Face pasted through
+   SAM's face mask kept a rose beside her chin but left edges where the new face differed.
+   Feet (8 prompts, raw, with and without her LoRA): five toes per foot on every close-up,
+   natural soles and nails; YuNet found a "face" (0.73) in one sand close-up, in the range of
+   real faces half hidden by a hand (0.70), so feet work runs with "Spresniť tvár postavy" off.
    A light Turbo pass over the whole edited photo at 2K (denoise 0.15–0.22, face,
    hands, jewelry and SAM "text" kept) added little detail and still changed small text ("08:22"
    became "09:22", "W21"); not used. In

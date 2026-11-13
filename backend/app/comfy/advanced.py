@@ -127,9 +127,12 @@ async def _other_face(source: dict[str, Any], who: str, note: str) -> str | None
     return k2edit.other_face_instruction(who, side, main_side, note)
 
 
-async def _face_square(source: dict[str, Any], area: str = "face") -> tuple[int, int, int] | None:
+async def _face_square(
+    source: dict[str, Any], area: str = "face"
+) -> tuple[tuple[int, int, int] | None, float]:
     """Where the face (or the head, area "head") is in the user's photo (YuNet on this Mac),
-    as the square to edit."""
+    as the square to edit, and the turn (k2edit.turn) the square is in: a tilted face is cut
+    level (k2edit.FACE_TURN_GAIN), else 0."""
     import asyncio
     import io
 
@@ -146,14 +149,29 @@ async def _face_square(source: dict[str, Any], area: str = "face") -> tuple[int,
         raise GenerationRejected(
             "face_check_failed", "The face could not be found on this Mac right now.", 409
         ) from exc
+    angle = 0.0
+    if box:
+        try:
+            level = (await faces.face_box_score(upright)) or (box, 0.0)
+            best = None
+            for turn in k2edit.TURNS:
+                turned = await asyncio.to_thread(k2edit.turn, upright, turn)
+                found = await faces.face_box_score(turned)
+                if found and (best is None or found[1] > best[2]):
+                    best = (turn, turned, found[1], found[0])
+        except Exception:  # noqa: BLE001 - the face as it was found
+            best = None
+        if best and best[2] >= max(k2edit.TURN_MIN_SCORE, level[1] + k2edit.FACE_TURN_GAIN):
+            angle, box = best[0], best[3]
+            size = Image.open(io.BytesIO(best[1])).size
     if area == "head" and box:
-        return k2edit.head_square(box, *size)  # None for a big face: the whole photo
+        return k2edit.head_square(box, *size), angle  # None for a big face: the whole photo
     square = k2edit.face_square(box, *size, any_size=True) if box else None
     if square is None:
         raise GenerationRejected(
             "no_face", "No face was found in this photo (or it is too small).", 422
         )
-    return square
+    return square, angle
 
 
 async def create_advanced_generation(
@@ -190,6 +208,18 @@ async def create_advanced_generation(
     if body.image is None and body.aspect_ratio not in krea2.ASPECT_RATIOS:
         raise GenerationRejected("invalid_parameter", "Unsupported aspect ratio.")
     area = "face" if body.face_only else "body" if body.body_part else body.area
+    # 18+ and words asking for her naked on the whole photo: a Clothes edit that removes them
+    # (k2edit.UNDRESS). On the whole photo her body was held with her clothes (5 of 12 photos
+    # undressed); this way 12 of 12, the pose kept (2026-11-13).
+    undress = bool(
+        body.image
+        and area == "photo"
+        and body.adult
+        and detection.get("sam")
+        and k2edit.asks_for_nude(prompt)
+    )
+    if undress:
+        area = "clothes"
     if area == "body" and not body.body_part:
         raise GenerationRejected("invalid_parameter", "Choose the body part to change.")
     if body.body_part is not None and body.body_part not in k2edit.BODY_PARTS:
@@ -205,8 +235,9 @@ async def create_advanced_generation(
         )
     source = await source_input(db, user, body.image) if body.image else None
     square = None
+    face_turn = 0.0
     if source and area in ("face", "head"):
-        square = await _face_square(source, area)
+        square, face_turn = await _face_square(source, area)
         if square is None:  # head: a big face is edited on the whole photo
             area = "photo"
 
@@ -220,6 +251,8 @@ async def create_advanced_generation(
         k2edit.body_change(prompt) if source and area == "photo" and detection.get("sam") else None
     )
     edit_words = change[2] if change and (change[2] or body.lora) else prompt
+    if undress and not k2edit.asks_to_undress(edit_words):
+        edit_words = f"{k2edit.UNDRESS} {edit_words}"
     final = edit_words
     face = None
     if body.lora is not None:
@@ -433,6 +466,8 @@ async def create_advanced_generation(
             "extra_pass": extra,
             "face_only": list(square) if square and area == "face" else None,
             "head_crop": list(square) if square and area == "head" else None,
+            # The square is in the photo turned this much (a tilted face cut level).
+            **({"face_turn": face_turn} if square and face_turn else {}),
             "pose_fallback": fallback,
             # With her LoRA: the whole photo at 2K once more, one quality (k2edit.detail_graph).
             "detail": detail,

@@ -161,6 +161,18 @@ def asks_for_nude(text: str) -> bool:
     return bool(NUDE_WORDS.search(text))
 
 
+# An edit asking for her naked runs as Clothes with this instruction first: "She is completely
+# naked." left the clothes on in a Clothes edit too (4 of 4); with it 12 of 12 (2026-11-13).
+UNDRESS = "Remove all her clothes."
+UNDRESS_WORDS = re.compile(
+    r"\b(remov\w*|take\w* off|undress\w*|strip\w*|vyzle\w*|zlo[žz]\w*|daj\w* dole)\b", re.IGNORECASE
+)
+
+
+def asks_to_undress(text: str) -> bool:
+    return bool(UNDRESS_WORDS.search(text))
+
+
 # 18+ text to image naming her intimate area: Turbo still covered it with a thong on all fours
 # (1 of 8 with NUDE_NOTE); with this sentence 8 of 8 were bare, nothing else changed
 # (2026-11-10).
@@ -1346,10 +1358,34 @@ def face_paste(
         hands = Image.open(io.BytesIO(keep)).convert("L").resize((side, side), Image.BILINEAR)
         hands = hands.filter(ImageFilter.MaxFilter(5)).filter(ImageFilter.GaussianBlur(3))
         mask = ImageChops.subtract(mask, hands)
+    mask = ImageChops.multiply(mask, _edge_fade(side, left, top, *img.size))
     img.paste(face, (left, top), mask)
     buf = io.BytesIO()
     img.save(buf, "PNG")
     return buf.getvalue()
+
+
+# The pasted square fades out toward its edges inside the photo: a big tilted face (a loose
+# YuNet box, its oval larger than the square clipped to the photo's width) left a hard line
+# across a selfie where the square ended (2026-11-13).
+EDGE_FADE = 0.04
+
+
+def _edge_fade(side: int, left: int, top: int, width: int, height: int) -> Any:
+    """A mask of the square: white inside, fading to black over EDGE_FADE of its side toward
+    each edge that lies inside the photo (edges on the photo's border stay white)."""
+    from PIL import Image, ImageDraw, ImageFilter
+
+    fade = max(6, int(side * EDGE_FADE))
+    inner = [
+        fade if left > 0 else -fade,
+        fade if top > 0 else -fade,
+        side - (fade if left + side < width else -fade),
+        side - (fade if top + side < height else -fade),
+    ]
+    mask = Image.new("L", (side, side), 0)
+    ImageDraw.Draw(mask).rectangle(inner, fill=255)
+    return mask.filter(ImageFilter.GaussianBlur(fade / 2))
 
 
 # A face YuNet does not find as it is (a head tilted about 45 degrees: a selfie held
@@ -1365,6 +1401,12 @@ TURNS = (-60.0, -45.0, -30.0, 30.0, 45.0, 60.0, 90.0, -90.0, 180.0)
 # they are (0.94 vs 0.82-0.89). Turned, likeness after the face step rose from 0.46-0.55 to
 # 0.58-0.64 (measured level, 2026-11-10).
 FLIP_MARGIN = 0.04
+# Face and Head edits on a tilted face: when a turn finds the face this much surer than the
+# photo as it is, the square is cut from the turned photo (the face level) and only what changed
+# is turned back. Cut as it was, the edit stood the face up on a tilted head (a tongue-out
+# selfie: an upright face, a hand over one eye; 2026-11-13). Over 32 of the owner's photos
+# level faces gained at most +0.024 turned, tilted ones +0.08 to +0.26.
+FACE_TURN_GAIN = 0.06
 # A face found only turned counts from this YuNet score: on back views (no face) it found
 # "faces" in her soles and bottom at 0.60-0.70, and the face step drew one there (the owner's
 # photo, 2026-11-10); her real faces found turned scored 0.865-0.946 on 24 test photos.
@@ -1411,6 +1453,28 @@ def unturn(
     ImageDraw.Draw(mask).ellipse((x - 0.2 * w, y - 0.28 * h, x + 1.2 * w, y + 1.2 * h), fill=255)
     mask = mask.filter(ImageFilter.GaussianBlur(max(3.0, 0.08 * w)))
     back = work.rotate(-angle, Image.BICUBIC, expand=True)
+    mask = mask.rotate(-angle, Image.BICUBIC, expand=True)
+    left, top = (back.width - img.width) // 2, (back.height - img.height) // 2
+    crop = (left, top, left + img.width, top + img.height)
+    img.paste(back.crop(crop), (0, 0), mask.crop(crop))
+    buf = io.BytesIO()
+    img.save(buf, "PNG")
+    return buf.getvalue()
+
+
+def unturn_changes(original: bytes, before: bytes, after: bytes, angle: float) -> bytes:
+    """What an edit changed in the turned photo (`after` against `before`, both the original
+    turned by `angle`) put back into the original; everything else keeps its own pixels."""
+    import io
+
+    from PIL import Image, ImageChops, ImageFilter, ImageOps
+
+    img = ImageOps.exif_transpose(Image.open(io.BytesIO(original))).convert("RGB")
+    old = Image.open(io.BytesIO(before)).convert("RGB")
+    new = Image.open(io.BytesIO(after)).convert("RGB")
+    mask = ImageChops.difference(new, old).convert("L").point(lambda v: 255 if v > 4 else 0)
+    mask = mask.filter(ImageFilter.MaxFilter(9)).filter(ImageFilter.GaussianBlur(3))
+    back = new.rotate(-angle, Image.BICUBIC, expand=True)
     mask = mask.rotate(-angle, Image.BICUBIC, expand=True)
     left, top = (back.width - img.width) // 2, (back.height - img.height) // 2
     crop = (left, top, left + img.width, top + img.height)
