@@ -758,14 +758,27 @@ What the studio does:
    found turned scored 0.865–0.946 on 24 test photos, so a turned face counts from 0.8
    (`TURN_MIN_SCORE`). Upside-down faces (lying on her back, head toward the camera) were found
    as they are (0.70–0.85) but surer turned 180 (0.86–0.92), level faces surer as they are
-   (0.94 against 0.82–0.89): with `FLIP_MARGIN` 0.04 the face step works on them turned (they
-   had odd stripes and likeness 0.18–0.22). Likeness after the face step (28 prompts, her
-   LoRA v1): front faces 0.65–0.81, faces looking back or in profile 0.27–0.46.
+   (0.94 against 0.82–0.89): with `FLIP_MARGIN` 0.04 the face step works on them turned
+   (likeness measured turned level 0.46–0.55 before, 0.58–0.64 after; the "dark stripes" seen
+   on them upside down are her eyebrows). Likeness after the face step (28 prompts, her LoRA
+   v1): front faces 0.65–0.81, faces looking back or in profile 0.27–0.46.
    Through the studio with all of it (14 runs, LoRA v1 and v2, 2K, face step): nude where
    asked on 12 of 14 (on all fours and lying on her stomach a thong twice with v1, nude with v2
    and on other seeds), no face drawn on soles, front faces 0.71–0.84, upside-down faces 0.58–
-   0.64 (0.46–0.55 before; measured turned level). Not reached: "one leg lifted onto a chair";
-   an upside-down face keeps faint dark stripes under the eyes from the first image.
+   0.64 (0.46–0.55 before; measured turned level). Not reached: "one leg lifted onto a chair".
+   Limits of Krea 2 Turbo itself (2026-11-12; 24 new prompts through the studio, then 50 raw
+   variants): it renders nude bodies but avoids poses that expose the vulva. "Sitting with her
+   legs spread over the armrests", "lying with knees apart", "backbend" and "lying on her side,
+   one leg raised" came out in a dress, underwear, leggings or a bikini on the same seed with
+   her LoRA at full strength, at 1.25, with the composed start, with the words moved or the
+   slang left out, and with a negative prompt at CFG 1.5–2 (CFG 2 breaks the image); another
+   seed is usually nude (LoRA v2 a little more often than v1). A close-up of the vulva came out
+   as a portrait, breasts or a thong from behind, also without her LoRA, so no setting makes
+   it; "topless" in a car selfie stayed in a top with an added sentence too (0 of 3). SAM 3.1
+   cannot tell clothes from skin (on nude photos "bra" marks the breasts, "underwear" the hips,
+   "clothes" the sheets), so no automatic re-run on clothes; the Clothes edit ("remove all her
+   clothes") undressed but took her hair once and left a smooth, detail-less body twice. A
+   stronger face step (denoise 0.45–0.55) raised profile likeness by about 0.05 only (noise).
    A light Turbo pass over the whole edited photo at 2K (denoise 0.15–0.22, face,
    hands, jewelry and SAM "text" kept) added little detail and still changed small text ("08:22"
    became "09:22", "W21"); not used. In

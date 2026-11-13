@@ -1362,8 +1362,8 @@ def face_paste(
 TURNS = (-60.0, -45.0, -30.0, 30.0, 45.0, 60.0, 90.0, -90.0, 180.0)
 # An upside-down face (text to image "lying on her back" with her head toward the camera) is
 # found as it is too (0.70-0.85) but surer turned 180 (0.86-0.92); level faces scored higher as
-# they are (0.94 vs 0.82-0.89). On it as it was, the face step left odd stripes and likeness
-# 0.18-0.22 (2026-11-10).
+# they are (0.94 vs 0.82-0.89). Turned, likeness after the face step rose from 0.46-0.55 to
+# 0.58-0.64 (measured level, 2026-11-10).
 FLIP_MARGIN = 0.04
 # A face found only turned counts from this YuNet score: on back views (no face) it found
 # "faces" in her soles and bottom at 0.60-0.70, and the face step drew one there (the owner's
